@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+
+# Local secrets — never commit
+.env
+.env.*
+!.env.example
+
+# fastembed downloads the ONNX model here on first run (~130 MB)
+.fastembed-cache/
+local_cache/
