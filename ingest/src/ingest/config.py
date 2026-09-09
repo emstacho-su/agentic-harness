@@ -1,0 +1,171 @@
+"""Central configuration for the RAG ingestion pipeline.
+
+Everything that a future model swap would have to touch lives in ``EMBEDDING``.
+Changing the model is one edit here plus a re-embed (``ingest --force``) — the
+rest of the pipeline reads the name and dimension from this object.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+# --------------------------------------------------------------------------
+# Embeddings
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EmbeddingConfig:
+    """The one place the embedding model is named.
+
+    ``max_input_tokens`` is the model's own sequence limit. fastembed silently
+    truncates beyond it, so the chunker must stay under it — see CHUNKING below.
+    """
+
+    model_name: str
+    dimensions: int
+    max_input_tokens: int
+
+
+# BAAI/bge-small-en-v1.5: 384 dims, 512-token window, runs locally on CPU via
+# ONNX. Matches `rag.chunks.embedding extensions.vector(384)`.
+EMBEDDING = EmbeddingConfig(
+    model_name="BAAI/bge-small-en-v1.5",
+    dimensions=384,
+    max_input_tokens=512,
+)
+
+
+ENV_MODEL_CACHE_DIR = "FASTEMBED_CACHE_DIR"
+
+
+def embedding_cache_dir(env: dict[str, str] | None = None) -> str:
+    """Where the ONNX weights live.
+
+    fastembed's own default is the system temp directory, which Windows is free
+    to clean out — that would silently re-download 130 MB on some future run. So
+    the default is pinned under the user's home cache instead.
+
+    It must stay OUT of OneDrive: binary indexes plus OneDrive sync have already
+    caused file-lock failures in this project (see CONTEXT.md).
+    """
+    source = os.environ if env is None else env
+    override = _clean(source.get(ENV_MODEL_CACHE_DIR))
+    if override:
+        return override
+    return str(Path.home() / ".cache" / "fastembed")
+
+
+# --------------------------------------------------------------------------
+# Chunking
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChunkConfig:
+    """Token budgets for the markdown chunker.
+
+    Rationale for the defaults:
+
+    * ``target_tokens=384`` — bge-small accepts 512 tokens. Leaving ~25% headroom
+      means a chunk can pick up a heading breadcrumb and a carried-over overlap
+      block without tipping into silent truncation by the tokenizer.
+    * ``overlap_tokens=64`` — one sixth of a chunk. Enough that a sentence split
+      across a boundary is retrievable from either side, small enough that
+      storage and embedding cost only rise ~17%.
+    * ``min_tokens=32`` — chunks shorter than this are merged into their
+      neighbour. Sub-30-token fragments (a lone heading, a one-line list item)
+      embed to near-noise and pollute the top-k.
+    * ``hard_max_tokens=480`` — absolute ceiling after breadcrumb + overlap are
+      added. Still under 512, so nothing is ever truncated by the model.
+    """
+
+    target_tokens: int = 384
+    overlap_tokens: int = 64
+    min_tokens: int = 32
+    hard_max_tokens: int = 480
+    # Prefix each chunk with its markdown heading path ("Guide > Setup").
+    # Cheap, and it keeps a chunk interpretable once it is torn out of its file.
+    include_heading_breadcrumb: bool = True
+
+
+CHUNKING = ChunkConfig()
+
+
+# --------------------------------------------------------------------------
+# Database
+# --------------------------------------------------------------------------
+
+RAG_SCHEMA = "rag"
+DOCUMENTS_TABLE = f"{RAG_SCHEMA}.documents"
+CHUNKS_TABLE = f"{RAG_SCHEMA}.chunks"
+
+# `rag.chunks.embedding` is typed `extensions.vector(384)`, so inserts must cast
+# to the same qualified type.
+VECTOR_TYPE = "extensions.vector"
+
+SOURCE_OBSIDIAN = "obsidian"
+SOURCE_CLAUDE_MEM = "claude-mem"
+DEFAULT_AGENT = "claude-code"
+
+
+# Canonical env var names. These are the names actually on disk in the repo's
+# .env — see CONTEXT.md "Credentials".
+ENV_DATABASE_URL = "DATABASE_URL"
+ENV_SUPABASE_URL = "SUPABASE_URL"
+ENV_SUPABASE_SERVICE_ROLE = "SUPABASE_SERVICE_ROLE"
+# Older name, accepted so a stale shell does not fail confusingly.
+ENV_SUPABASE_SERVICE_ROLE_LEGACY = "SUPABASE_SERVICE_KEY"
+
+
+@dataclass(frozen=True)
+class DbSettings:
+    """Connection details, read from the environment. Never hardcoded.
+
+    Writes go over ``DATABASE_URL`` (direct Postgres via psycopg). PostgREST is
+    deliberately not an option: the ``rag`` schema is not exposed on ``bb2dash``'s
+    REST surface (PGRST106) and will not be. ``SUPABASE_URL`` /
+    ``SUPABASE_SERVICE_ROLE`` are carried here only so one env file serves this
+    pipeline and the MCP server; this package never sends them anywhere.
+    """
+
+    database_url: str | None
+    supabase_url: str | None
+    supabase_service_role: str | None
+
+    @property
+    def can_connect(self) -> bool:
+        return bool(self.database_url)
+
+    def redacted(self) -> dict[str, str]:
+        """Presence report safe to print. Never returns a secret value."""
+        return {
+            ENV_DATABASE_URL: "set" if self.database_url else "missing",
+            ENV_SUPABASE_URL: self.supabase_url or "missing",
+            ENV_SUPABASE_SERVICE_ROLE: "set" if self.supabase_service_role else "missing",
+        }
+
+
+def load_db_settings(env: dict[str, str] | None = None) -> DbSettings:
+    """Read connection details from the environment.
+
+    Accepts an explicit mapping so tests never touch the real process env.
+    """
+    source = os.environ if env is None else env
+    service_role = _clean(source.get(ENV_SUPABASE_SERVICE_ROLE)) or _clean(
+        source.get(ENV_SUPABASE_SERVICE_ROLE_LEGACY)
+    )
+    return DbSettings(
+        database_url=_clean(source.get(ENV_DATABASE_URL)),
+        supabase_url=_clean(source.get(ENV_SUPABASE_URL)),
+        supabase_service_role=service_role,
+    )
+
+
+def _clean(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
