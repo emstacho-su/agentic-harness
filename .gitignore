@@ -1,0 +1,94 @@
+# ---------------------------------------------------------------------------
+# Secrets — nothing in this block may ever be committed.
+# This repo holds Supabase connection details during development.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+service-key*
+
+# ---------------------------------------------------------------------------
+# Python (ingest/, managed with uv)
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+develop-eggs/
+dist/
+eggs/
+.eggs/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# Local embedding model cache (fastembed / ONNX weights — hundreds of MB)
+.fastembed_cache/
+models/
+*.onnx
+
+# ---------------------------------------------------------------------------
+# Node / TypeScript (mcp-server/)
+# ---------------------------------------------------------------------------
+node_modules/
+dist/
+build/
+out/
+*.tsbuildinfo
+.npm/
+.yarn/
+.pnp.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------------------------------------------------------------------------
+# Data — exports and snapshots are large and live in ~/.claude-archive/
+# ---------------------------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+data/
+exports/
+*.dump
+
+# ---------------------------------------------------------------------------
+# Editors / tooling
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------------------
+# OS cruft
+# ---------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
