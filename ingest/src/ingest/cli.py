@@ -208,7 +208,8 @@ def _report_env() -> None:
         print(f"  {name:22} {state}")
     print(
         "\nWrites go over DATABASE_URL (direct Postgres). The rag schema is not "
-        "exposed to PostgREST, so there is no REST fallback."
+        "exposed to PostgREST, so there is no REST fallback. TLS is verify-full "
+        "against DATABASE_CA_CERT; it never downgrades."
     )
     print(f"\nEmbedding model: {EMBEDDING.model_name} ({EMBEDDING.dimensions} dims)")
     print(

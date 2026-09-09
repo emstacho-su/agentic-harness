@@ -12,6 +12,7 @@ fails the document keeps its previous chunks — never a half-rewritten document
 from __future__ import annotations
 
 import logging
+import os
 from typing import Protocol, Sequence
 
 from .config import CHUNKS_TABLE, DOCUMENTS_TABLE, VECTOR_TYPE, DbSettings
@@ -25,13 +26,44 @@ log = logging.getLogger(__name__)
 # TCP keepalives so the OS notices a half-open socket rather than the next query
 # discovering it. Embedding runs leave the connection idle for long stretches and
 # Supabase's pooler will otherwise reap it silently.
-_CONNECT_KWARGS: dict[str, object] = {
-    "autocommit": False,
+_KEEPALIVE_KWARGS: dict[str, object] = {
     "keepalives": 1,
     "keepalives_idle": 30,
     "keepalives_interval": 10,
     "keepalives_count": 5,
 }
+
+
+def connect_kwargs(settings: DbSettings) -> dict[str, object]:
+    """Everything psycopg.connect needs beyond the URL — TLS included.
+
+    libpq's default is ``sslmode=prefer``, which neither verifies the server
+    certificate nor refuses a plaintext downgrade. This connection carries the
+    service-role credential and every document body, so it is ``verify-full``
+    against the pinned Supabase CA, mirroring the MCP server's
+    ``rejectUnauthorized: true``. The only way off that is the explicit
+    ``DATABASE_SSL=disable`` for a local Postgres; there is no "no-verify".
+    """
+    kwargs: dict[str, object] = {"autocommit": False, **_KEEPALIVE_KWARGS}
+    if settings.ssl_disabled:
+        kwargs["sslmode"] = "disable"
+        return kwargs
+    if not settings.ssl_root_cert:
+        raise ConfigError(
+            "DATABASE_CA_CERT is not set. TLS is verified (sslmode=verify-full) and "
+            "Supabase signs with its own root CA, so the pinned certificate is required: "
+            "set DATABASE_CA_CERT (or PGSSLROOTCERT) to certs/prod-ca.crt using an "
+            "absolute C:/... path. For a local Postgres only, DATABASE_SSL=disable."
+        )
+    if not os.path.isfile(settings.ssl_root_cert):
+        raise ConfigError(
+            f"DATABASE_CA_CERT points at {settings.ssl_root_cert}, which does not exist "
+            "or is not a file. Use an absolute C:/... path (not an MSYS /c/... path); "
+            "the Supabase CA lives at certs/prod-ca.crt in this repo."
+        )
+    kwargs["sslmode"] = "verify-full"
+    kwargs["sslrootcert"] = settings.ssl_root_cert
+    return kwargs
 
 _UPSERT_DOCUMENT = f"""
 INSERT INTO {DOCUMENTS_TABLE}
@@ -101,9 +133,17 @@ class PostgresStore:
     "the connection is closed", so operations reconnect once and retry.
     """
 
-    def __init__(self, connection, database_url: str | None = None) -> None:
+    def __init__(
+        self,
+        connection,
+        database_url: str | None = None,
+        connect_options: dict[str, object] | None = None,
+    ) -> None:
         self._conn = connection
         self._database_url = database_url
+        # The exact kwargs the first connection used, so a reconnect can never
+        # come back with weaker TLS or without keepalives.
+        self._connect_options = dict(connect_options or {"autocommit": False})
 
     # -- connection resilience ---------------------------------------------
 
@@ -118,7 +158,7 @@ class PostgresStore:
                 self._conn.close()
             except Exception:  # noqa: BLE001 - already dead; nothing to salvage
                 pass
-            self._conn = psycopg.connect(self._database_url, autocommit=False)
+            self._conn = psycopg.connect(self._database_url, **self._connect_options)
             log.warning("Database connection was dropped; reconnected.")
             return True
         except Exception as exc:  # noqa: BLE001
@@ -176,11 +216,12 @@ class PostgresStore:
                 "psycopg is not installed. Run `uv sync` in ingest/."
             ) from exc
 
+        options = connect_kwargs(settings)  # raises ConfigError before any I/O
         try:
-            conn = psycopg.connect(settings.database_url, **_CONNECT_KWARGS)
+            conn = psycopg.connect(settings.database_url, **options)
         except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
             raise StoreError(f"Could not connect to the database: {exc}") from exc
-        return cls(conn, database_url=settings.database_url)
+        return cls(conn, database_url=settings.database_url, connect_options=options)
 
     # -- reads -------------------------------------------------------------
 

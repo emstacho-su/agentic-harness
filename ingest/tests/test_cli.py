@@ -256,3 +256,49 @@ def test_missing_explicit_env_file_raises(tmp_path):
 
 def test_find_env_file_returns_none_when_there_is_none(tmp_path: Path):
     assert find_env_file(tmp_path) is None
+
+
+# --------------------------------------------------------------------------
+# TLS settings
+# --------------------------------------------------------------------------
+
+
+def test_ca_cert_is_read_from_database_ca_cert(tmp_path):
+    settings = load_db_settings({"DATABASE_CA_CERT": str(tmp_path / "ca.crt")})
+    assert settings.ssl_root_cert == str((tmp_path / "ca.crt").resolve())
+
+
+def test_ca_cert_falls_back_to_pgsslrootcert(tmp_path):
+    settings = load_db_settings({"PGSSLROOTCERT": str(tmp_path / "ca.crt")})
+    assert settings.ssl_root_cert == str((tmp_path / "ca.crt").resolve())
+
+
+def test_database_ca_cert_wins_over_pgsslrootcert(tmp_path):
+    settings = load_db_settings(
+        {"DATABASE_CA_CERT": str(tmp_path / "a.crt"), "PGSSLROOTCERT": str(tmp_path / "b.crt")}
+    )
+    assert settings.ssl_root_cert.endswith("a.crt")
+
+
+def test_relative_ca_path_is_resolved_against_the_cwd(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    settings = load_db_settings({"DATABASE_CA_CERT": "certs/prod-ca.crt"})
+    assert settings.ssl_root_cert == str((tmp_path / "certs" / "prod-ca.crt").resolve())
+
+
+def test_database_ssl_disable_is_the_only_way_to_turn_tls_off():
+    assert load_db_settings({"DATABASE_SSL": "disable"}).ssl_disabled is True
+    assert load_db_settings({"DATABASE_SSL": "off"}).ssl_disabled is True
+    assert load_db_settings({"DATABASE_SSL": "prefer"}).ssl_disabled is False
+    assert load_db_settings({}).ssl_disabled is False
+
+
+def test_check_env_reports_the_ca_cert_path_state(monkeypatch, clean_env, capsys, tmp_path):
+    ca = tmp_path / "ca.crt"
+    ca.write_text("x")
+    monkeypatch.setenv("DATABASE_CA_CERT", str(ca))
+
+    assert main(["--check-env", "--env-file", str(clean_env)]) == 0
+    out = capsys.readouterr().out
+    assert "DATABASE_CA_CERT" in out
+    assert "verify-full" in out

@@ -118,6 +118,13 @@ ENV_SUPABASE_URL = "SUPABASE_URL"
 ENV_SUPABASE_SERVICE_ROLE = "SUPABASE_SERVICE_ROLE"
 # Older name, accepted so a stale shell does not fail confusingly.
 ENV_SUPABASE_SERVICE_ROLE_LEGACY = "SUPABASE_SERVICE_KEY"
+# Pinned Supabase root CA. Same name as the MCP server; libpq's own name is
+# accepted as a fallback so one .env serves both.
+ENV_DATABASE_CA_CERT = "DATABASE_CA_CERT"
+ENV_PGSSLROOTCERT = "PGSSLROOTCERT"
+# `disable` turns TLS off — for a local Postgres only. There is deliberately no
+# "prefer" or "no-verify" option: those downgrade silently.
+ENV_DATABASE_SSL = "DATABASE_SSL"
 
 
 @dataclass(frozen=True)
@@ -134,6 +141,11 @@ class DbSettings:
     database_url: str | None
     supabase_url: str | None
     supabase_service_role: str | None
+    # Absolute path to the pinned root CA. Required unless ``ssl_disabled``:
+    # Supabase signs with its own CA, which no default trust store carries, and
+    # the connection must verify (``sslmode=verify-full``) rather than fall back.
+    ssl_root_cert: str | None = None
+    ssl_disabled: bool = False
 
     @property
     def can_connect(self) -> bool:
@@ -141,8 +153,15 @@ class DbSettings:
 
     def redacted(self) -> dict[str, str]:
         """Presence report safe to print. Never returns a secret value."""
+        if self.ssl_disabled:
+            tls = "DISABLED (DATABASE_SSL=disable — local Postgres only)"
+        elif self.ssl_root_cert:
+            tls = f"verify-full against {self.ssl_root_cert}"
+        else:
+            tls = "missing — required (sslmode=verify-full)"
         return {
             ENV_DATABASE_URL: "set" if self.database_url else "missing",
+            ENV_DATABASE_CA_CERT: tls,
             ENV_SUPABASE_URL: self.supabase_url or "missing",
             ENV_SUPABASE_SERVICE_ROLE: "set" if self.supabase_service_role else "missing",
         }
@@ -157,10 +176,16 @@ def load_db_settings(env: dict[str, str] | None = None) -> DbSettings:
     service_role = _clean(source.get(ENV_SUPABASE_SERVICE_ROLE)) or _clean(
         source.get(ENV_SUPABASE_SERVICE_ROLE_LEGACY)
     )
+    ca_path = _clean(source.get(ENV_DATABASE_CA_CERT)) or _clean(source.get(ENV_PGSSLROOTCERT))
+    ssl_setting = (_clean(source.get(ENV_DATABASE_SSL)) or "").lower()
     return DbSettings(
         database_url=_clean(source.get(ENV_DATABASE_URL)),
         supabase_url=_clean(source.get(ENV_SUPABASE_URL)),
         supabase_service_role=service_role,
+        # Resolved now, against the cwd, so a relative path in .env does not
+        # silently mean something else once the store is constructed elsewhere.
+        ssl_root_cert=str(Path(ca_path).resolve()) if ca_path else None,
+        ssl_disabled=ssl_setting in {"disable", "off", "false", "0"},
     )
 
 

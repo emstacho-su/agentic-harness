@@ -251,3 +251,92 @@ def test_null_store_reports_everything_as_new_and_refuses_writes():
     with pytest.raises(StoreError):
         store.replace_document(document(), "h", CHUNKS, VECTORS)
     store.close()
+
+
+# --------------------------------------------------------------------------
+# TLS: verify-full against the pinned CA, on both connect paths
+# --------------------------------------------------------------------------
+
+
+def _capture_connect(monkeypatch):
+    import psycopg
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_connect(conninfo, **kwargs):
+        calls.append((conninfo, kwargs))
+        return FakeConnection()
+
+    monkeypatch.setattr(psycopg, "connect", fake_connect)
+    return calls
+
+
+def _settings(tmp_path, **overrides) -> DbSettings:
+    ca = tmp_path / "prod-ca.crt"
+    ca.write_text("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
+    fields = {
+        "database_url": "postgresql://postgres.ref:pw@pooler.example:5432/postgres",
+        "supabase_url": None,
+        "supabase_service_role": None,
+        "ssl_root_cert": str(ca),
+    }
+    fields.update(overrides)
+    return DbSettings(**fields)
+
+
+def test_initial_connect_verifies_the_server_against_the_pinned_ca(monkeypatch, tmp_path):
+    calls = _capture_connect(monkeypatch)
+    settings = _settings(tmp_path)
+
+    PostgresStore.from_settings(settings)
+
+    conninfo, kwargs = calls[0]
+    assert conninfo == settings.database_url
+    assert kwargs["sslmode"] == "verify-full"
+    assert kwargs["sslrootcert"] == settings.ssl_root_cert
+    assert kwargs["keepalives"] == 1  # the resilience kwargs survive too
+
+
+def test_reconnect_uses_the_same_tls_and_keepalive_kwargs(monkeypatch, tmp_path):
+    calls = _capture_connect(monkeypatch)
+    settings = _settings(tmp_path)
+    store = PostgresStore.from_settings(settings)
+
+    assert store._reconnect() is True
+
+    _, initial = calls[0]
+    _, again = calls[1]
+    assert again == initial, "the retry path must not regress TLS or keepalives"
+
+
+def test_missing_ca_is_a_config_error_not_a_silent_downgrade(monkeypatch, tmp_path):
+    calls = _capture_connect(monkeypatch)
+    settings = _settings(tmp_path, ssl_root_cert=None)
+
+    with pytest.raises(ConfigError) as excinfo:
+        PostgresStore.from_settings(settings)
+
+    assert "DATABASE_CA_CERT" in str(excinfo.value)
+    assert calls == [], "must fail before any connection is attempted"
+
+
+def test_unreadable_ca_path_is_a_config_error(monkeypatch, tmp_path):
+    calls = _capture_connect(monkeypatch)
+    settings = _settings(tmp_path, ssl_root_cert=str(tmp_path / "does-not-exist.crt"))
+
+    with pytest.raises(ConfigError) as excinfo:
+        PostgresStore.from_settings(settings)
+
+    assert "does-not-exist.crt" in str(excinfo.value)
+    assert calls == []
+
+
+def test_tls_can_be_disabled_explicitly_for_a_local_postgres(monkeypatch, tmp_path):
+    calls = _capture_connect(monkeypatch)
+    settings = _settings(tmp_path, ssl_root_cert=None, ssl_disabled=True)
+
+    PostgresStore.from_settings(settings)
+
+    _, kwargs = calls[0]
+    assert kwargs["sslmode"] == "disable"
+    assert "sslrootcert" not in kwargs

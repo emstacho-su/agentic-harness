@@ -1,7 +1,9 @@
 # `ingest` — RAG ingestion pipeline
 
 Turns an Obsidian vault and the migrated claude-mem history into rows in
-`rag.documents` and `rag.chunks` on the `bb2dash` Supabase Postgres.
+`rag.documents` and `rag.chunks` on the `harness-memory` Supabase Postgres
+(project ref `hqkytnyiiuxovnnyixye` — **not** `bb2dash`, which holds a different corpus
+embedded with a different model).
 
 Two loaders, one pipeline:
 
@@ -49,6 +51,8 @@ file**.
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | for writes | Direct Postgres URI. The only write path. |
+| `DATABASE_CA_CERT` | for writes | Absolute path to Supabase's root CA (`certs/prod-ca.crt`). Connections are `sslmode=verify-full` and never downgrade; `PGSSLROOTCERT` is accepted as an alias. |
+| `DATABASE_SSL` | no | `disable` turns TLS off for a local Postgres only. No `prefer`, no `no-verify`. |
 | `SUPABASE_URL` | no | Reported by `--check-env`; used by the MCP server. |
 | `SUPABASE_SERVICE_ROLE` | no | Same. `SUPABASE_SERVICE_KEY` is accepted as a legacy alias. |
 
@@ -57,8 +61,8 @@ uv run ingest --check-env       # presence report; never prints a value
 ```
 
 **There is no PostgREST path, by design.** The `rag` schema is not exposed on
-`bb2dash`'s REST surface (`PGRST106`) and will not be — that surface is
-anon-facing and widening it buys nothing. Direct Postgres is also far faster for
+the project's REST surface (`PGRST106`) and will not be — a REST surface is
+anon-facing by nature and exposing the store there buys nothing. Direct Postgres is also far faster for
 bulk chunk inserts than thousands of HTTP round-trips.
 
 `--dry-run` works with no credentials at all. Without `DATABASE_URL` it cannot
@@ -170,7 +174,8 @@ Deliberate skips, all counted and printed:
 * **4 session summaries** whose six prose columns are all blank. 141 exported,
   **137 ingested**. (Not in CONTEXT.md; found while probing the export.)
 
-Total: **1305 documents, 2278 chunks.**
+Total: **1305 documents, 2278 chunks** from the export; vault notes captured since add to that
+(1,306 / 2,289 as of 2026-09-09).
 
 The exporter's own 16-character `content_hash` is kept as
 `metadata.source_content_hash` for provenance. It is *not* what goes into
