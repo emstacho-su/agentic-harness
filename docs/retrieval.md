@@ -1,12 +1,12 @@
 # Hybrid retrieval with Reciprocal Rank Fusion
 
 All retrieval goes through one database function, `rag.search()`. It runs two
-independent searches over the same chunks and merges their results into a single
-ordering.
+independent searches over the same chunks, merges their results into a single
+ordering, caps how many chunks one document may contribute, and refuses to
+surface semantic neighbours that are not actually close.
 
-> **Status.** The function is applied and live. The store holds 0 rows, so no
-> retrieval quality has been measured yet. Numbers in the worked example below
-> are illustrative.
+> **Status.** Live on `harness-memory` over 1,306 documents and 2,289 chunks.
+> The similarity numbers below were measured on that corpus, not invented.
 
 ---
 
@@ -37,16 +37,22 @@ class.
 
 ```mermaid
 flowchart TD
-    Q["rag.search(query_embedding, query_text,<br/>match_count, filter_source, rrf_k)"]
+    Q["rag.search(query_embedding, query_text, match_count,<br/>filter_source, filter_collection, rrf_k,<br/>max_per_document, min_similarity)"]
 
-    Q --> A1["Vector arm<br/>runs only if query_embedding is not null"]
-    Q --> A2["Full-text arm<br/>runs only if query_text is not null"]
+    Q --> G{"both query args null?"}
+    G -->|"yes"| X["RAISE — a silent empty result<br/>would be indistinguishable from no match"]
+    G -->|"no"| A1
+    G -->|"no"| A2
 
-    A1 --> V1["ORDER BY embedding &lt;=&gt; query_embedding<br/>HNSW index, cosine distance"]
+    A1["Vector arm<br/>runs only if query_embedding is not null"]
+    A2["Full-text arm<br/>runs only if query_text is not null"]
+
+    A1 --> V0["WHERE 1 - (embedding &lt;=&gt; query) &gt;= min_similarity<br/>the relevance floor, vector arm ONLY"]
+    V0 --> V1["ORDER BY embedding &lt;=&gt; query_embedding<br/>HNSW index, cosine distance"]
     A2 --> T1["WHERE tsv @@ websearch_to_tsquery english<br/>ORDER BY ts_rank_cd DESC<br/>GIN index"]
 
-    V1 --> V2["LIMIT greatest(match_count * 5, 50)"]
-    T1 --> T2["LIMIT greatest(match_count * 5, 50)"]
+    V1 --> V2["LIMIT greatest(match_count * 10, 100)"]
+    T1 --> T2["LIMIT greatest(match_count * 10, 100)"]
 
     V2 --> VR["Ranked list A<br/>row_number = 1, 2, 3, ..."]
     T2 --> TR["Ranked list B<br/>row_number = 1, 2, 3, ..."]
@@ -54,30 +60,34 @@ flowchart TD
     VR --> F["Reciprocal Rank Fusion<br/>weight = 1.0 / (rrf_k + rank)<br/>sum weights per chunk id"]
     TR --> F
 
-    F --> O["ORDER BY fused_score DESC<br/>LIMIT match_count"]
-    O --> R["chunk_id, doc_id, doc_source, doc_external,<br/>doc_title, chunk_content, doc_metadata, fused_score"]
+    F --> C["Per-document cap<br/>row_number over (partition by document_id)<br/>keep &lt;= max_per_document"]
+    C --> O["ORDER BY fused_score DESC<br/>LIMIT match_count"]
+    O --> R["chunk_id, doc_id, doc_source, doc_collection, doc_external,<br/>doc_title, chunk_content, doc_metadata,<br/>fused_score, vector_similarity"]
 
-    FS["filter_source"] -.->|"applied inside both arms"| A1
+    FS["filter_source<br/>filter_collection"] -.->|"applied inside both arms"| A1
     FS -.->|"applied inside both arms"| A2
 ```
 
 Points worth noticing in that diagram:
 
-- **Both arms are optional.** Each has a `where query_… is not null` guard, so
-  passing only an embedding gives pure vector search and only text gives pure
-  full-text search. The same function serves all three modes; callers do not
-  branch.
-- **`filter_source` is pushed into each arm**, not applied after fusion.
-  Filtering afterwards would let irrelevant sources consume candidate slots and
-  return fewer than `match_count` rows.
-- **Each arm over-fetches.** `greatest(match_count * 5, 50)` retrieves five times
-  the requested rows, floor 50. Fusion needs a pool deep enough to find
-  agreement; if each arm returned only 10, a chunk ranked 11th by both — a strong
-  consensus signal — would never be seen.
+- **Both arms are optional, but not both absent.** Each has a `where query_… is
+  not null` guard, so passing only an embedding gives pure vector search and
+  only text gives pure full-text search. Passing neither **raises** rather than
+  returning zero rows, because an empty result from a silent no-op is
+  indistinguishable from "nothing matched". `match_count < 1` and
+  `max_per_document < 1` raise too.
+- **Filters are pushed into each arm**, not applied after fusion. Filtering
+  afterwards would let irrelevant sources consume candidate slots and return
+  fewer than `match_count` rows. `filter_collection` matches with `=` — exact,
+  case-sensitive.
+- **Each arm over-fetches.** `greatest(match_count * 10, 100)` retrieves ten
+  times the requested rows, floor 100. Fusion needs a pool deep enough to find
+  agreement, and the per-document cap needs room to bite: if each arm returned
+  only 10 rows from the same long document, the cap would leave nothing.
 - **`websearch_to_tsquery`** rather than `to_tsquery`. It accepts everyday query
-  syntax (quoted phrases, `or`, leading `-` to exclude) and, critically, never
-  raises a syntax error on arbitrary input. `to_tsquery` throws on a stray
-  operator, which would turn a user's punctuation into a failed search.
+  syntax (quoted phrases, `or`, leading `-` to exclude) and never raises a syntax
+  error on arbitrary input. `to_tsquery` throws on a stray operator, which would
+  turn a user's punctuation into a failed search.
 - **`ts_rank_cd`** — cover-density ranking, which accounts for how close the
   matched terms are to each other. For multi-word queries that is a better signal
   than raw term frequency.
@@ -103,7 +113,8 @@ select txt.cid, 1.0 / (rrf_k + txt.rnk) as w from txt
 ```
 
 Only the **ordinal position** of a result enters the formula. Cosine distance and
-`ts_rank_cd` values are used to sort each arm and are then thrown away.
+`ts_rank_cd` values are used to sort each arm and are then thrown away — which is
+exactly why a separate `vector_similarity` column exists (below).
 
 ---
 
@@ -175,17 +186,68 @@ which one method loved and the other never surfaced. That is the intended
 behaviour: agreement between two methods that fail differently is strong
 evidence, and a lone enthusiastic vote is weak evidence.
 
+The ceiling of `fused_score` is therefore `2 / (k + 1)` ≈ **0.0328** at the
+default `k`. A top hit scoring `0.03` is an excellent match, not a 3% one. The
+score orders results within one query and means nothing across queries; the MCP
+server labels it "ordering only" for exactly this reason.
+
 Lowering `k` sharpens the curve and lets top-ranked singletons win. Raising it
 flattens further and weights consensus even more heavily. It is exposed as a
 parameter, so it can be tuned per query without a migration.
 
 ---
 
+## The relevance floor
+
+RRF has a blind spot that only shows up in production: it fuses **ranks**, so it
+has no concept of "nothing is close enough". A query about banana bread, run
+against a corpus of engineering history, still has a nearest neighbour, and that
+neighbour is rank 1. Before the floor existed, off-topic queries returned their
+nearest irrelevant chunks at the RRF ceiling and the consuming model treated
+them as answers.
+
+`min_similarity` (default **0.70**) fixes this on the vector arm: a chunk must
+have cosine similarity `1 - (embedding <=> query)` of at least the floor to enter
+ranked list A at all. Measured on this corpus, best-hit cosine over five relevant
+and five nonsense queries:
+
+| Query class | Best-hit similarity |
+| --- | --- |
+| Relevant | 0.79 – 0.83 |
+| Nonsense | 0.48 – 0.66 |
+| Gap | +0.126 |
+
+0.70 sits in that gap, biased toward false positives, because missing a real
+memory is worse than showing a weak one. Pass `null` to remove the floor.
+
+Three rules follow from how it is wired:
+
+- **Zero rows means nothing relevant exists. That is a correct answer, not an
+  error.** The MCP server says so in plain words and keeps `isError` false.
+- **The floor gates the vector arm only.** A chunk can still appear with
+  similarity below 0.70 if it matched the full-text arm — a literal keyword hit
+  is independent evidence and is shown, labelled, never filtered out client-side.
+- **Judge relevance by `vector_similarity`, order by `fused_score`.**
+  `vector_similarity` is real cosine, computed for every returned row whichever
+  arm surfaced it, and is interpretable in absolute terms. `fused_score` is not.
+
+---
+
+## The per-document cap
+
+Long documents produce many chunks, and many of them match the same query.
+Without a cap, a single session note could fill all ten result slots and crowd
+out every other source. `max_per_document` (default **3**, `null` disables)
+keeps the top three fused chunks of each document and drops the rest before the
+final `limit`. Asking for four results from a collection with one matching
+document therefore returns three — the cap, working as intended.
+
+---
+
 ## What RRF gives up
 
-- **Magnitude is discarded.** A near-exact match and a barely-relevant one are
-  both "rank 1". Where the top hit is dramatically better than everything else,
-  RRF cannot express that.
+- **Magnitude is discarded** by the fusion itself. `vector_similarity` is the
+  compensating signal, carried alongside rather than folded in.
 - **No arm weighting by default.** Every list counts equally. If the vector arm
   were consistently better on this corpus, RRF would not know. A per-arm
   multiplier could be added, at the cost of reintroducing a tuned constant.
@@ -201,31 +263,44 @@ is to get the right material into that set, not to rank it perfectly.
 
 ## The contract
 
+As applied by `db/migrations/20260909190458_rag_search_relevance_floor.sql`:
+
 ```sql
 rag.search(
-  query_embedding extensions.vector(384) default null,
-  query_text      text                   default null,
-  match_count     int                    default 10,
-  filter_source   text                   default null,
-  rrf_k           int                    default 60
+  query_embedding   extensions.vector(384) default null,
+  query_text        text                   default null,
+  match_count       int                    default 10,
+  filter_source     text                   default null,
+  filter_collection text                   default null,   -- project or class
+  rrf_k             int                    default 60,
+  max_per_document  int                    default 3,      -- null disables
+  min_similarity    double precision       default 0.70    -- null disables
 )
 returns table (
-  chunk_id      bigint,
-  doc_id        bigint,
-  doc_source    text,
-  doc_external  text,
-  doc_title     text,
-  chunk_content text,
-  doc_metadata  jsonb,
-  fused_score   double precision
+  chunk_id          bigint,
+  doc_id            bigint,
+  doc_source        text,
+  doc_collection    text,
+  doc_external      text,
+  doc_title         text,
+  chunk_content     text,
+  doc_metadata      jsonb,
+  fused_score       double precision,   -- RRF sum, ordering only
+  vector_similarity double precision    -- real cosine; null when no embedding was passed
 )
 ```
 
-Pass either argument or both. `filter_source` narrows to one producer
-(`obsidian`, `claude-mem`, `hermes`).
+**Bind arguments by name.** This signature has changed three times — gaining
+`filter_collection`, `max_per_document`, then `min_similarity` and
+`vector_similarity`. When `filter_collection` was inserted at position five, the
+MCP server's positional call put an `int` where a `text` was expected, no
+overload matched, and Postgres reported **42883 "function does not exist"** —
+which reads like a missing migration and sends you debugging the wrong thing.
+Named binding (`query_embedding => $1, …`) survives insertions and reorderings.
 
-**Every client goes through this function.** Hand-rolled SQL in the MCP server or
-in a future Hermes client would give each agent its own private definition of
+**Every client goes through this function.** Hand-rolled SQL in the MCP server
+or in a future Hermes client would give each agent its own private definition of
 relevance, and the two would drift apart in ways that are extremely hard to
 notice — both would return results, both would look fine, and they would disagree
-about what the knowledge base says.
+about what the knowledge base says. A point lookup by `(source, external_id)`
+may read `rag.documents` directly; that is a key lookup, not ranking.

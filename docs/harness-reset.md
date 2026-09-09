@@ -32,7 +32,8 @@ flowchart LR
         plan["Plan mode<br/>+ /code-review"]
         wf["Workflow tool"]
         rag["rag store<br/>Postgres + pgvector"]
-        zero["0 hooks<br/>0 commands<br/>0 permission rules"]
+        hook["1 hook<br/>SessionEnd session capture"]
+        zero["0 commands<br/>0 permission rules"]
     end
 
     s -->|"kept the 12 that earned it"| s2
@@ -40,7 +41,7 @@ flowchart LR
     cmd -->|"native equivalent"| plan
     gsd -->|"native equivalent"| wf
     cm -->|"history migrated"| rag
-    hk --> zero
+    hk -->|"replaced by one that feeds the store"| hook
     perm --> zero
     ctx --> zero
 ```
@@ -50,7 +51,7 @@ flowchart LR
 | Always-on skills | 71 | 12 | −83% |
 | Custom agents | 58 | 0 | −100% |
 | Slash commands | 60 | 0 | −100% |
-| Hooks | 22 | 0 | −100% |
+| Hooks | 22 | 1 | −95% |
 | Permission rules | 220 | 0 | −100% |
 
 Nothing was thrown away unrecoverably. Phase 0 archived the entire configuration
@@ -104,6 +105,7 @@ natively, do not configure a substitute.**
 | Custom review commands | `/code-review` |
 | Multi-step orchestration commands | The Workflow tool |
 | Hook-driven context trimming | Subagents, which isolate their own context by construction |
+| claude-mem's capture hooks | One `SessionEnd` hook that writes the session to the vault as markdown — see [ingestion.md](./ingestion.md#session-capture-the-hook-that-feeds-the-vault) |
 | claude-mem recall | `rag.search()` through an MCP server — this repo |
 
 The 12 surviving skills are the ones that carry knowledge the tool genuinely
@@ -145,9 +147,9 @@ Honesty about the downside:
 - **Some deleted config was probably good.** With 220 permission rules, a few
   were surely well-judged. They went anyway, because auditing 220 rules costs
   more than re-adding the handful that turn out to matter.
-- **Recall is temporarily worse.** claude-mem is retired and the RAG store has
-  0 rows in it. Until ingestion lands, there is no cross-session recall at all.
-  This is the trough between the old system and the new one, and it is real.
+- **There was a trough.** Between retiring claude-mem and the first full ingest
+  there was no cross-session recall at all. It lasted one day; the store now
+  holds the full history plus every session captured since.
 
 The archive exists precisely because some of these calls may prove wrong. Any
 individual piece can be restored from `~/.claude-archive/2026-09-09/`.

@@ -4,19 +4,22 @@ Read in this order if you are new to the project.
 
 | Document | What it covers |
 | --- | --- |
-| [architecture.md](./architecture.md) | How the pieces fit together, the `rag` schema, and why Supabase / a shared schema / direct Postgres instead of PostgREST / an agent-neutral design / a single `rag.search()` |
-| [harness-reset.md](./harness-reset.md) | The Claude Code harness before and after the reset — 71→12 skills, 58→0 agents, 60→0 commands, 22→0 hooks, 220→0 permission rules — and what it cost |
-| [ingestion.md](./ingestion.md) | The ingestion pipeline: parse → chunk → embed → upsert, and how `content_hash` skips unchanged documents |
-| [embeddings.md](./embeddings.md) | Text → tokenizer → `bge-small-en-v1.5` → 384-dim vector → HNSW, why 384 dimensions and cosine distance, and what changing the model would cost |
-| [retrieval.md](./retrieval.md) | Hybrid vector + full-text search fused with Reciprocal Rank Fusion, why RRF beats weighted score mixing, and what `k = 60` does |
+| [architecture.md](./architecture.md) | How the pieces fit together, the `rag` schema, and why Supabase / its own project / direct Postgres instead of PostgREST / an agent-neutral design / a single `rag.search()` |
+| [harness-reset.md](./harness-reset.md) | The Claude Code harness before and after the reset — 71→12 skills, 58→0 agents, 60→0 commands, 22→1 hooks, 220→0 permission rules — and what it cost |
+| [ingestion.md](./ingestion.md) | The ingestion pipeline: parse → chunk → embed → upsert, how `content_hash` skips unchanged documents, the vault layout, and the SessionEnd capture hook that feeds it |
+| [embeddings.md](./embeddings.md) | Text → tokenizer → `bge-small-en-v1.5` → 384-dim vector → HNSW, why 384 dimensions and cosine distance, the Node/Python parity check, and what changing the model would cost |
+| [retrieval.md](./retrieval.md) | Hybrid vector + full-text search fused with Reciprocal Rank Fusion, the 0.70 relevance floor, the per-document cap, and the full `rag.search()` contract |
 
-Database specifics — project ref, migration mirror, access model — are in
-[../db/README.md](../db/README.md).
+Database specifics — project ref, connection gotchas, migration mirror, access
+model — are in [../db/README.md](../db/README.md). Component-level READMEs live
+in [../ingest/](../ingest/README.md) and [../mcp-server/](../mcp-server/README.md).
 
 Diagrams are mermaid in fenced blocks and render natively on GitHub.
 
 ## Status
 
-Phases 4, 5, 7 and 8 are **not built**. Documents describing them say so at the
-top. Nothing here should be read as a description of running code unless it is
-marked as applied and verified.
+Phases 0–6 are built, live and verified against `harness-memory` as of
+2026-09-09. Phase 7 (a second agent on the same store) and Phase 8 (the
+self-evolution loop) are designed only, and every document says so where it
+touches them. If anything here describes present-tense behaviour you cannot
+verify against the database or the filesystem, that is a documentation bug.

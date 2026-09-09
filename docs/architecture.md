@@ -1,12 +1,14 @@
 # Architecture
 
 This document describes how the pieces fit together and why each was chosen.
-It assumes no prior knowledge of the project.
+It assumes no prior knowledge of the project. Everything described here is
+live and verifiable against the database or the filesystem unless it says
+otherwise.
 
 - [System overview](#system-overview)
 - [The data store](#the-data-store)
 - [Why Supabase and not local Docker](#why-supabase-and-not-local-docker)
-- [Why a `rag` schema inside an existing project](#why-a-rag-schema-inside-an-existing-project)
+- [Why its own project](#why-its-own-project)
 - [Why direct Postgres and not PostgREST](#why-direct-postgres-and-not-postgrest)
 - [Why the schema is agent-neutral](#why-the-schema-is-agent-neutral)
 - [Why one `rag.search()` function](#why-one-ragsearch-function)
@@ -17,23 +19,29 @@ It assumes no prior knowledge of the project.
 
 ## System overview
 
-Two things are being built, and they meet in the middle.
+Two things were built, and they meet in the middle.
 
 1. **A harness** — the configuration that shapes how Claude Code behaves on this
    machine. It was torn down and rebuilt on native primitives. See
    [harness-reset.md](./harness-reset.md).
 2. **A retrieval store** — a Postgres database holding an Obsidian vault and six
    months of migrated agent-memory history, searchable by meaning as well as by
-   keyword.
+   keyword, tagged by the project or class each document belongs to.
 
 The store is written by an ingestion pipeline and read by agents through a single
-MCP server. Nothing else talks to it.
+MCP server. New material arrives through a `SessionEnd` hook that writes each
+finished Claude Code session into the vault as markdown, where the next ingest
+run picks it up.
 
 ```mermaid
 flowchart LR
+    subgraph capture["Capture"]
+        hook["SessionEnd hook<br/>session-capture.mjs"]
+    end
+
     subgraph sources["Sources"]
-        vault["Obsidian vault<br/>markdown notes"]
-        cmem["claude-mem export<br/>443 observations<br/>+ summaries, prompts"]
+        vault["Obsidian vault<br/>OneDrive, markdown<br/>folder = collection"]
+        cmem["claude-mem export<br/>443 observations<br/>137 summaries, 725 prompts"]
     end
 
     subgraph ingestion["Ingestion — Python, uv"]
@@ -46,22 +54,17 @@ flowchart LR
         hermes["Hermes Agent<br/>Phase 7, not built"]
     end
 
-    mcp["mcp-server/<br/>Node stdio MCP server"]
+    mcp["mcp-server/<br/>Node stdio MCP server<br/>embeds the query with the same model"]
 
-    subgraph project["Supabase project bb2dash — Postgres 17.6, pgvector 0.8.2"]
-        subgraph ragschema["schema rag — this repo"]
-            fn["rag.search()<br/>hybrid vector + FTS, RRF"]
-            docs[("rag.documents")]
-            chunks[("rag.chunks<br/>embedding vector 384<br/>tsv tsvector")]
-        end
-        subgraph pubschema["schema public — bb2dash app, do not touch"]
-            app[("application tables")]
+    subgraph project["Supabase project harness-memory — Postgres 17, pgvector 0.8.2"]
+        subgraph ragschema["schema rag"]
+            fn["rag.search()<br/>hybrid vector + FTS, RRF<br/>0.70 cosine floor"]
+            docs[("rag.documents<br/>1,306 rows, 18 collections")]
+            chunks[("rag.chunks<br/>2,289 rows<br/>embedding vector 384<br/>tsv tsvector")]
         end
     end
 
-    rest["PostgREST /rest/v1<br/>anon-facing<br/>exposes public + graphql_public only"]
-    browser["bb2dash web client"]
-
+    hook --> vault
     vault --> ing
     cmem --> ing
     ing <--> emb
@@ -74,29 +77,25 @@ flowchart LR
     fn --> chunks
     fn --> docs
 
-    browser --> rest
-    rest --> app
-    rest -.->|"blocked: HTTP 406 PGRST106<br/>rag is not exposed"| ragschema
-
     classDef unbuilt stroke-dasharray: 5 5
-    class hermes,vault unbuilt
+    class hermes unbuilt
 ```
 
-Dashed boxes are designed but not yet built. The Obsidian vault does not exist
-yet either — no vault is registered, `obsidian.json` is empty. The claude-mem
-export is real and on disk.
+Dashed boxes are designed but not yet built. Everything else is running.
 
-Two structural properties matter in that picture.
+Three structural properties matter in that picture.
 
 **Agents never issue SQL.** They call one MCP tool, which calls one database
 function. Ranking logic lives in exactly one place.
 
-**The harness and the host application reach the database by different routes.**
-`bb2dash` serves its own schema over an anon-facing PostgREST endpoint. The
-harness bypasses that entirely and connects to Postgres directly with the service
-role. The dotted edge into `rag` is a path that does *not* work: PostgREST is
-configured to expose only `public` and `graphql_public`, so a REST call into the
-`rag` schema is refused. The next section explains why that is deliberate.
+**Markdown first, embeddings second.** A session becomes a vault note before it
+becomes vectors. The vault stays human-readable and git-friendly, syncs through
+OneDrive, and survives any change of tooling underneath it. The database is a
+derived index that can be rebuilt from the vault at any time.
+
+**The folder is the collection.** `vault/projects/agentic-harness/…` lands as
+`collection = 'agentic-harness'`, verbatim. That column is what makes "history
+by project or class" a filter rather than a guess.
 
 ---
 
@@ -112,6 +111,7 @@ erDiagram
     documents {
         bigint id PK
         text source "obsidian, claude-mem, hermes"
+        text collection "project or class, mirrors the vault folder"
         text agent "who ingested it"
         text external_id "vault path or observation id"
         text title
@@ -141,6 +141,7 @@ Constraints and indexes that carry real weight:
 | `unique (source, external_id)` on documents | Makes re-ingestion idempotent. The same vault note always lands on the same row. |
 | `unique (document_id, chunk_index)` on chunks | Chunk N of document D is one row, so re-chunking overwrites rather than duplicates. |
 | `content_hash` + btree index | Lets ingestion skip a document whose bytes have not changed. See [ingestion.md](./ingestion.md). |
+| btree on `collection` | The project/class filter is an index probe, not a scan. |
 | HNSW on `embedding`, `vector_cosine_ops` | Approximate nearest-neighbour search. See [embeddings.md](./embeddings.md). |
 | GIN on `tsv` | Full-text search. `tsv` is a stored generated column, so it can never fall out of sync with `content`. |
 | GIN on `metadata` (`jsonb_path_ops`) | Filtering by arbitrary source-specific fields without adding columns. |
@@ -149,6 +150,11 @@ Constraints and indexes that carry real weight:
 `tsv` being **generated** rather than trigger-maintained is deliberate: there is
 no code path that can write `content` and forget the tsvector, because there is
 no code path that writes `tsv` at all.
+
+`collection` values are matched with `=`, so case and spacing are load-bearing.
+The values migrated from claude-mem are lowercase and some contain spaces
+(`wa2 final`, `team project`); vault-derived ones follow folder names. Keep new
+folders lowercase-hyphenated. The full live list is in `CONTEXT.md`.
 
 ---
 
@@ -159,7 +165,7 @@ The obvious alternative was a local Postgres or a local Chroma/Qdrant container.
 | | Supabase | Local Docker |
 | --- | --- | --- |
 | Availability | Always up | Up when the daemon is up |
-| Setup cost | Zero — already provisioned, pgvector already enabled | Compose file, volumes, port config |
+| Setup cost | Zero — pgvector already enabled | Compose file, volumes, port config |
 | Failure mode | Network | Silent — queries fail when the daemon is stopped |
 | Reachable from a future non-local agent | Yes | No, without tunnelling |
 | Cost | Free tier | Free, but disk and RAM on the workstation |
@@ -177,27 +183,46 @@ replacement is a managed database with no local moving parts.
 
 ---
 
-## Why a `rag` schema inside an existing project
+## Why its own project
 
-The Supabase free tier permits two active projects, and both slots were already
-in use. The options were: pay for a third project, pause a working one, or share.
+The store now lives in a dedicated Supabase project, `harness-memory`
+(`hqkytnyiiuxovnnyixye`). It did not start there.
 
-Sharing was chosen, with the isolation done at the schema level. A Postgres
-schema is a genuine namespace boundary — separate object names, separate grants,
-separate migration history. The `rag` schema cannot collide with the host
-project's `public` tables.
+On 2026-09-09 the Supabase free tier's two active-project slots were both taken,
+so the first version of the `rag` schema was created inside `bb2dash`, a live
+class-materials application, with isolation done at the schema level. Later the
+same day `quant-edge-tracker-v2` — which held 0 bets and 0 bankroll rows — was
+paused to free a slot, `harness-memory` was created, the migrations were
+re-applied there, and the empty `rag` schema was dropped from `bb2dash`.
 
-What is genuinely shared, and therefore the real cost:
+What project-level isolation buys over schema-level isolation:
 
-- **Connection pool.** Heavy ingestion competes with the host application.
-- **Storage quota.** 443 observations plus a vault is small; it will not be the
-  constraint any time soon.
-- **Blast radius.** A destructive mistake typed against the wrong schema hits a
-  live application. Hence the standing rule: this project owns `rag`, and
-  **never touches `public`**.
+- **No shared connection pool.** Heavy ingestion no longer competes with a live
+  application for connections. The first full ingest died at document 276 when
+  the pooler reaped a long-held connection; that is an easier problem to reason
+  about when the pool is yours alone.
+- **No shared storage quota.**
+- **No blast radius.** A destructive statement typed against the wrong schema can
+  no longer reach an application's tables, because they are not in this database.
 
-Escape hatch, if it ever outgrows the arrangement: `pg_dump --schema=rag` into a
-dedicated project. Nothing in the design assumes co-tenancy.
+### Two stores, never crossed
+
+`bb2dash` still has its own retrieval store: class materials embedded with
+`gte-small` by the Supabase Edge Runtime, in schema `public`. It is **also
+384-dimensional**. A `bge` query vector run against `gte` rows raises no error
+and returns confidently-ranked nonsense, because the two models occupy different
+vector spaces.
+
+|  | **harness-memory** | **bb2dash** |
+| --- | --- | --- |
+| Project ref | `hqkytnyiiuxovnnyixye` | `goultdzqcavefcgnifdy` |
+| Contents | Session histories by project/class | Class materials + the app |
+| Schema | `rag` | `public` |
+| Model | `bge-small-en-v1.5`, local fastembed | `gte-small`, server-side |
+
+This repo owns `harness-memory` only. The MCP server refuses a `DATABASE_URL`
+containing the bb2dash project ref, and bb2dash's credentials live in its own
+repo, not here.
 
 ---
 
@@ -205,7 +230,7 @@ dedicated project. Nothing in the design assumes co-tenancy.
 
 Supabase gives every project a REST API, and the ordinary way to call a database
 function through it is a `supabase-js` RPC. That path is **closed for `rag`, by
-design**. Verified by probe:
+design**. Verified by probe on the original host project, and equally true here:
 
 ```
 POST /rest/v1/rpc/search   (Content-Profile: rag)
@@ -218,37 +243,28 @@ direct Postgres connection, using the service role.
 
 ```mermaid
 flowchart LR
-    subgraph harness["Harness — this repo"]
+    subgraph harness["This repo"]
         ing["ingest/"]
         mcp["mcp-server/"]
     end
 
-    subgraph app["bb2dash application"]
-        web["Browser client"]
-    end
-
     pg[("Postgres<br/>schema rag")]
-    pub[("Postgres<br/>schema public")]
-    rest["PostgREST<br/>anon key, RLS-enforced<br/>exposed schemas:<br/>public, graphql_public"]
+    rest["PostgREST /rest/v1<br/>exposed schemas:<br/>public, graphql_public"]
 
-    ing ==>|"DATABASE_URL, service role"| pg
+    ing ==>|"DATABASE_URL, service role<br/>session pooler :5432, pinned CA"| pg
     mcp ==>|"DATABASE_URL, service role"| pg
-    web -->|"anon key over HTTPS"| rest
-    rest --> pub
-    rest -.->|"blocked: PGRST106"| pg
+    rest -.->|"rag not exposed: PGRST106"| pg
 ```
 
 Two reasons, and they pull in the same direction.
 
-**Attack surface.** `bb2dash` is a live application with a public, anon-facing
-REST endpoint. Exposing `rag` there would put a personal knowledge vault and six
-months of engineering history one misconfigured policy away from the open
-internet. RLS would still be the barrier, but the barrier would now be the *only*
-thing standing between the corpus and an anonymous HTTP request. Leaving the
-schema unexposed means there is no request that can reach it at all — a stronger
-guarantee than a correct policy, because it does not depend on the policy staying
-correct. Nothing in the harness needs browser access, so the exposure buys
-literally nothing.
+**Attack surface.** Exposing `rag` over REST would put a personal knowledge vault
+and six months of engineering history one policy away from an anonymous HTTP
+request. RLS would still be the barrier, but the barrier would now be the *only*
+thing standing between the corpus and the internet. Leaving the schema unexposed
+means there is no request that can reach it at all — a stronger guarantee than a
+correct policy, because it does not depend on the policy staying correct. Nothing
+in the harness needs browser access, so the exposure buys literally nothing.
 
 **Throughput.** Ingestion writes chunks in bulk. Over PostgREST that is thousands
 of HTTP round-trips, each with TLS, JSON serialisation and per-request overhead,
@@ -256,9 +272,10 @@ and no way to stream. Over a direct connection it is batched multi-row inserts o
 one session — orders of magnitude faster, and the difference compounds every time
 the corpus is re-embedded.
 
-The cost of this choice is that the harness needs a real Postgres credential and
-a reachable database port, rather than an HTTP endpoint and an API key. For two
-server-side processes on a workstation, that is not a meaningful constraint.
+The cost is that the harness needs a real Postgres credential and a reachable
+database port. The connection details that cost real time to discover — session
+pooler not direct host, `postgres.<ref>` username, port 5432 not 6543, Supabase's
+own root CA — are recorded in [../db/README.md](../db/README.md).
 
 The practical consequence for anyone writing code here: **do not build a
 `supabase-js` RPC path.** It cannot reach `rag.search()`, and the failure is a
@@ -292,14 +309,19 @@ Retrieval is a database function, not client-side SQL, and every client is
 required to go through it.
 
 Hybrid ranking has tunable parts: how many candidates each arm retrieves, the RRF
-constant, the text-search configuration. If Claude Code's MCP server and Hermes
-each hand-rolled their own query, those parameters would diverge, and the two
-agents would silently disagree about what "the most relevant note" is. Debugging
-that is miserable, because both look correct in isolation.
+constant, the per-document cap, the similarity floor, the text-search
+configuration. If Claude Code's MCP server and Hermes each hand-rolled their own
+query, those parameters would diverge, and the two agents would silently disagree
+about what "the most relevant note" is. Debugging that is miserable, because both
+look correct in isolation.
 
 One function means one ranking definition, tuned in one migration, applied to
 everyone at once. It also keeps the ranking work next to the data — no candidate
 rows cross the network only to be discarded by a client-side reranker.
+
+The function's signature has already changed three times. Clients therefore bind
+its arguments **by name**, never positionally; the reasons are in
+[retrieval.md](./retrieval.md#the-contract).
 
 ---
 
@@ -308,7 +330,7 @@ rows cross the network only to be discarded by a client-side reranker.
 Three layers, each of which would be sufficient on its own for a different threat.
 
 - **Not exposed to PostgREST.** No HTTP request reaches `rag`, authenticated or
-  otherwise. See the section above.
+  otherwise.
 - **RLS enabled, zero policies.** Postgres denies all access under RLS unless a
   policy permits it. The service role bypasses RLS. Net effect: only the service
   role reads or writes `rag`.
@@ -318,30 +340,30 @@ Three layers, each of which would be sufficient on its own for a different threa
 
 On secrets:
 
-- **Nothing is hardcoded.** Connection details come from the environment —
-  `DATABASE_URL` for the direct psycopg / `pg` connection, `SUPABASE_SERVICE_ROLE`
-  for the service secret, `SUPABASE_URL` for the project endpoint (present for
-  completeness; it serves `public`, not `rag`).
-- **`.gitignore` excludes `.env*`** with an explicit exception for
-  `.env.example`. The repo root `.env` is confirmed ignored.
+- **Nothing is hardcoded.** The one credential, `DATABASE_URL`, comes from the
+  environment: the repo `.env` for ingestion, the MCP server's env block in
+  `~/.claude.json` for retrieval. Neither is committed.
+- **`.gitignore` excludes `.env*`** with an explicit exception for `.env.example`.
+- **TLS is verified**, against Supabase's pinned root CA (`certs/prod-ca.crt`,
+  public). There is deliberately no `rejectUnauthorized: false` option anywhere.
 - **Schema changes need no local secret** — they go through the Supabase MCP
   `apply_migration` tool, which authenticates separately.
-
-At the time of writing `DATABASE_URL` has not been provided, so nothing has
-connected to the store yet with application credentials.
+- **The session-capture hook redacts** before anything reaches the vault: key-like
+  environment assignments, connection-string passwords, JWTs, and vendor key
+  formats are replaced with `[REDACTED]`. Raw tool output is never copied.
 
 ---
 
 ## Component status
 
-| Component | Directory | State |
+| Component | Where | State |
 | --- | --- | --- |
-| Harness rebuild | `~/.claude/` | Done |
+| Harness rebuild | `~/.claude/` | Done — 71→12 skills, 58→0 agents, 60→0 commands, 1 hook |
 | claude-mem export | `~/.claude-archive/2026-09-09/` | Done — 4 JSON files, snapshot verified |
-| `rag` schema + `rag.search()` | `db/migrations/` | Applied and verified. 0 rows so far |
-| Ingestion pipeline | `ingest/` | In progress |
-| Retrieval MCP server | `mcp-server/` | In progress |
-| Obsidian vault | — | Not created |
+| `rag` schema + `rag.search()` | `db/migrations/` | Applied to `harness-memory`, 3 migrations, verified |
+| Ingestion pipeline | `ingest/` | Live — 1,305 claude-mem documents + vault notes; 214 tests |
+| Retrieval MCP server | `mcp-server/` | Live — registered with Claude Code as `rag`; 117 tests |
+| Obsidian vault | `OneDrive - Syracuse University/vault/` | Live — `projects/`, `classes/`, `daily/` |
+| Session capture hook | `~/.claude/hooks/session-capture.mjs` | Live — observed firing unprompted on 2026-09-09, note ingested |
 | Hermes Agent | — | Deferred to Phase 7 |
 | Self-evolution loop | — | Deferred to Phase 8 |
-| Docs | `docs/`, `README.md` | This |

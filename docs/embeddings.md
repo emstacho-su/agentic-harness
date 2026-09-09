@@ -5,8 +5,9 @@ such that texts about the same thing land near each other. "Near" then has a
 precise arithmetic meaning, and finding related notes becomes a geometry problem
 instead of a string-matching problem.
 
-This document covers how that happens here, the exact numbers involved, and what
-it would cost to change them.
+This document covers how that happens here, the exact numbers involved, how the
+two runtimes that embed are kept in agreement, and what it would cost to change
+any of it.
 
 ---
 
@@ -16,7 +17,7 @@ it would cost to change them.
 flowchart LR
     A["Chunk text<br/>plain UTF-8 string"] --> B["Tokenizer<br/>WordPiece<br/>max 512 tokens"]
     B --> C["BAAI/bge-small-en-v1.5<br/>12-layer BERT encoder<br/>ONNX on CPU via fastembed"]
-    C --> D["Pool + L2-normalise<br/>384 float32 values<br/>unit length"]
+    C --> D["CLS pool + L2-normalise<br/>384 float32 values<br/>unit length"]
     D --> E[("rag.chunks.embedding<br/>extensions.vector 384")]
     E --> F["HNSW index<br/>vector_cosine_ops"]
 ```
@@ -25,8 +26,8 @@ The query side runs the identical path, and that symmetry is not optional:
 
 ```mermaid
 flowchart LR
-    Q["Query text"] --> QT["Same tokenizer"]
-    QT --> QM["Same model<br/>bge-small-en-v1.5"]
+    Q["Query text<br/>no instruction prefix"] --> QT["Same tokenizer"]
+    QT --> QM["Same model<br/>bge-small-en-v1.5<br/>same ONNX weights"]
     QM --> QV["Query vector<br/>384 dims"]
     QV --> OP["Cosine distance<br/>embedding &lt;=&gt; query_vector"]
     OP --> HN["HNSW traversal<br/>approximate nearest neighbours"]
@@ -37,7 +38,8 @@ A vector is only comparable to vectors from the same model. Embed documents with
 one model and queries with another and the distances are arithmetically valid but
 semantically meaningless — the results look plausible and are noise. The model
 identity is effectively part of the schema, which is why it is recorded in a
-column comment on `rag.chunks.embedding`.
+column comment on `rag.chunks.embedding`, hardcoded as the only accepted model
+in the MCP server, and asserted on every vector before it reaches SQL.
 
 ---
 
@@ -46,15 +48,17 @@ column comment on `rag.chunks.embedding`.
 | Property | Value |
 | --- | --- |
 | Model | `BAAI/bge-small-en-v1.5` |
-| Runtime | `fastembed`, ONNX, CPU, local |
+| Runtime | `fastembed`, ONNX, CPU, local — Python for ingestion, Node for retrieval |
 | Dimensions | **384** |
 | Column type | `extensions.vector(384)` |
 | Max input | 512 tokens per chunk |
 | Distance metric | **cosine**, pgvector operator `<=>` |
 | Index | HNSW, `vector_cosine_ops` |
 | Storage per vector | 384 × 4 bytes = **1,536 bytes** |
+| Query instruction prefix | **none**, on either side |
 | API key required | none |
 | Cost per embedding | zero |
+| First query on a cold server | ~3.7 s (model load); ~170 ms after |
 
 Cosine distance measures the angle between two vectors and ignores their
 magnitude. That is the right choice for text: a long note and a short note about
@@ -71,6 +75,51 @@ scan over every chunk — correct results, quietly terrible performance.
 
 ---
 
+## Two runtimes, one model: parity is verified, not assumed
+
+Ingestion embeds in Python (`fastembed`), retrieval embeds in Node (`fastembed`
+npm, Qdrant's JS port). Any asymmetry between them degrades retrieval
+**silently** — worse rankings, never an error — so it was measured rather than
+trusted.
+
+The two packages reach the same weights by different routes: Node pulls
+`fast-bge-small-en-v1.5.tar.gz` from Qdrant's GCS bucket, Python pulls
+`qdrant/bge-small-en-v1.5-onnx-q` from Hugging Face. Both resolve to
+`model_optimized.onnx` and apply the same CLS-pool + L2-normalise
+post-processing. Embedding three identical sentences in each runtime:
+
+```
+cosine(python, node) = 0.99999975 .. 0.99999985    maxAbsDiff ~1e-4
+both L2-normalised to 1.000000
+control (two different sentences)      cosine = 0.532543
+```
+
+The ~1e-4 deltas are float32 rounding. The control line is the point: unrelated
+sentences score 0.53, so the test discriminates rather than trivially returning
+1.0. **Re-run `npm run verify:embedder` and the Python equivalent if either
+package is upgraded** — a silent weights change is exactly the failure this
+catches.
+
+Two conventions fall out of this:
+
+- **No query instruction prefix.** BGE's model card offers `"Represent this
+  sentence for searching relevant passages: "` for queries, and `fastembed`
+  does not apply it automatically. v1.5 was specifically trained to need it
+  less, so the project convention is no prefix anywhere. The MCP server exposes
+  `RAG_QUERY_PREFIX` if this is ever revisited, but setting it on one side only
+  is a silent-quality-loss bug: change both or neither.
+- **Cache outside OneDrive.** fastembed's default cache is the system temp
+  directory, which Windows cleans. Python pins `~/.cache/fastembed`, Node
+  `mcp-server/.fastembed-cache` — both outside OneDrive, because binary files
+  plus OneDrive sync caused file-lock failures in this project before.
+
+The alternative on the Node side, Transformers.js, was rejected because it runs
+the unquantised fp32 weights while ingestion used Qdrant's optimised ONNX — same
+model, slightly different numbers, needless drift. It remains the documented
+fallback if the npm `fastembed` package stops installing.
+
+---
+
 ## Why local embeddings instead of an API model
 
 The alternative was an embedding endpoint from a hosted provider.
@@ -81,7 +130,7 @@ The alternative was an embedding endpoint from a hosted provider.
 | Key management | None | Another secret to store and rotate |
 | Privacy | Notes and agent history never leave the machine | Every note is sent to a third party |
 | Works offline | Yes | No |
-| Backfill of 443 documents | Free, minutes of CPU | A bill and a rate limit |
+| Backfill of 1,305 documents | Free, minutes of CPU | A bill and a rate limit |
 | Quality ceiling | Lower | Higher |
 | Latency per query | Tens of ms on CPU | Network round trip |
 
@@ -119,11 +168,10 @@ The relevant comparison at model-selection time:
 What 384 buys, concretely:
 
 - **Storage.** At 1,536 bytes per vector, 100,000 chunks is about 154 MB of
-  vector data. The same corpus at 1536 dims is roughly 614 MB. On a shared
-  free-tier project that difference is the whole argument.
+  vector data. The same corpus at 1536 dims is roughly 614 MB. On a free-tier
+  project that difference is the whole argument.
 - **Index memory.** HNSW keeps its graph in memory during build and wants it in
-  cache during search. Memory scales with dimensionality, and this database is
-  co-tenant with a live application whose working set also needs the cache.
+  cache during search. Memory scales with dimensionality.
 - **CPU speed.** Distance computations are linear in dimensionality, and so is
   encoding time. A small model on CPU keeps query latency in the tens of
   milliseconds without a GPU.
@@ -170,7 +218,9 @@ Step by step:
 5. **Lockstep client rollout.** This is the dangerous step. During any window
    where one client encodes queries with the old model and the database holds
    vectors from the new one, queries return results. They are just wrong, in a
-   way that looks entirely normal.
+   way that looks entirely normal. The MCP server's hardcoded model id and
+   dimension assertion exist to turn that window into a loud startup failure
+   instead.
 
 For a corpus this size that is an afternoon, not a rewrite — but it is
 deliberately front-loaded work, which is why the model was chosen once, up front,

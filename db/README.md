@@ -1,61 +1,75 @@
 # Database
 
-The RAG store lives in a Supabase Postgres project, in a schema called `rag`.
+The RAG store lives in its own Supabase Postgres project, in a schema called `rag`.
 
 | Property | Value |
 | --- | --- |
-| Project ref | `goultdzqcavefcgnifdy` (`bb2dash`) |
+| Project | `harness-memory` |
+| Project ref | `hqkytnyiiuxovnnyixye` |
 | Region | `us-east-1` |
-| Postgres | 17.6 |
+| Postgres | 17 |
 | pgvector | 0.8.2 |
 | Schema owned by this repo | `rag` |
-| Schemas this repo must never touch | `public` (the bb2dash application) |
+| Live contents | 1,306 documents, 2,289 chunks, 18 collections |
 
-## Why this project and not a dedicated one
+## Two stores exist. Never cross them.
 
-The Supabase free tier allows two active projects, and both slots were already
-taken. Rather than pay for a third project or pause a working one, the RAG store
-was given its own schema inside an existing project. Postgres schemas are a real
-isolation boundary: separate namespace, separate grants, separate migrations.
-The cost is a shared connection pool and a shared storage quota with `bb2dash`.
+|  | **harness-memory** (this repo) | **bb2dash** |
+| --- | --- | --- |
+| Project ref | `hqkytnyiiuxovnnyixye` | `goultdzqcavefcgnifdy` |
+| Purpose | Session histories, tagged by project or class | Class materials + the bb2dash app |
+| Schema | `rag` | `public` |
+| Embedding model | `bge-small-en-v1.5`, local fastembed | `gte-small`, Supabase Edge Runtime |
+| Dimensions | 384 | 384 |
 
-If the store ever outgrows that, moving it is a `pg_dump --schema=rag` and a
-restore — not a rewrite.
+Both are 384-dimensional, so a query vector from one model runs against the other's rows
+**without any error** and returns confidently-ranked nonsense. The MCP server refuses a
+`DATABASE_URL` containing the bb2dash ref; nothing else stands between you and that mistake, so
+keep the two projects' credentials in separate `.env` files (bb2dash's live in its own repo).
+
+## Why its own project
+
+The store started life on 2026-09-09 as a `rag` schema inside `bb2dash`, because the Supabase
+free tier allows two active projects and both slots were taken. That same day
+`quant-edge-tracker-v2` — which held 0 bets and 0 bankroll rows — was paused to free a slot, the
+harness got `harness-memory`, and the empty `rag` schema was dropped from `bb2dash`.
+
+What that bought: no shared connection pool with a live application, no shared storage quota,
+and no way for a destructive statement typed against the wrong schema to reach the bb2dash
+tables. Schema-level isolation was a reasonable stopgap; project-level isolation is simply better
+and cost nothing once the slot existed.
 
 ## Migrations
 
-`migrations/` mirrors what has actually been applied to the remote project. It
-is a mirror, not the mechanism: migrations are applied through the Supabase MCP
-`apply_migration` tool, which authenticates without needing a local secret. The
-files here exist so the schema is reviewable in the repo and reproducible if the
-project is ever rebuilt.
+`migrations/` mirrors what has actually been applied to `harness-memory`. It is a mirror, not the
+mechanism: migrations are applied through the Supabase MCP `apply_migration` tool, which
+authenticates without needing a local secret. The files here exist so the schema is reviewable
+in the repo and reproducible if the project is ever rebuilt.
 
-File names use the remote `version` timestamp so the directory sorts in apply
-order and each file maps one-to-one to a row in
-`supabase_migrations.schema_migrations`.
+File names use the remote `version` timestamp so the directory sorts in apply order and each
+file maps one-to-one to a row in `supabase_migrations.schema_migrations`. The bodies are copied
+verbatim from that table.
 
-| File | Remote version | What it does |
-| --- | --- | --- |
-| `20260909170410_create_rag_schema.sql` | `create_rag_schema` | Creates schema `rag`, tables `documents` and `chunks`, all indexes including the HNSW vector index, the `updated_at` trigger, and enables RLS |
-| `20260909170451_create_rag_hybrid_search.sql` | `create_rag_hybrid_search` | Creates `rag.search()`, the hybrid vector + full-text retrieval function fused with Reciprocal Rank Fusion |
-
-Migrations `001_schema` through `010_search_layer` also exist on this project.
-Those belong to the `bb2dash` application and are deliberately **not** mirrored
-here — they are another project's schema.
+| File | What it does |
+| --- | --- |
+| `20260909175037_create_rag_schema.sql` | Schema `rag`, tables `documents` (with `collection`) and `chunks`, HNSW + GIN + btree indexes, the `updated_at` trigger, RLS enabled |
+| `20260909175058_create_rag_hybrid_search.sql` | `rag.search()`: hybrid vector + full-text retrieval fused with RRF, `filter_source`, `filter_collection`, `max_per_document`; raises when both query arguments are null |
+| `20260909190458_rag_search_relevance_floor.sql` | Adds `min_similarity` (default 0.70) gating the vector arm, and the `vector_similarity` output column. Measured on this corpus: relevant 0.79–0.83, nonsense 0.48–0.66 |
 
 ## Access model
 
-RLS is enabled on both tables with **no policies defined**. In Postgres that
-means nothing gets through except the service role, which bypasses RLS.
+RLS is enabled on both tables with **no policies defined**. In Postgres that means nothing gets
+through except the service role, which bypasses RLS.
 
-This is intentional. There is no browser client and no per-user access to model,
-so the simplest correct answer is "deny everyone, let the two trusted server-side
-processes in". If a multi-user client is ever added, policies get written then —
-the tables are already RLS-enabled, so nothing leaks in the meantime.
+This is intentional. There is no browser client and no per-user access to model, so the simplest
+correct answer is "deny everyone, let the two trusted server-side processes in". If a multi-user
+client is ever added, policies get written then — the tables are already RLS-enabled, so nothing
+leaks in the meantime.
 
 ### Connect over direct Postgres, not PostgREST
 
-The `rag` schema is **not exposed to the REST API**, and will not be:
+The `rag` schema is **not exposed to the REST API**, and will not be. Probed on the original
+host project and equally true here:
 
 ```
 POST /rest/v1/rpc/search   (Content-Profile: rag)
@@ -63,18 +77,28 @@ POST /rest/v1/rpc/search   (Content-Profile: rag)
      "Only the following schemas are exposed: public, graphql_public"
 ```
 
-Both the ingestion pipeline and the MCP server connect with `DATABASE_URL`. Two
-reasons: `bb2dash` has a public anon-facing REST surface and there is no benefit
-to widening it, and bulk chunk insertion over HTTP would be thousands of
+Both the ingestion pipeline and the MCP server connect with `DATABASE_URL`. Exposing the schema
+would buy nothing (no browser needs it) and bulk chunk insertion over HTTP would be thousands of
 round-trips where a direct connection batches. Full reasoning in
 [../docs/architecture.md](../docs/architecture.md#why-direct-postgres-and-not-postgrest).
 
-Environment variables — use these exact names:
+### Connection specifics — each of these cost an hour
+
+- Use the **session pooler**: `aws-0-us-east-1.pooler.supabase.com:5432`. The direct host
+  `db.<ref>.supabase.co` is AAAA-only, and a machine without routable IPv6 gets a misleading
+  `ENOTFOUND`.
+- The username is `postgres.<project-ref>`, not plain `postgres`. The pooler strips the suffix
+  after routing, so an auth failure reports user `postgres` regardless.
+- Port 6543 is the *transaction* pooler and does not support prepared statements. Use 5432.
+- TLS needs Supabase's own root CA: `certs/prod-ca.crt` in this repo (public, not a secret, valid
+  to 2031). Point `DATABASE_CA_CERT` / `PGSSLROOTCERT` at it with a `C:/...` path.
+- A connection held open across a long embedding run gets reaped by the pooler. The ingestion
+  store reconnects and retries, with TCP keepalives.
+
+The only variable that matters:
 
 ```
-DATABASE_URL           # direct Postgres connection
-SUPABASE_SERVICE_ROLE  # service role secret (not SUPABASE_SERVICE_KEY)
-SUPABASE_URL           # project endpoint; serves `public`, not `rag`
+DATABASE_URL   # postgresql://postgres.hqkytnyiiuxovnnyixye:<password>@aws-0-us-east-1.pooler.supabase.com:5432/postgres
 ```
 
 ## Verifying the mirror
@@ -85,5 +109,5 @@ from supabase_migrations.schema_migrations
 order by version;
 ```
 
-Anything in that list starting with `create_rag_` should have a matching file in
-`migrations/`.
+Every row should have a matching `<version>_<name>.sql` in `migrations/`, and the three files
+above are the complete list as of 2026-09-09.

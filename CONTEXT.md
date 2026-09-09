@@ -4,7 +4,7 @@
 decisions already made. Do not re-litigate them; if something here looks wrong, report it rather than
 silently diverging.
 
-Last updated: 2026-09-09
+Last updated: 2026-09-09 (evening — post-relocation, post-publish)
 
 ---
 
@@ -44,7 +44,7 @@ or duplicating capability that is now native.
 | Location | schema `rag` | schema `public` |
 | Model | **`bge-small-en-v1.5`** (local fastembed) | **`gte-small`** (Supabase server-side) |
 | Dims | 384 | 384 |
-| State | **live — 1,305 docs, 2,278 chunks, 17 collections** | **fully embedded** — 534/534 texts, 1,195 chunks |
+| State | **live — 1,306 docs, 2,289 chunks, 18 collections** | **fully embedded** — 534/534 texts, 1,195 chunks; retrieval via Edge Function `search` + MCP server `bb2dash` (see bb2dash repo) |
 
 **Both are 384-dim, so mixing them raises no error — it silently returns confidently-ranked garbage.**
 They are different vector spaces. A `bge` query vector must never be run against `gte` vectors or the
@@ -244,11 +244,10 @@ Orphan sweep: after a **full** ingest of one source, delete documents for that s
 `external_id` was not seen in the walk. Put this behind an explicit `--prune` flag, **off by default** —
 otherwise a partial or interrupted run silently mass-deletes.
 
-### 2. Obsidian vault (not yet created)
+### 2. Obsidian vault (live)
 
-Target: `C:/Users/estac/OneDrive - Syracuse University/vault/`. No vault is registered yet —
-`obsidian.json` is empty. Markdown syncs through OneDrive safely; **binary indexes must never go
-there** (that combination previously caused file-lock failures).
+`C:/Users/estac/OneDrive - Syracuse University/vault/`. Markdown syncs through OneDrive safely;
+**binary indexes must never go there** (that combination previously caused file-lock failures).
 
 Map to `source='obsidian'`, `external_id=<vault-relative path>`, `collection=<folder name>`.
 
@@ -285,10 +284,15 @@ Collection is derived from the session's working directory. Unknown directories 
 `misc` collection rather than being dropped — silently losing sessions is worse than filing them
 imperfectly.
 
+**Verified firing for real on 2026-09-09** (not just under a hand-fed payload): log line
+`wrote projects/agentic-harness/sessions/2026-09-09-5ee983a8.md … ms=121`, note present in the
+vault, and ingested on the next run as the store's first `source='obsidian'` document (the 18th
+collection, `agentic-harness`). Hook lives at `~/.claude/hooks/session-capture.mjs`.
+
 ## Environment
 
 - Windows 11. Both PowerShell and Git Bash available.
-- `uv` 0.9.26 installed, but **no Python yet** — `uv python install` is a prerequisite.
+- `uv` 0.9.26 with a uv-managed Python 3.12 (`ingest/.python-version`).
 - Node 24.13.0 at `C:/Program Files/nodejs/node.exe`.
 - `sqlite3` and `gh` on PATH. `gh` authed as `emstacho-su`.
 - Docker installed but **daemon not running**, 0 images. Do not depend on it.
@@ -362,7 +366,8 @@ agentic-harness/
 ```
 
 Repo lives at `C:/Users/estac/agentic-harness`, deliberately **outside OneDrive** — `.git` and
-OneDrive sync corrupt each other. Branch `main`. Not yet pushed.
+OneDrive sync corrupt each other. Branch `main`. Public at
+`https://github.com/emstacho-su/agentic-harness`, MIT.
 
 ## Conventions
 
@@ -381,9 +386,9 @@ OneDrive sync corrupt each other. Branch `main`. Not yet pushed.
 | 1 Export claude-mem | done — 4 JSON files + verified snapshot |
 | 2 Teardown + rebuild harness | done — 71→12 skills, 58→0 agents, 60→0 commands, 22→0 hooks |
 | 3 pgvector schema | done — `rag` schema live, verified |
-| 4 Vault + ingestion | **in progress** |
-| 5 Retrieval MCP server | **in progress** |
+| 4 Vault + ingestion | done — vault live, 1,306 docs ingested, SessionEnd capture verified |
+| 5 Retrieval MCP server | done — registered with Claude Code as `rag` (user scope, `~/.claude.json`) |
 | 6 Dev cycle | mostly done — `CLAUDE.md` rewritten with required gates |
 | 7 Hermes Agent | deferred until 0–6 land |
 | 8 Self-evolution | deferred; repo currently unlicensed, re-check before adopting |
-| 9 Docs repo | **in progress** |
+| 9 Docs repo | done — public on GitHub, docs rewritten for the harness-memory relocation |
