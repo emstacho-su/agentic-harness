@@ -94,8 +94,10 @@ def test_dry_run_reports_the_skipped_notes(clean_env, vault_path, capsys):
     main(["--source", "obsidian", "--path", str(vault_path), "--dry-run",
           "--env-file", str(clean_env)])
     out = capsys.readouterr().out
-    assert "Skipped 1 records" in out
+    # empty.md (no body) and notes/opted-out.md (ingest: false)
+    assert "Skipped 2 records" in out
     assert "empty body" in out
+    assert "frontmatter ingest: false" in out
 
 
 def test_claude_mem_dry_run_reports_the_empty_row_skip(clean_env, export_dir, capsys):

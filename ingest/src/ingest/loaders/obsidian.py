@@ -15,6 +15,12 @@ emits one :class:`SourceDocument` per note.
 * ``metadata``    = the frontmatter verbatim, plus an ``_ingest`` sub-object.
   Ingest-added keys are nested under ``_ingest`` so they can never collide with
   a user's own frontmatter key named ``path`` or ``source``.
+
+Opting out. A note with frontmatter ``ingest: false`` stays in the vault for
+reading and linking but is never embedded. Class materials exported from bb2dash
+use this: their retrieval belongs to the bb2dash store, and embedding them here
+would put gte-small content into a bge-small index (CONTEXT.md). Opt-outs are
+reported as skips, never hidden.
 """
 
 from __future__ import annotations
@@ -35,16 +41,26 @@ log = logging.getLogger(__name__)
 
 MARKDOWN_SUFFIXES = (".md", ".markdown", ".mdx")
 
-# Obsidian's own state, VCS metadata and dependency trees are not notes.
+# Obsidian's own state, VCS metadata and dependency trees are not notes, at any depth.
 SKIP_DIRECTORIES = frozenset(
     {".obsidian", ".trash", ".git", ".github", "node_modules", ".venv", "__pycache__"}
 )
+
+# Obsidian's Templates and Daily Notes plugins read from a vault-ROOT folder
+# (`.obsidian/templates.json`), and a template is `{{date}}` placeholders, not
+# content. Only the root folder is excluded: a `notes/templates/` deeper in a
+# project may well hold real documentation.
+TEMPLATES_DIRECTORY = "templates"
 
 _H1 = re.compile(r"^\s{0,3}#\s+(.+?)\s*#*\s*$", re.MULTILINE)
 
 # Frontmatter key that overrides the path-based identity.
 ID_KEY = "id"
 MAX_ID_LENGTH = 512
+
+# Frontmatter key that opts a note out of embedding. Absent means ingest.
+INGEST_KEY = "ingest"
+OPT_OUT_REASON = "frontmatter ingest: false"
 
 
 def load_vault(vault_path: str | Path) -> LoadedSource:
@@ -62,15 +78,18 @@ def load_vault(vault_path: str | Path) -> LoadedSource:
     for path in sorted(_iter_markdown(root)):
         relative = path.relative_to(root).as_posix()
         try:
-            document = _load_note(path, relative)
+            loaded = _load_note(path, relative)
         except SourceError as exc:
             log.warning("Skipping %s: %s", relative, exc)
             skipped.append(SkippedRecord(relative, str(exc)))
             continue
 
-        if document is None:
-            skipped.append(SkippedRecord(relative, "empty body"))
+        if isinstance(loaded, SkippedRecord):
+            # A deliberate skip (empty body, opt-out) is not a warning.
+            log.debug("Skipping %s: %s", relative, loaded.reason)
+            skipped.append(loaded)
             continue
+        document = loaded
 
         owner = claimed_by.get(document.external_id)
         if owner is not None:
@@ -94,12 +113,15 @@ def _iter_markdown(root: Path):
             continue
         if path.suffix.lower() not in MARKDOWN_SUFFIXES:
             continue
-        if any(part in SKIP_DIRECTORIES for part in path.relative_to(root).parts[:-1]):
+        folders = path.relative_to(root).parts[:-1]
+        if folders and folders[0] == TEMPLATES_DIRECTORY:
+            continue
+        if any(part in SKIP_DIRECTORIES for part in folders):
             continue
         yield path
 
 
-def _load_note(path: Path, relative: str) -> SourceDocument | None:
+def _load_note(path: Path, relative: str) -> SourceDocument | SkippedRecord:
     try:
         raw = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
@@ -108,8 +130,10 @@ def _load_note(path: Path, relative: str) -> SourceDocument | None:
         raise SourceError(f"unreadable ({exc})") from exc
 
     frontmatter, body = split_frontmatter(raw, relative)
+    if not _wants_ingest(frontmatter):
+        return SkippedRecord(relative, OPT_OUT_REASON)
     if not body.strip():
-        return None
+        return SkippedRecord(relative, "empty body")
 
     external_id = _derive_external_id(frontmatter, relative)
 
@@ -135,6 +159,30 @@ def _load_note(path: Path, relative: str) -> SourceDocument | None:
         agent=DEFAULT_AGENT,
         collection=_derive_collection(frontmatter, relative),
         metadata=metadata,
+    )
+
+
+def _wants_ingest(frontmatter: dict) -> bool:
+    """``ingest: false`` opts a note out. Absent, or ``true``, ingests.
+
+    YAML 1.1 already turns unquoted ``no``/``off``/``yes``/``on`` into booleans
+    before this code sees them. Beyond that only the ints ``0``/``1`` and the
+    quoted strings ``'true'``/``'false'`` are accepted — common hand-typed forms.
+    Anything else (a list, a mapping, an empty string, ``2``) is a typo, not a
+    preference, and fails rather than being guessed at.
+    """
+    raw = frontmatter.get(INGEST_KEY)
+    if raw is None:
+        return True
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, int) and raw in (0, 1):
+        return bool(raw)
+    if isinstance(raw, str) and raw.strip().lower() in ("true", "false"):
+        return raw.strip().lower() == "true"
+    raise SourceError(
+        f"frontmatter '{INGEST_KEY}' must be true or false, got {raw!r} "
+        f"(accepted: true/false, yes/no, on/off, 1/0, or the quoted strings 'true'/'false')"
     )
 
 
