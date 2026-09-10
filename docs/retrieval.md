@@ -5,7 +5,7 @@ independent searches over the same chunks, merges their results into a single
 ordering, caps how many chunks one document may contribute, and refuses to
 surface semantic neighbours that are not actually close.
 
-> **Status.** Live on `harness-memory` over 1,306 documents and 2,289 chunks.
+> **Status.** Live on `harness-memory` over 1,319 documents and 2,312 chunks.
 > The similarity numbers below were measured on that corpus, not invented.
 
 ---

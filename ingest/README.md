@@ -81,6 +81,10 @@ uv run ingest --source claude-mem --path C:/Users/estac/.claude-archive/2026-09-
 
 # Plan without touching anything
 uv run ingest --source obsidian --path C:/Users/estac/vault --dry-run
+
+# bb2dash class materials -> vault notes (ingest: false; read-only against bb2dash)
+uv run export-materials --env-file C:/Users/estac/projects/bb2dash/.env \
+    --vault "C:/Users/estac/OneDrive - Syracuse University/vault" [--dry-run] [--course IST.323]
 ```
 
 | Flag | Effect |
@@ -132,8 +136,30 @@ Ingest-added keys are nested under `_ingest` (`path`, `id_source`, `filename`,
 user's own frontmatter key named `path` or `source`.
 
 `.obsidian/`, `.trash/`, `.git/`, `node_modules/`, `.venv/` and `__pycache__/`
-are skipped. A note whose YAML is malformed is skipped and counted — one bad
-note never aborts a vault ingest.
+are skipped at any depth; the vault-root `templates/` folder (Obsidian's own)
+is skipped too, but a deeper `templates/` is ordinary content. A note whose
+YAML is malformed is skipped and counted — one bad note never aborts a vault
+ingest.
+
+**`ingest: false`** in frontmatter opts a note out of embedding. It is reported
+as a skip (`frontmatter ingest: false`), never hidden. `no`, `off`, `'false'`
+and `0` are accepted; a list, mapping or empty string is refused as a typo.
+Opting out a note that was *already* embedded leaves its rows in place — run
+`--prune` to remove them. Class materials exported from bb2dash carry this flag
+— see `export-materials` below.
+
+### `export-materials` (bb2dash → vault, not a loader)
+
+Reads `bb_files` + `bb_file_text` from the **bb2dash** Supabase project over
+PostgREST and writes one note per file to
+`classes/<course>/materials/<slug>-<id>.md` with `id: bb2dash-file-<id>`,
+`type: material`, `source: bb2dash` and `ingest: false`. `--env-file` is
+required and is read directly (never merged into the process environment); the
+URL must be the bb2dash project or the run refuses with exit code `2`, as does
+a malformed `--course`. Superseded, unextracted, empty and unmappable files are
+reported as skips; a `--course` that matches nothing is an error. Idempotent:
+unchanged notes are not rewritten. It never writes to bb2dash. Full rationale
+in [docs/ingestion.md](../docs/ingestion.md).
 
 ### `claude-mem`
 
@@ -175,7 +201,7 @@ Deliberate skips, all counted and printed:
   **137 ingested**. (Not in CONTEXT.md; found while probing the export.)
 
 Total: **1305 documents, 2278 chunks** from the export; vault notes captured since add to that
-(1,306 / 2,289 as of 2026-09-09).
+(1,319 / 2,312 as of 2026-09-10).
 
 The exporter's own 16-character `content_hash` is kept as
 `metadata.source_content_hash` for provenance. It is *not* what goes into

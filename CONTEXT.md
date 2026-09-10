@@ -4,7 +4,7 @@
 decisions already made. Do not re-litigate them; if something here looks wrong, report it rather than
 silently diverging.
 
-Last updated: 2026-09-09 (evening — post-relocation, post-publish)
+Last updated: 2026-09-10 (vault registered in Obsidian, Fall 2026 layout, bb2dash materials export)
 
 ---
 
@@ -44,7 +44,7 @@ or duplicating capability that is now native.
 | Location | schema `rag` | schema `public` |
 | Model | **`bge-small-en-v1.5`** (local fastembed) | **`gte-small`** (Supabase server-side) |
 | Dims | 384 | 384 |
-| State | **live — 1,306 docs, 2,289 chunks, 18 collections** | **fully embedded** — 534/534 texts, 1,195 chunks; retrieval via Edge Function `search` + MCP server `bb2dash` (see bb2dash repo) |
+| State | **live — 1,319 docs, 2,312 chunks, 27 collections** (2026-09-10) | **fully embedded** — 534/534 texts, 1,195 chunks; retrieval via Edge Function `search` + MCP server `bb2dash` (see bb2dash repo) |
 
 **Both are 384-dim, so mixing them raises no error — it silently returns confidently-ranked garbage.**
 They are different vector spaces. A `bge` query vector must never be run against `gte` vectors or the
@@ -76,7 +76,7 @@ and is what makes "histories by project or class" queryable. Indexed, exposed as
 
 **`filter_collection` matches with `=`, so case and spacing are load-bearing.** Values came from
 claude-mem's own `project` field and are lowercase, some containing spaces. `IST335` matches nothing;
-`ist335` matches. These are the 17 live values — do not guess, and do not invent title-case variants:
+`ist335` matches. These are the 17 claude-mem values — do not guess, and do not invent title-case variants:
 
 | collection | docs | | collection | docs |
 | --- | --- | --- | --- | --- |
@@ -90,9 +90,11 @@ claude-mem's own `project` field and are lowercase, some containing spaces. `IST
 | `ist335` | 14 | | `reading nugget 4` | 1 |
 | `ce2` | 11 | | | |
 
-Vault ingestion will add more, derived from folder names. Keep new folders lowercase-hyphenated to
-avoid widening this inconsistency; the existing spaced values are historical and cannot be renamed
-without breaking `external_id` stability.
+Vault ingestion has since added `source='obsidian'` collections derived from folder names:
+`agentic-harness`, `ev-trainer`, `quant-edge-tracker`, `misc`, `bb2dash-retrieval`, `ist323`, `ist352`,
+`ist466`, `ist471`, `ecn304`, `geo103`, plus the pre-existing `ist335` (which now spans both
+sources). Keep new folders lowercase-hyphenated to avoid widening the inconsistency above; the
+existing spaced values are historical and cannot be renamed without breaking `external_id` stability.
 
 Indexes: HNSW `vector_cosine_ops` on `chunks.embedding`; GIN on `chunks.tsv` and
 `documents.metadata`; btree on source, agent, content_hash, document_id.
@@ -256,18 +258,45 @@ Map to `source='obsidian'`, `external_id=<vault-relative path>`, `collection=<fo
 ```
 vault/
   projects/
-    ev-trainer/          sessions/  notes/  decisions/
-    quant-edge-tracker/  sessions/  notes/  decisions/
-    agentic-harness/     sessions/  notes/  decisions/
+    agentic-harness/     index.md  sessions/  notes/  decisions/
+    ev-trainer/          index.md  sessions/  notes/  decisions/
+    quant-edge-tracker/  index.md  sessions/  notes/  decisions/
+    bb2dash-retrieval/   index.md  sessions/
+    misc/                index.md  sessions/  notes/  decisions/
   classes/
-    ist335/              sessions/  notes/
-  daily/
+    ist323/  ist352/  ist466/  ist471/  ecn304/  geo103/     (Fall 2026)
+                         index.md  sessions/  notes/  materials/
+    ist335/              index.md  sessions/  notes/          (prior term)
+  daily/                 one note per day, from templates/daily.md
+  templates/             never ingested
+  .obsidian/             never ingested
 ```
 
 The second path segment (`ev-trainer`, `ist335`) becomes `documents.collection` **verbatim** — folder
 casing is the collection casing, and `filter_collection` matches with `=`. Files land as
 markdown **first**, get embedded **second** — the vault stays human-readable and git-friendly, and
 survives any change of tooling underneath it.
+
+**Registered in Obsidian 2026-09-10** (`%APPDATA%/obsidian/obsidian.json`; Obsidian 1.13.7 created
+`.obsidian/`). Daily Notes and Templates core plugins point at `daily/` and `templates/`.
+
+Conventions, all live:
+
+- **Every project and class folder has an `index.md`** with frontmatter `id:` (UUID), `title:`,
+  `collection:` and `type: index`. Class indexes also carry `term:` and `bb2dash_course:` (the exact
+  bb2dash id — `IST.323`; `geo103` lists both `GEO.103.lecture` and `GEO.103.recitation`). Class folder
+  names are the lowercase-hyphenated form of those ids. The UUID means a rename never orphans a row.
+- **`ingest: false` in frontmatter opts a note out of embedding.** It is reported as a skip, never
+  hidden. It is not a delete: flipping it on an already-embedded note leaves the rows until
+  `--prune` sweeps them. The vault-root `templates/` is skipped outright, like `.obsidian/`.
+- **Class materials live in the vault but are NOT embedded here.** `uv run export-materials` (in
+  `ingest/`) reads bb2dash's already-extracted text over PostgREST and writes one note per file to
+  `classes/<course>/materials/<slug>-<id>.md`, each with `id: bb2dash-file-<id>` and `ingest: false`. The vault is
+  where the material is *read*; retrieval over it stays in the bb2dash store via the `bb2dash` MCP
+  server. Embedding it into harness-memory would put gte-small content into a bge-small index.
+  The exporter refuses any `SUPABASE_URL` that is not the bb2dash project and only ever reads.
+  Run it with `--env-file C:/Users/estac/projects/bb2dash/.env`; it never merges that file into the
+  process environment. 63 of 64 files exported 2026-09-10 (one is `text_status = na`).
 
 ### Session capture: SessionEnd hook → vault → ingest
 
@@ -386,7 +415,7 @@ OneDrive sync corrupt each other. Branch `main`. Public at
 | 1 Export claude-mem | done — 4 JSON files + verified snapshot |
 | 2 Teardown + rebuild harness | done — 71→12 skills, 58→0 agents, 60→0 commands, 22→0 hooks |
 | 3 pgvector schema | done — `rag` schema live, verified |
-| 4 Vault + ingestion | done — vault live, 1,306 docs ingested, SessionEnd capture verified |
+| 4 Vault + ingestion | done — vault live and registered in Obsidian (2026-09-10), Fall 2026 class folders + index notes, bb2dash materials exported with `ingest: false`, SessionEnd capture verified |
 | 5 Retrieval MCP server | done — registered with Claude Code as `rag` (user scope, `~/.claude.json`) |
 | 6 Dev cycle | mostly done — `CLAUDE.md` rewritten with required gates |
 | 7 Hermes Agent | deferred until 0–6 land |

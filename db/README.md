@@ -10,7 +10,7 @@ The RAG store lives in its own Supabase Postgres project, in a schema called `ra
 | Postgres | 17 |
 | pgvector | 0.8.2 |
 | Schema owned by this repo | `rag` |
-| Live contents | 1,306 documents, 2,289 chunks, 18 collections |
+| Live contents | 1,319 documents, 2,312 chunks, 27 collections |
 
 ## Two stores exist. Never cross them.
 

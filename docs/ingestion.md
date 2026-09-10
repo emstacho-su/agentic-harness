@@ -1,8 +1,8 @@
 # The ingestion pipeline
 
 > **Status: live.** `ingest/` has loaded the full claude-mem export and the
-> vault into `harness-memory`: 1,306 documents and 2,289 chunks across 18
-> collections as of 2026-09-09. 214 tests, run with `uv run pytest`.
+> vault into `harness-memory`: 1,319 documents and 2,312 chunks across 27
+> collections as of 2026-09-10. 261 tests, run with `uv run pytest`.
 
 Ingestion turns source artifacts into rows the retrieval function can rank. It
 runs as a batch job, not a service — you point it at a source and it reconciles
@@ -160,18 +160,88 @@ OneDrive.
 ```
 vault/
   projects/
-    agentic-harness/     sessions/  notes/  decisions/
-    ev-trainer/          sessions/  notes/  decisions/
-    quant-edge-tracker/  sessions/  notes/  decisions/
-    misc/                sessions/  notes/  decisions/
+    agentic-harness/     index.md  sessions/  notes/  decisions/
+    ev-trainer/          index.md  sessions/  notes/  decisions/
+    quant-edge-tracker/  index.md  sessions/  notes/  decisions/
+    bb2dash-retrieval/   index.md  sessions/
+    misc/                index.md  sessions/  notes/  decisions/
   classes/
-    ist335/              sessions/  notes/
-  daily/
+    ist323/  ist352/  ist466/  ist471/  ecn304/  geo103/     (Fall 2026)
+                         index.md  sessions/  notes/  materials/
+    ist335/              index.md  sessions/  notes/
+  daily/                 one note per day, from templates/daily.md
+  templates/             skipped by the loader
+  .obsidian/             skipped by the loader
 ```
 
 The second path segment (`agentic-harness`, `ist335`) becomes
 `documents.collection` **verbatim**. Folder casing is collection casing, and
 `filter_collection` matches with `=`, so keep new folders lowercase-hyphenated.
+Class folders are the lowercase form of the bb2dash course ids (`IST.323` →
+`ist323`; both `GEO.103.*` sections → `geo103`).
+
+Every project and class folder carries an `index.md` whose frontmatter has a
+UUID `id:`, a `title:` and the `collection:`, so a rename never strands a row.
+Class indexes also record `term:` and the exact `bb2dash_course:` id(s).
+
+### Opting out: `ingest: false`
+
+A note with `ingest: false` in its frontmatter stays in the vault for reading
+and linking but is never embedded. The loader reports it as a skip with the
+reason `frontmatter ingest: false`; it is never hidden. YAML's own `false`,
+`no` and `off` work, as do the quoted string `'false'` and bare `0`. A
+structurally wrong value (a list, a mapping, an empty string) is refused with an
+error rather than guessed at. The vault-root `templates/` folder is excluded
+outright, like `.obsidian/`, because a template is `{{date}}` placeholders
+rather than content; a `templates/` folder deeper inside a project is ordinary
+content.
+
+**Opting out is not a delete.** Adding `ingest: false` to a note that was
+already embedded stops future updates but leaves its existing rows searchable.
+Remove them with the guarded `--prune` orphan sweep (below), which treats an
+opted-out note the same as a deleted one.
+
+### Class materials from bb2dash
+
+```bash
+cd ingest
+uv run export-materials --env-file C:/Users/estac/projects/bb2dash/.env \
+    --vault "C:/Users/estac/OneDrive - Syracuse University/vault" [--dry-run] [--course IST.323]
+```
+
+The exporter reads `bb_files` + `bb_file_text` from the **bb2dash** project over
+PostgREST (its `public` schema is exposed; the service role is required because
+the corpus tables carry insert-only anon policies) and writes one note per file
+to `classes/<course>/materials/<slug>-<bb_files.id>.md`. The id is always in
+the filename so a note's path is a pure function of its row: it never moves
+when a same-named sibling appears or is superseded, which keeps re-runs
+idempotent and prevents two notes ever sharing an `id:`.
+
+| Frontmatter | Value |
+| --- | --- |
+| `id` | `bb2dash-file-<bb_files.id>` — stable across renames |
+| `collection` | lowercase course folder |
+| `type` / `source` | `material` / `bb2dash` |
+| `ingest` | **`false`**, always |
+| `course`, `bucket`, `week`, `bb_path`, `sha256`, `captured_at` | copied from `bb_files` |
+
+The body is one `## Slide N` / `## Page N` / `## Document` section per text
+unit, in unit order, with speaker-note `[notes]` markers left verbatim. Files
+that are superseded, not extracted (`text_status ≠ extracted`), have no text
+units, or carry a course id the folder rule cannot map are reported as skips —
+one odd row never aborts the export. `--course` must be an exact bb2dash id and
+must match at least one file; an empty match is an error, not a quiet no-op.
+Writes are idempotent: a note is rewritten only when its content differs, and
+the report says created / updated / unchanged.
+
+Why `ingest: false` is mandatory here: bb2dash embeds with **gte-small** and
+harness-memory with **bge-small-en-v1.5**. Both are 384-dim, so embedding the
+same text into both would raise no error — it would just rank confidently
+wrong. Materials are *read* in the vault and *searched* through the `bb2dash`
+MCP server. The exporter refuses any `SUPABASE_URL` whose host is not the
+bb2dash project and reads the bb2dash `.env` directly instead of loading it
+into the process environment, so the harness `.env` can never be picked up by
+mistake. It only ever reads from bb2dash.
 
 Mapping:
 
