@@ -63,13 +63,19 @@ INGEST_KEY = "ingest"
 OPT_OUT_REASON = "frontmatter ingest: false"
 
 
-def load_vault(vault_path: str | Path) -> LoadedSource:
-    """Load every markdown note under ``vault_path``."""
+def vault_root(vault_path: str | Path) -> Path:
+    """Validate and return the vault directory. Shared by both entry points."""
     root = Path(vault_path).expanduser()
     if not root.exists():
         raise SourceError(f"Vault path does not exist: {root}")
     if not root.is_dir():
         raise SourceError(f"Vault path is not a directory: {root}")
+    return root
+
+
+def load_vault(vault_path: str | Path) -> LoadedSource:
+    """Load every markdown note under ``vault_path``."""
+    root = vault_root(vault_path)
 
     documents: list[SourceDocument] = []
     skipped: list[SkippedRecord] = []
@@ -107,16 +113,99 @@ def load_vault(vault_path: str | Path) -> LoadedSource:
     return LoadedSource(tuple(documents), tuple(skipped), notes)
 
 
+def load_vault_note(vault_path: str | Path, note_path: str | Path) -> LoadedSource:
+    """Load exactly one note, the way a full walk would load it.
+
+    This is what ``ingest --only`` runs, and its caller is the ``SessionEnd``
+    hook's detached background process. Nobody watches its stdout, so every
+    reason a note cannot be ingested is raised rather than shrugged off: a typo
+    in the path must fail in the log, not look like a successful empty run.
+
+    The note must resolve *inside* the vault and must be a file the full walk
+    would also visit. Ingesting an excluded path (``templates/``, ``.obsidian/``)
+    would create a row that the next ``--prune`` sweep deletes again.
+
+    A deliberate skip — ``ingest: false``, an empty body — is not an error. It
+    comes back as a :class:`SkippedRecord` with no documents, exactly as in a
+    full walk.
+    """
+    root = vault_root(vault_path)
+    note, relative = _resolve_note(root, note_path)
+
+    loaded = _load_note(note, relative)
+    notes = (f"vault root: {root.as_posix()}", f"single note: {relative}")
+    if isinstance(loaded, SkippedRecord):
+        log.debug("Skipping %s: %s", relative, loaded.reason)
+        return LoadedSource((), (loaded,), notes)
+    return LoadedSource((loaded,), (), notes)
+
+
+def _resolve_note(root: Path, note_path: str | Path) -> tuple[Path, str]:
+    """Return ``(path, vault_relative_posix)`` for one requested note."""
+    raw = str(note_path).strip()
+    if not raw:
+        raise SourceError("Note path is empty; --only needs a path to one markdown note")
+
+    # Windows callers pass backslashes; the hook passes whatever Node gave it.
+    candidate = Path(raw.replace("\\", "/")).expanduser()
+    if not candidate.is_absolute():
+        # Deliberately resolved against the VAULT, never the process cwd: the
+        # hook runs with an arbitrary working directory.
+        candidate = root / candidate
+
+    # resolve() collapses '..' and follows symlinks, so neither can be used to
+    # step outside the vault after this check.
+    resolved = candidate.resolve()
+    try:
+        relative = resolved.relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise SourceError(
+            f"{resolved} is outside the vault {root.resolve()}; --only may only name a note in the vault"
+        ) from exc
+
+    if not resolved.exists():
+        raise SourceError(f"Note does not exist: {resolved}")
+    if not resolved.is_file():
+        raise SourceError(f"Note is not a file: {resolved}")
+    if resolved.suffix.lower() not in MARKDOWN_SUFFIXES:
+        raise SourceError(
+            f"{relative} is not a markdown note (expected one of {', '.join(MARKDOWN_SUFFIXES)})"
+        )
+
+    excluded = walk_exclusion(relative)
+    if excluded:
+        raise SourceError(
+            f"{relative} is excluded from the vault walk ({excluded}); "
+            "a single-note run may not ingest what a full run skips"
+        )
+
+    # Join from the unresolved root so the document is byte-identical to the one
+    # a full walk produces, symlinked vaults included.
+    return root / relative, relative
+
+
+def walk_exclusion(relative: str) -> str | None:
+    """Why the vault walk skips this vault-relative path, or None if it does not.
+
+    Public because the conclude sweep must visit exactly the notes the loader
+    visits; two copies of this rule would drift.
+    """
+    folders = Path(relative).parts[:-1]
+    if folders and folders[0] == TEMPLATES_DIRECTORY:
+        return f"vault-root {TEMPLATES_DIRECTORY}/"
+    for part in folders:
+        if part in SKIP_DIRECTORIES:
+            return f"{part}/"
+    return None
+
+
 def _iter_markdown(root: Path):
     for path in root.rglob("*"):
         if not path.is_file():
             continue
         if path.suffix.lower() not in MARKDOWN_SUFFIXES:
             continue
-        folders = path.relative_to(root).parts[:-1]
-        if folders and folders[0] == TEMPLATES_DIRECTORY:
-            continue
-        if any(part in SKIP_DIRECTORIES for part in folders):
+        if walk_exclusion(path.relative_to(root).as_posix()):
             continue
         yield path
 
