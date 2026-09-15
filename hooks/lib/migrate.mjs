@@ -133,6 +133,7 @@ export function migrateNote({ note, plan, backfill, repoFor }) {
     files: paths.files,
     docsTouched: paths.docsTouched,
     branch,
+    prTitles: backfill.prTitles ?? [],
   });
 
   const endedAt = String(old.ended_at ?? '');

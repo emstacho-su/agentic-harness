@@ -41,7 +41,11 @@ export function runGhSync(args, { timeoutMs = BACKFILL_GH_TIMEOUT_MS } = {}) {
 /**
  * Pull requests whose creation or merge falls inside the session window.
  *
- * @returns {{prs: number[], branches: string[], error: string}}
+ * A PR's head branch and title are the only surviving record of which branch a
+ * historical session worked on and which phase it belonged to, so both come
+ * back with the numbers.
+ *
+ * @returns {{prs: number[], branches: string[], titles: string[], error: string}}
  */
 export function pullRequestsInWindow({
   repoFullName,
@@ -51,7 +55,7 @@ export function pullRequestsInWindow({
   limit = 200,
 }) {
   if (!repoFullName || !startedAt || !endedAt) {
-    return { prs: [], branches: [], error: 'no repo or no window' };
+    return { prs: [], branches: [], titles: [], error: 'no repo or no window' };
   }
 
   const result = runGh([
@@ -64,32 +68,49 @@ export function pullRequestsInWindow({
     '--limit',
     String(limit),
     '--json',
-    'number,headRefName,createdAt,mergedAt,closedAt',
+    'number,title,headRefName,createdAt,mergedAt,closedAt',
   ]);
-  if (!result.ok) return { prs: [], branches: [], error: result.error || 'gh pr list failed' };
+  if (!result.ok) return { prs: [], branches: [], titles: [], error: result.error || 'gh pr list failed' };
 
   let rows;
   try {
     rows = JSON.parse(result.stdout);
   } catch {
-    return { prs: [], branches: [], error: 'gh returned unparseable JSON' };
+    return { prs: [], branches: [], titles: [], error: 'gh returned unparseable JSON' };
   }
-  if (!Array.isArray(rows)) return { prs: [], branches: [], error: 'gh returned no array' };
+  if (!Array.isArray(rows)) return { prs: [], branches: [], titles: [], error: 'gh returned no array' };
 
   const from = isoToMillis(startedAt);
   const to = isoToMillis(endedAt);
-  const prs = [];
-  const branches = [];
+  const matched = [];
 
   for (const row of rows) {
     const stamps = [row?.createdAt, row?.mergedAt, row?.closedAt].map(isoToMillis).filter(Number.isFinite);
-    if (!stamps.some((stamp) => stamp >= from && stamp <= to)) continue;
-    const number = Number.parseInt(row?.number, 10);
-    if (Number.isInteger(number)) prs.push(number);
-    if (typeof row?.headRefName === 'string' && row.headRefName) branches.push(row.headRefName);
+    const inWindow = stamps.filter((stamp) => stamp >= from && stamp <= to);
+    if (inWindow.length === 0) continue;
+    matched.push({ row, at: Math.max(...inWindow) });
   }
 
-  return { prs: uniqueCapped(prs, MAX_PRS), branches: uniqueCapped(branches, 10), error: '' };
+  // Most recent first. A session spanning several phases takes its branch and
+  // its phase from the last pull request it touched — which is a stated rule,
+  // rather than whatever order `gh` happened to print.
+  matched.sort((a, b) => b.at - a.at);
+
+  return {
+    prs: uniqueCapped(
+      matched.map(({ row }) => Number.parseInt(row.number, 10)).filter(Number.isInteger),
+      MAX_PRS,
+    ).sort((a, b) => a - b),
+    branches: uniqueCapped(
+      matched.map(({ row }) => (typeof row.headRefName === 'string' ? row.headRefName : '')),
+      10,
+    ),
+    titles: uniqueCapped(
+      matched.map(({ row }) => (typeof row.title === 'string' ? row.title : '')),
+      10,
+    ),
+    error: '',
+  };
 }
 
 /**
@@ -114,8 +135,8 @@ export function branchContaining({ repoRoot, sha, runGit = runGitSync, timeoutMs
 /**
  * Everything git and GitHub can say about one historical session.
  *
- * @returns {{commits: string[], prs: number[], branch: string, notes: string[]}}
- *          `notes` explains, per field, why anything is empty.
+ * @returns {{commits: string[], prs: number[], branch: string, prTitles: string[],
+ *            notes: string[]}} `notes` explains, per field, why anything is empty.
  */
 export function backfillSession({
   repoRoot,
@@ -146,5 +167,5 @@ export function backfillSession({
   const branch = github.branches[0] || branchContaining({ repoRoot, sha: log.shas[0], runGit });
   if (!branch) notes.push('branch: not derivable from the window; left empty rather than guessed');
 
-  return { commits: log.shas, prs, branch, notes };
+  return { commits: log.shas, prs, branch, prTitles: github.titles, notes };
 }

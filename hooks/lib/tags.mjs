@@ -46,15 +46,35 @@ const ACTIVITY_SLOTS = 2;
 const HOTFIX_BRANCH = /^(fix|hotfix)\//;
 const PHASE_IN_BRANCH = /phase[-_ ]?(\d{1,2})\b/i;
 const PHASE_IN_PLANNING_PATH = /docs\/planning\/[^/]*phase[-_ ]?(\d{1,2})/i;
+const PHASE_IN_TITLE = /\bphase[-_ ]?(\d{1,2})\b/i;
 const PHASE_BRIEF_PATH = /^docs\/planning\/.*phase/i;
 
 /**
- * `phase-7`, or `''` when neither the branch nor a touched planning brief names
- * a number. Never guessed from prose: a wrong phase is worse than none.
+ * `phase-7`, or `''`.
+ *
+ * Three sources, in order of how specific each one is: the branch, the title of
+ * a pull request from the session's window, then a planning brief the session
+ * touched. `prTitles` is empty for the hook — it has no network — and is filled
+ * in by the one-time migration, which does.
+ *
+ * Nothing is read from prose. A wrong phase is worse than no phase: the empty
+ * field is honest and a filter on it returns nothing, where a wrong one returns
+ * the wrong sessions and reads as an answer.
  */
-export function derivePhase({ branch = '', docsTouched = [] } = {}) {
+export function derivePhase({ branch = '', docsTouched = [], prTitles = [] } = {}) {
   const fromBranch = String(branch).match(PHASE_IN_BRANCH);
-  if (fromBranch) return phaseTag(fromBranch[1]);
+  if (fromBranch) {
+    const tag = phaseTag(fromBranch[1]);
+    if (tag) return tag;
+  }
+
+  for (const title of prTitles) {
+    const match = String(title).match(PHASE_IN_TITLE);
+    if (match) {
+      const tag = phaseTag(match[1]);
+      if (tag) return tag;
+    }
+  }
 
   for (const doc of docsTouched) {
     const match = String(doc).match(PHASE_IN_PLANNING_PATH);
@@ -80,8 +100,9 @@ export function classify({
   skills = [],
   toolNames = [],
   branch = '',
+  prTitles = [],
 } = {}) {
-  const phase = derivePhase({ branch, docsTouched });
+  const phase = derivePhase({ branch, docsTouched, prTitles });
   const areaCounts = countAreas(files);
   const activities = new Set(collectActivities({ commandTexts, promptTexts, skills, toolNames, branch, files }));
 
