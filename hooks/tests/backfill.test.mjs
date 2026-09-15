@@ -77,12 +77,27 @@ test('a branch is accepted only when git names exactly one non-trunk branch', ()
   });
   assert.equal(ambiguous, '', 'two candidates is a guess, and a guess is worse than empty');
 
+  // Only the trunk contains it: the work went straight to main, which is an
+  // answer rather than a guess.
   const trunkOnly = branchContaining({
     repoRoot: 'C:/repo',
     sha: 'abc',
     runGit: () => ({ ok: true, stdout: 'main\n' }),
   });
-  assert.equal(trunkOnly, '');
+  assert.equal(trunkOnly, 'main');
+
+  const trunkPair = branchContaining({
+    repoRoot: 'C:/repo',
+    sha: 'abc',
+    runGit: () => ({ ok: true, stdout: 'main\nmaster\n' }),
+  });
+  assert.equal(trunkPair, '');
+
+  assert.equal(branchContaining({ repoRoot: '', sha: 'abc' }), '');
+  assert.equal(
+    branchContaining({ repoRoot: 'C:/repo', sha: 'abc', runGit: () => ({ ok: false, stdout: '' }) }),
+    '',
+  );
 });
 
 test('a session with no commits and no PRs back-fills to empty, with reasons', () => {

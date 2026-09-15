@@ -36,10 +36,23 @@ const DEFAULT_REPO_ROOTS = {
   'agentic-harness': 'C:/Users/estac/agentic-harness',
 };
 
+/**
+ * The remote identity of a collection whose checkout is gone.
+ *
+ * `repo:` is one of the fields the Definition of done requires on every session
+ * note, and a note filed by the override table has no cwd left to resolve. This
+ * is the same kind of typed decision as the override table itself.
+ */
 const DEFAULT_REPO_FULL_NAMES = {
   bb2dash: 'emstacho-su/bb2dash',
   'agentic-harness': 'emstacho-su/agentic-harness',
 };
+
+/** Fill in `repo` from the table when the cwd could not supply it. */
+function withKnownRepo(plan) {
+  if (plan.repoFullName) return plan;
+  return { ...plan, repoFullName: DEFAULT_REPO_FULL_NAMES[plan.collection] || '' };
+}
 
 function parseArgs(argv) {
   const args = {
@@ -80,7 +93,7 @@ function buildPlan(args) {
   const resolveRepoFor = (cwd) => (cwd && fs.existsSync(cwd) ? resolveRepo(cwd) : null);
 
   const plans = notes.map((note) => {
-    const plan = planNote({ note, resolveRepoFor, overrides: COLLECTION_OVERRIDES });
+    const plan = withKnownRepo(planNote({ note, resolveRepoFor, overrides: COLLECTION_OVERRIDES }));
     const from = toPosix(note.path);
     const to = toPosix(path.join(args.vault, plan.area, plan.collection, 'sessions', plan.filename));
     return { note, plan, from, to, repoFor };

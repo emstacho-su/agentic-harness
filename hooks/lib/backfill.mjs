@@ -88,12 +88,15 @@ export function pullRequestsInWindow({
     const stamps = [row?.createdAt, row?.mergedAt, row?.closedAt].map(isoToMillis).filter(Number.isFinite);
     const inWindow = stamps.filter((stamp) => stamp >= from && stamp <= to);
     if (inWindow.length === 0) continue;
-    matched.push({ row, at: Math.max(...inWindow) });
+    // Ordered by when the PR was opened, not when it merged: opening it is the
+    // moment the session was on that branch, and a merge can land days later.
+    const opened = isoToMillis(row?.createdAt);
+    matched.push({ row, at: Number.isFinite(opened) ? opened : Math.max(...inWindow) });
   }
 
   // Most recent first. A session spanning several phases takes its branch and
-  // its phase from the last pull request it touched — which is a stated rule,
-  // rather than whatever order `gh` happened to print.
+  // its phase from the last pull request it opened — a stated rule, rather than
+  // whatever order `gh` happened to print.
   matched.sort((a, b) => b.at - a.at);
 
   return {
@@ -125,11 +128,17 @@ export function branchContaining({ repoRoot, sha, runGit = runGitSync, timeoutMs
   const result = runGit(['branch', '--contains', sha, '--format=%(refname:short)'], { cwd: repoRoot, timeoutMs });
   if (!result.ok) return '';
 
-  const candidates = result.stdout
+  const all = result.stdout
     .split('\n')
     .map((line) => line.trim().replace(/^\*\s*/, ''))
-    .filter((line) => line && !TRUNK_BRANCHES.has(line));
-  return candidates.length === 1 ? candidates[0] : '';
+    .filter(Boolean);
+
+  const candidates = all.filter((line) => !TRUNK_BRANCHES.has(line));
+  if (candidates.length === 1) return candidates[0];
+  // Only the trunk contains it: the work was committed straight to main, and
+  // saying so is a derivation, not a guess.
+  if (candidates.length === 0 && all.length === 1) return all[0];
+  return '';
 }
 
 /**
