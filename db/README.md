@@ -10,7 +10,7 @@ The RAG store lives in its own Supabase Postgres project, in a schema called `ra
 | Postgres | 17 |
 | pgvector | 0.8.2 |
 | Schema owned by this repo | `rag` |
-| Live contents | 1,319 documents, 2,312 chunks, 27 collections |
+| Live contents | 1,324 documents, 2,360 chunks, 27 collections |
 
 ## Two stores exist. Never cross them.
 
@@ -133,12 +133,18 @@ copy would not match.
 ### Verifying a filter is index-served, not scanned
 
 `filter_metadata` is only worth having if Postgres reaches it through
-`documents_metadata_idx` rather than reading all 1,320 documents. `EXPLAIN` on either arm of
+`documents_metadata_idx` rather than reading all 1,324 documents. `EXPLAIN` on either arm of
 `rag.search` should show a bitmap index scan:
 
 ```
-->  Bitmap Heap Scan on documents d
-      Recheck Cond: (metadata @> '{"type": "session"}'::jsonb)
-      ->  Bitmap Index Scan on documents_metadata_idx
-            Index Cond: (metadata @> '{"type": "session"}'::jsonb)
+->  Bitmap Heap Scan on documents d (actual rows=2)
+      Recheck Cond: (metadata @> '{"repo": "emstacho-su/bb2dash", "phase": "phase-9"}'::jsonb)
+      Filter: (COALESCE((metadata ->> 'status'), '') <> 'superseded')
+      ->  Bitmap Index Scan on documents_metadata_idx (actual rows=2)
+            Index Cond: (metadata @> '{"repo": "emstacho-su/bb2dash", "phase": "phase-9"}'::jsonb)
 ```
+
+The bitmap scan must be the **driving** node, with the chunk scan nested inside
+it. If `documents` appears below the chunk scan instead, the filter has become a
+post-ANN filter: results are still returned, fewer than `match_count` of them,
+and nothing looks broken.

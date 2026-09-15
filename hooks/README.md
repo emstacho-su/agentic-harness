@@ -8,7 +8,7 @@ Claude Code loads them from.
 | --- | --- |
 | `lib/enqueue-ingest.mjs` | Starts a detached `ingest --only` run for one freshly written session note |
 | `tests/enqueue-ingest.test.mjs` | `node --test`, no real process ever spawned |
-| `session-capture-enqueue.patch` | The two lines that call the enqueue from `session-capture.mjs` |
+| `session-capture-enqueue.md` | The two lines that call the enqueue from `session-capture.mjs`, and where they go |
 
 ```bash
 node --test "hooks/tests/**/*.test.mjs"
@@ -30,7 +30,8 @@ the ingest. It starts one and returns.
 SessionEnd
   └─ session-capture.mjs writes vault/projects/<c>/sessions/<id>.md
        └─ enqueueIngest()  ~10 ms
-            └─ detached: uv run ingest --source obsidian --path <vault> --only <note>
+            └─ detached: uv --directory <project> run ingest
+                          --source obsidian --path <vault> --only <note>
                  └─ stdout + stderr -> ~/.claude/hooks/ingest-on-capture.log
 ```
 
@@ -45,6 +46,16 @@ Three properties make that safe to do on session exit:
   element of an `argv` array with `shell: false`, so no quoting rule can turn a
   filename into a command. There is a test that enqueues a note literally named
   ``a b & rm -rf $(x) `y`.md``.
+- **`uv` is always an absolute path, and the child is given no `cwd`.** On
+  Windows, libuv resolves a command name with no directory separator against the
+  child's working directory *before* it looks at `PATH` — so spawning a bare
+  `uv` with `cwd` set to the project directory would let a `uv.exe` dropped in
+  there win over the real one, and `shell: false` does not help (it stops the
+  shell re-parsing arguments, which is a different problem). `resolveUv` returns
+  the standalone install, else an explicit `PATH` search, else **null** and a
+  `NO_UV` refusal; the project is passed with `uv --directory` instead. There is
+  an `isAbsolute` check immediately before the spawn so the invariant cannot be
+  lost in a later edit.
 - **It cannot throw.** Every path returns a result object and logs the reason.
   A capture hook that raises on session exit is worse than no capture hook.
 
@@ -74,7 +85,7 @@ picks the note up instead.
 | --- | --- | --- |
 | `HARNESS_INGEST_ON_CAPTURE` | on | `0`, `false`, `off` or `no` disables the enqueue |
 | `HARNESS_INGEST_PROJECT` | `~/agentic-harness/ingest` | The uv project to run `ingest` from |
-| `HARNESS_UV_BIN` | `~/.local/bin/uv.exe`, else `uv` on PATH | The `uv` executable |
+| `HARNESS_UV_BIN` | `~/.local/bin/uv.exe`, else the first `uv` on `PATH` | The `uv` executable; never a bare name |
 | `HARNESS_INGEST_LOG` | `~/.claude/hooks/ingest-on-capture.log` | Where the detached run's output lands |
 
 The default project directory is the **main checkout**, never a worktree:
@@ -94,17 +105,24 @@ import { enqueueIngest } from './lib/enqueue-ingest.mjs';
 ```
 
 ```js
-  enqueueIngest({ vaultRoot, notePath: file, log });
+  enqueueIngest({ notePath: outcome.notePath, vaultRoot: outcome.vaultRoot, log });
 ```
 
-`session-capture-enqueue.patch` holds the same change as a diff against
-version 1.0.0. The import is relative to the hook file, so it resolves both at
-the deployed path (`~/.claude/hooks/lib/enqueue-ingest.mjs`) and in this repo
-(`hooks/lib/enqueue-ingest.mjs`).
+They go in the `SEAM` block W-H1 marked for exactly this, after the
+`if (!outcome.written)` early return and before the final `log(...)`. The call
+satisfies the seam's three conditions: it does not await, it cannot throw, and
+it leaves `log(...)` as the last statement in `main()`.
+
+[session-capture-enqueue.md](./session-capture-enqueue.md) has the exact
+placement and why it is written down rather than applied on this branch. The
+import is relative to the hook file, so it resolves both in this repo
+(`hooks/lib/enqueue-ingest.mjs`) and at the deployed path
+(`~/.claude/hooks/lib/enqueue-ingest.mjs`).
 
 ### Deploying
 
-Copy the library next to the hook:
+`node hooks/install.mjs` (W-H1's installer) copies the whole `hooks/` tree to
+`~/.claude/hooks/`, this library included. To place just this file:
 
 ```bash
 mkdir -p "C:/Users/estac/.claude/hooks/lib"

@@ -50,7 +50,12 @@ STATUS_CONCLUDED = "concluded"
 # R-27.2: "no resume has followed within 24 h".
 DEFAULT_STALE_AFTER_HOURS = 24
 
-_FRONTMATTER_FENCE = re.compile(r"^(-{3}|\.{3})\s*$")
+# Exactly what python-frontmatter's YAMLHandler accepts (`^-{3,}\s*$`), and
+# nothing else. split_frontmatter decides whether a note HAS frontmatter; if
+# this disagreed with it, a note it parsed happily could be scanned past its real
+# closing fence into the body, and a horizontal rule down there would be mistaken
+# for the boundary.
+_FRONTMATTER_FENCE = re.compile(r"^-{3,}\s*$")
 _KEY_LINE = re.compile(r"^(?P<indent>\s*)(?P<key>[A-Za-z0-9_]+)(?P<gap>\s*:\s*)(?P<value>.*)$")
 _VALUE_TOKEN = re.compile(r"^(?P<token>\S*)(?P<trail>.*)$")
 
@@ -246,7 +251,7 @@ def merge_conclusion(raw: str, *, concluded_at: datetime) -> str:
 
 def _frontmatter_bounds(lines: list[str]) -> tuple[int, int]:
     """Indices of the first and last line INSIDE the frontmatter block."""
-    if not lines or lines[0].strip() != "---":
+    if not lines or not _FRONTMATTER_FENCE.match(lines[0].rstrip("\r\n")):
         raise ValueError("note has no YAML frontmatter")
     for index in range(1, len(lines)):
         if _FRONTMATTER_FENCE.match(lines[index].rstrip("\r\n")):

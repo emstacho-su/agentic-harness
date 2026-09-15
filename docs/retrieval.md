@@ -6,7 +6,7 @@ ordering, narrows by source, collection and frontmatter, caps how many chunks on
 document may contribute, and refuses to surface semantic neighbours that are not
 actually close.
 
-> **Status.** Live on `harness-memory` over 1,320 documents and 2,319 chunks.
+> **Status.** Live on `harness-memory` over 1,324 documents and 2,360 chunks.
 > The similarity numbers below were measured on that corpus, not invented.
 
 ---
@@ -296,11 +296,19 @@ failure this design is avoiding. `EXPLAIN` on either arm shows it driving the
 plan:
 
 ```
-->  Bitmap Heap Scan on documents d
-      Recheck Cond: (metadata @> '{"type": "session"}'::jsonb)
-      ->  Bitmap Index Scan on documents_metadata_idx
-            Index Cond: (metadata @> '{"type": "session"}'::jsonb)
+Nested Loop
+  ->  Bitmap Heap Scan on documents d (actual rows=2)
+        Recheck Cond: (metadata @> '{"repo": "emstacho-su/bb2dash", "phase": "phase-9"}'::jsonb)
+        Filter: (COALESCE((metadata ->> 'status'), '') <> 'superseded')
+        ->  Bitmap Index Scan on documents_metadata_idx (actual rows=2)
+              Index Cond: (metadata @> '{"repo": "emstacho-su/bb2dash", "phase": "phase-9"}'::jsonb)
+  ->  Index Scan using chunks_document_idx on chunks c
 ```
+
+The documents scan is the **driving** node and the chunk scan is nested inside
+it, which is the shape that proves the filter ran first. If the two were the
+other way round the filter would be running after the chunk scan, results would
+quietly fall short of `match_count`, and nothing would look broken.
 
 ---
 

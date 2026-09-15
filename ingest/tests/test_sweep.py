@@ -250,6 +250,29 @@ def test_a_note_without_frontmatter_is_refused():
         merge_conclusion("# Just a heading\n", concluded_at=NOW)
 
 
+def test_a_wide_fence_is_bounded_where_python_frontmatter_bounds_it():
+    # python-frontmatter accepts three-or-more dashes. If the sweep insisted on
+    # exactly three it would scan past the real closing fence and mistake the
+    # horizontal rule in the body for the boundary.
+    raw = (
+        "-----\n"
+        "type: session\n"
+        "status: active\n"
+        "-----\n"
+        "\n"
+        "Body with a rule below it.\n"
+        "\n"
+        "---\n"
+        "\n"
+        "status: this line is prose, not frontmatter\n"
+    )
+    merged = merge_conclusion(raw, concluded_at=NOW)
+
+    assert "status: this line is prose, not frontmatter\n" in merged
+    assert merged.count("status: concluded") == 1
+    assert merged.index("status: concluded") < merged.index("Body with a rule")
+
+
 def test_an_unclosed_frontmatter_block_is_refused():
     with pytest.raises(ValueError, match="never closed"):
         merge_conclusion("---\ntype: session\nstatus: active\n", concluded_at=NOW)

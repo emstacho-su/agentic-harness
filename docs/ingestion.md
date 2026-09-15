@@ -1,8 +1,8 @@
 # The ingestion pipeline
 
 > **Status: live.** `ingest/` has loaded the full claude-mem export and the
-> vault into `harness-memory`: 1,320 documents and 2,319 chunks across 27
-> collections as of 2026-09-15. 336 tests, run with `uv run pytest`.
+> vault into `harness-memory`: 1,324 documents and 2,360 chunks across 27
+> collections as of 2026-09-15. 354 tests, run with `uv run pytest`.
 
 Ingestion turns source artifacts into rows the retrieval function can rank. It
 runs as a batch job, not a service — you point it at a source and it reconciles
@@ -350,7 +350,8 @@ returns:
 SessionEnd
   └─ session-capture.mjs writes vault/projects/<c>/sessions/<id>.md
        └─ enqueueIngest()                                   9-16 ms
-            └─ detached: uv run ingest --source obsidian --path <vault> --only <note>
+            └─ detached: uv --directory <project> run ingest
+                          --source obsidian --path <vault> --only <note>
                  └─ stdout + stderr -> ~/.claude/hooks/ingest-on-capture.log
 ```
 
@@ -358,7 +359,10 @@ The child is spawned `detached` and `unref()`ed, with its output going to a file
 rather than a pipe — an unread pipe buffer would tie the parent's lifetime back
 to the child and undo the whole point. The note path is passed as one element of
 an argument array with `shell: false`, never interpolated into a command string.
-The module cannot throw; every refusal returns a reason and writes it to
+`uv` is resolved to an absolute path (or the enqueue refuses), and the project
+is passed with `uv --directory` rather than a spawn `cwd`, because Windows
+resolves a bare command name against the child's working directory before
+`PATH`. The module cannot throw; every refusal returns a reason and writes it to
 `session-capture.log`.
 
 ```
@@ -369,7 +373,7 @@ The module cannot throw; every refusal returns a reason and writes it to
 | --- | --- | --- |
 | `HARNESS_INGEST_ON_CAPTURE` | on | `0` / `false` / `off` / `no` disables the enqueue |
 | `HARNESS_INGEST_PROJECT` | `~/agentic-harness/ingest` | Which uv project runs `ingest` |
-| `HARNESS_UV_BIN` | `~/.local/bin/uv.exe`, else `uv` on PATH | The `uv` executable |
+| `HARNESS_UV_BIN` | `~/.local/bin/uv.exe`, else the first `uv` on `PATH` | The `uv` executable; never a bare name |
 | `HARNESS_INGEST_LOG` | `~/.claude/hooks/ingest-on-capture.log` | Where the detached run's output lands |
 
 The default project directory is the **main checkout**, never a worktree: a
@@ -445,17 +449,30 @@ comment on the `status:` line and every tag added by hand all survive
 byte-for-byte. That matters because these notes are Stack's, and a sweep that
 reformatted them nightly would be worse than no sweep.
 
-On the live vault today, all seven session notes predate the schema and are
-refused rather than guessed at:
+Two more rules, both learned from the same instinct — this job runs unattended
+at 03:00 over files the user also edits by hand:
+
+- **The write is atomic.** A note is written to a sibling file and renamed over
+  the original, so a crash mid-write cannot leave one of Stack's notes empty.
+- **A block scalar is refused, not edited.** `status: |` or `status: >` puts the
+  value on the lines *below*, which a line-wise edit would strand as invalid
+  YAML. Neither key is ever written that way; if one is, it was a hand edit and
+  the sweep leaves it alone.
+
+On the live vault, the seven session notes now carry the v2 schema and are all
+already concluded, so the sweep correctly does nothing:
 
 ```
-7 note(s) refused:
-  projects/agentic-harness/sessions/2026-09-09-5ee983a8.md: no 'status' in frontmatter; refusing to invent one
-  ...
+$ uv run ingest sweep-concluded --path "<vault>" --dry-run
+
 --- conclude sweep: dry run, nothing written ---
   scanned 7 session note(s)
-      7  refused
+      7  left-alone
 ```
+
+Before those notes gained a `status`, the same command refused all seven with
+`no 'status' in frontmatter; refusing to invent one` — which is the behaviour
+that matters: the sweep never guesses a lifecycle it cannot read.
 
 ### Health is staleness, not failure
 
@@ -468,11 +485,11 @@ writes `~/.claude/hooks/ingest-state.json`:
 ```json
 {
   "schema_version": 1,
-  "last_success": "2026-09-15T03:00:41+00:00",
+  "last_success": "2026-09-15T15:12:08.465430+00:00",
   "source": "obsidian",
-  "path": "C:/Users/estac/OneDrive - Syracuse University/vault",
-  "documents": 1320,
-  "chunks_written": 12
+  "path": "C:\Users\estac\OneDrive - Syracuse University\vault",
+  "documents": 18,
+  "chunks_written": 47
 }
 ```
 
