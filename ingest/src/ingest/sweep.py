@@ -20,6 +20,7 @@ with no ``status`` at all is refused rather than guessed at.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -184,11 +185,31 @@ def _sweep_note(
         return NoteOutcome(relative, Action.CONCLUDED, "dry run, not written")
 
     try:
-        path.write_bytes(updated.encode("utf-8"))
+        _write_atomically(path, updated.encode("utf-8"))
     except OSError as exc:
         return NoteOutcome(relative, Action.REFUSED, f"write failed ({exc})")
     log.info("concluded %s", relative)
     return NoteOutcome(relative, Action.CONCLUDED, None)
+
+
+def _write_atomically(path: Path, payload: bytes) -> None:
+    """Replace a note's contents without ever leaving it half-written.
+
+    Writing in place truncates first, so a crash between truncate and write
+    leaves an empty note — and these are the user's own notes, edited by a job
+    that runs unattended at 03:00. Write a sibling, then rename over the
+    original, which is atomic on both NTFS and POSIX.
+    """
+    temporary = path.with_name(f"{path.name}.sweep-tmp")
+    try:
+        temporary.write_bytes(payload)
+        os.replace(temporary, path)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - the original error is the real one
+            pass
+        raise
 
 
 def merge_conclusion(raw: str, *, concluded_at: datetime) -> str:
@@ -204,11 +225,15 @@ def merge_conclusion(raw: str, *, concluded_at: datetime) -> str:
     if status_index is None:
         raise ValueError(f"no '{STATUS_KEY}' line in the frontmatter")
 
+    _refuse_block_scalar(lines[status_index], STATUS_KEY)
+
     stamp = concluded_at.astimezone(timezone.utc).isoformat()
     updated = list(lines)
     updated[status_index] = _replace_value(updated[status_index], STATUS_CONCLUDED)
 
     concluded_index = _find_key(updated, start, end, CONCLUDED_AT_KEY)
+    if concluded_index is not None:
+        _refuse_block_scalar(lines[concluded_index], CONCLUDED_AT_KEY)
     if concluded_index is None:
         # Keep the two related keys adjacent, and reuse the status line's own
         # indentation and newline so the file's style is untouched.
@@ -227,6 +252,22 @@ def _frontmatter_bounds(lines: list[str]) -> tuple[int, int]:
         if _FRONTMATTER_FENCE.match(lines[index].rstrip("\r\n")):
             return 1, index
     raise ValueError("frontmatter block is never closed")
+
+
+def _refuse_block_scalar(line: str, key: str) -> None:
+    """A ``key: |`` or ``key: >`` value continues on the lines below it.
+
+    The line-wise edit only ever replaces the first token on one line, so it
+    would swap the ``|`` for the new value and strand the indented continuation
+    as an orphan — turning a note into invalid YAML. Neither of these two keys
+    is ever written that way; if one is, that is a hand edit worth refusing.
+    """
+    match = _KEY_LINE.match(line.rstrip("\r\n"))
+    if match is None:  # pragma: no cover - callers only pass matched lines
+        return
+    token = _VALUE_TOKEN.match(match.group("value")).group("token")
+    if token[:1] in ("|", ">"):
+        raise ValueError(f"'{key}' is a YAML block scalar ({token}); refusing to edit it line-wise")
 
 
 def _find_key(lines: list[str], start: int, end: int, key: str) -> int | None:

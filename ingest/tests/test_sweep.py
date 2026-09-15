@@ -206,6 +206,45 @@ def test_a_nested_status_key_is_not_mistaken_for_the_top_level_one():
     assert "\nstatus: concluded\n" in merged
 
 
+@pytest.mark.parametrize("marker", ["|", ">", "|-", ">-"])
+def test_a_block_scalar_status_is_refused_rather_than_mangled(marker):
+    # The value continues on the lines below, so a line-wise swap would strand
+    # the continuation and produce invalid YAML.
+    raw = f"---\ntype: session\nstatus: {marker}\n  active\n---\n\nBody.\n"
+    with pytest.raises(ValueError, match="block scalar"):
+        merge_conclusion(raw, concluded_at=NOW)
+
+
+def test_a_block_scalar_concluded_at_is_refused_too():
+    raw = "---\ntype: session\nstatus: active\nconcluded_at: |\n  2020-01-01\n---\n\nBody.\n"
+    with pytest.raises(ValueError, match="block scalar"):
+        merge_conclusion(raw, concluded_at=NOW)
+
+
+def test_a_quoted_status_value_is_still_replaced():
+    raw = "---\ntype: session\nstatus: 'active'\n---\n\nBody.\n"
+    merged = merge_conclusion(raw, concluded_at=NOW)
+    assert "status: concluded\n" in merged
+
+
+def test_a_refused_note_is_left_exactly_as_it_was(session_vault):
+    note = session_vault / SESSIONS / "block-scalar.md"
+    note.write_bytes(
+        b"---\ntype: session\nended_at: 2026-09-01T00:00:00+00:00\nstatus: >\n  active\n---\n\nBody.\n"
+    )
+    before = note.read_bytes()
+
+    result = sweep_concluded(session_vault, now=NOW, apply=True)
+
+    assert note.read_bytes() == before
+    assert any("block-scalar.md" in o.relative for o in result.refused)
+
+
+def test_a_sweep_leaves_no_temporary_file_behind(session_vault):
+    sweep_concluded(session_vault, now=NOW, apply=True)
+    assert list(session_vault.rglob("*.sweep-tmp")) == []
+
+
 def test_a_note_without_frontmatter_is_refused():
     with pytest.raises(ValueError, match="no YAML frontmatter"):
         merge_conclusion("# Just a heading\n", concluded_at=NOW)

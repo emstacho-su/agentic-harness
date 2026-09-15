@@ -92,8 +92,10 @@ describe('enqueueIngest — the command it builds', () => {
     assert.equal(spawn.calls.length, 1);
 
     const { command, args } = spawn.calls[0];
-    assert.equal(command, 'C:/tools/uv.exe');
+    assert.equal(command, path.resolve('C:/tools/uv.exe'));
     assert.deepEqual(args, [
+      '--directory',
+      path.resolve(projectDir),
       'run',
       'ingest',
       '--source',
@@ -103,6 +105,20 @@ describe('enqueueIngest — the command it builds', () => {
       '--only',
       path.resolve(note),
     ]);
+  });
+
+  it('never hands spawn a bare command name', () => {
+    // On Windows libuv resolves a bare name against the child's cwd BEFORE
+    // PATH, so a uv.exe dropped in the project directory would win.
+    const { spawn } = call();
+    assert.ok(path.isAbsolute(spawn.calls[0].command));
+  });
+
+  it('passes the project with --directory instead of spawning with cwd', () => {
+    const { spawn } = call();
+    assert.equal(spawn.calls[0].options.cwd, undefined);
+    assert.equal(spawn.calls[0].args[0], '--directory');
+    assert.equal(spawn.calls[0].args[1], path.resolve(projectDir));
   });
 
   it('passes the note as one argument, never as shell text', () => {
@@ -132,9 +148,20 @@ describe('enqueueIngest — the command it builds', () => {
     assert.equal(spawn.calls[0].args.at(-1), path.resolve(nasty));
   });
 
-  it('runs in the ingest project directory', () => {
-    const { spawn } = call();
-    assert.equal(spawn.calls[0].options.cwd, path.resolve(projectDir));
+  it('refuses when uv cannot be found anywhere', () => {
+    const { result, spawn } = call({
+      env: {
+        [ENV_UV_BIN]: '',
+        USERPROFILE: path.join(workspace, 'nohome'),
+        HOME: path.join(workspace, 'nohome'),
+        PATH: path.join(workspace, 'empty'),
+      },
+    });
+
+    assert.equal(result.enqueued, false);
+    assert.equal(result.reason, Reason.NO_UV);
+    assert.equal(spawn.calls.length, 0);
+    assert.ok(lines.some((line) => line.includes(ENV_UV_BIN)));
   });
 });
 
@@ -365,12 +392,50 @@ describe('enqueueIngest — resolution without hardcoded paths', () => {
     assert.ok(target.endsWith('ingest-on-capture.log'));
   });
 
-  it('falls back to uv on PATH when no override is set', () => {
+  const noHome = () => ({
+    USERPROFILE: path.join(workspace, 'nohome'),
+    HOME: path.join(workspace, 'nohome'),
+  });
+
+  it('resolves uv to an absolute path or to null, never to a bare name', () => {
     const resolved = resolveUv({});
-    assert.ok(resolved === 'uv' || resolved.endsWith('uv.exe') || resolved.endsWith('uv'));
+    assert.ok(resolved === null || path.isAbsolute(resolved));
+    assert.notEqual(resolved, 'uv');
+  });
+
+  it('finds uv on PATH and returns it absolute', () => {
+    const binDir = path.join(workspace, 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    const executable = process.platform === 'win32' ? 'uv.exe' : 'uv';
+    fs.writeFileSync(path.join(binDir, executable), '', 'utf8');
+
+    const resolved = resolveUv({
+      ...noHome(),
+      PATH: `${path.join(workspace, 'nope')}${path.delimiter}${binDir}`,
+    });
+    assert.equal(resolved, path.join(binDir, executable));
+  });
+
+  it('prefers the standalone install over PATH', () => {
+    const home = path.join(workspace, 'home');
+    const executable = process.platform === 'win32' ? 'uv.exe' : 'uv';
+    const standalone = path.join(home, '.local', 'bin', executable);
+    fs.mkdirSync(path.dirname(standalone), { recursive: true });
+    fs.writeFileSync(standalone, '', 'utf8');
+
+    assert.equal(resolveUv({ USERPROFILE: home, HOME: home, PATH: '' }), standalone);
+  });
+
+  it('returns null when PATH holds no uv', () => {
+    assert.equal(resolveUv({ ...noHome(), PATH: path.join(workspace, 'nope') }), null);
+  });
+
+  it('ignores an empty or quoted PATH entry rather than resolving relative', () => {
+    const resolved = resolveUv({ ...noHome(), PATH: `${path.delimiter}""${path.delimiter}` });
+    assert.equal(resolved, null);
   });
 
   it('honours an explicit uv path', () => {
-    assert.equal(resolveUv({ [ENV_UV_BIN]: 'D:/uv/uv.exe' }), 'D:/uv/uv.exe');
+    assert.equal(resolveUv({ [ENV_UV_BIN]: 'D:/uv/uv.exe' }), path.resolve('D:/uv/uv.exe'));
   });
 });

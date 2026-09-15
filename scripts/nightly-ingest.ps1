@@ -56,7 +56,10 @@ function Write-Log {
     param([string] $Message)
 
     $line = '{0} {1}' -f (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'), $Message
-    Write-Output $line
+    # Write-Host, not Write-Output: Write-Output emits into the PIPELINE, so
+    # every log line inside Invoke-Ingest would become part of that function's
+    # return value and the exit code would come back as an array of strings.
+    Write-Host $line
     try {
         $directory = Split-Path -Parent $LogPath
         if (-not (Test-Path $directory)) { New-Item -ItemType Directory -Force -Path $directory | Out-Null }
@@ -70,7 +73,7 @@ function Write-Log {
         Add-Content -Path $LogPath -Value $line -Encoding utf8
     } catch {
         # A log that cannot be written must not fail the job it is logging.
-        Write-Output "(could not write $LogPath)"
+        Write-Host "(could not write $LogPath)"
     }
 }
 
@@ -95,12 +98,30 @@ function Invoke-Ingest {
     param([string] $Uv, [string] $Project, [string[]] $IngestArgs, [string] $Label)
 
     Write-Log "$Label : uv run ingest $($IngestArgs -join ' ')"
-    # Argument array, never a command string: the vault path holds spaces.
-    $output = & $Uv --directory $Project run ingest @IngestArgs 2>&1
-    $code = $LASTEXITCODE
+
+    # `ingest` logs at INFO to STDERR, and so does `uv run`. In Windows
+    # PowerShell 5.1, merging a native command's stderr into the pipeline while
+    # $ErrorActionPreference is 'Stop' turns every one of those lines into a
+    # terminating NativeCommandError — the nightly job would abort on its first
+    # log line, every night, and the only symptom would be a non-zero exit.
+    # Relaxing the preference for exactly this call keeps the merge (we want
+    # both streams in the log) without the merge being fatal.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        # Argument array, never a command string: the vault path holds spaces.
+        $output = & $Uv --directory $Project run ingest @IngestArgs 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+
     foreach ($line in $output) { Write-Log "$Label | $line" }
     Write-Log "$Label : exit $code"
-    return $code
+
+    # The ONLY thing this function puts on the pipeline. Everything above logs
+    # through Write-Host for exactly that reason.
+    return [int] $code
 }
 
 # --------------------------------------------------------------------------

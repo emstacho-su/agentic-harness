@@ -55,6 +55,7 @@ export const Reason = {
   OUTSIDE_VAULT: 'note is outside the vault',
   NOT_MARKDOWN: 'note is not markdown',
   NO_PROJECT: 'ingest project directory not found',
+  NO_UV: 'uv executable not found',
   SPAWN_FAILED: 'spawn failed',
 };
 
@@ -115,9 +116,21 @@ function run({ vaultRoot, notePath }, { log, env, spawn }) {
     return { enqueued: false, reason: Reason.NO_PROJECT };
   }
 
+  const uv = resolveUv(env);
+  if (uv === null) {
+    safely(log, `ingest-enqueue skipped: uv was not found (set ${ENV_UV_BIN})`);
+    return { enqueued: false, reason: Reason.NO_UV };
+  }
+
   const runLog = resolveRunLog(env);
   const command = [
-    resolveUv(env),
+    uv,
+    // --directory rather than spawning with cwd: on Windows libuv resolves a
+    // bare command name against the child's cwd BEFORE PATH, so a `uv.exe`
+    // dropped into the project directory would be preferred over the real one.
+    // uv is always absolute here, and the child inherits no chosen cwd.
+    '--directory',
+    projectDir,
     'run',
     'ingest',
     '--source',
@@ -128,11 +141,17 @@ function run({ vaultRoot, notePath }, { log, env, spawn }) {
     note,
   ];
 
+  // Make the invariant the comment above relies on impossible to lose in a
+  // later edit: nothing relative ever reaches spawn.
+  if (!path.isAbsolute(command[0])) {
+    safely(log, `ingest-enqueue skipped: uv path is not absolute (${command[0]})`);
+    return { enqueued: false, reason: Reason.NO_UV };
+  }
+
   let output = null;
   try {
     output = openRunLog(runLog);
     const child = spawn(command[0], command.slice(1), {
-      cwd: projectDir,
       // No shell. The note path is data, and a shell would re-parse it.
       shell: false,
       detached: true,
@@ -188,14 +207,49 @@ export function resolveRunLog(env = process.env) {
   return override ? path.resolve(override) : DEFAULT_RUN_LOG;
 }
 
+/**
+ * Absolute path to `uv`, or null when it cannot be found.
+ *
+ * Never a bare `uv`. On Windows libuv resolves a command name with no
+ * directory separator against the child's working directory before it looks at
+ * `PATH`, so a bare name turns any writable directory the child starts in into
+ * an execution vector. Refusing beats guessing: the log says `uv` was not
+ * found and the nightly reconcile picks the note up.
+ */
 export function resolveUv(env = process.env) {
   const override = (env?.[ENV_UV_BIN] ?? '').trim();
-  if (override) return override;
+  if (override) return path.resolve(override);
 
-  // Installed by winget and by the standalone installer; on PATH in a login
-  // shell but not necessarily in the environment a hook inherits.
-  const local = path.join(os.homedir(), '.local', 'bin', process.platform === 'win32' ? 'uv.exe' : 'uv');
-  return existsSafely(local) ? local : 'uv';
+  const executable = process.platform === 'win32' ? 'uv.exe' : 'uv';
+
+  // Installed by the standalone installer; present in a login shell's PATH but
+  // not necessarily in the environment a hook inherits.
+  const local = path.join(homeDir(env), '.local', 'bin', executable);
+  if (existsSafely(local)) return local;
+
+  return searchPath(executable, env);
+}
+
+/**
+ * Home directory as the CHILD will see it, not as this process sees it.
+ * Taking it from the same mapping that becomes the child's environment keeps
+ * resolution honest and makes it injectable from a test.
+ */
+function homeDir(env) {
+  const fromEnv = (env?.USERPROFILE ?? env?.HOME ?? '').trim();
+  return fromEnv || os.homedir();
+}
+
+/** Resolve an executable against PATH ourselves, so the result is absolute. */
+function searchPath(executable, env) {
+  const raw = env?.PATH ?? env?.Path ?? '';
+  for (const entry of raw.split(path.delimiter)) {
+    const directory = entry.trim().replace(/^"|"$/g, '');
+    if (!directory) continue;
+    const candidate = path.join(directory, executable);
+    if (existsSafely(candidate)) return path.resolve(candidate);
+  }
+  return null;
 }
 
 function existsSafely(target) {
