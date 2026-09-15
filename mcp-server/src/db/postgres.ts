@@ -57,7 +57,9 @@ export class PostgresRagClient implements RagClient {
       '  filter_collection => $5::text,',
       '  rrf_k             => $6::int,',
       '  max_per_document  => $7::int,',
-      '  min_similarity    => $8::double precision',
+      '  min_similarity    => $8::double precision,',
+      '  filter_metadata   => $9::jsonb,',
+      '  include_superseded => $10::boolean',
       ')',
     ].join('\n');
   }
@@ -72,6 +74,10 @@ export class PostgresRagClient implements RagClient {
       params.rrfK,
       params.maxPerDocument,
       params.minSimilarity,
+      // Serialised here rather than left to the driver's object handling, so
+      // what reaches ::jsonb is a string this code chose.
+      params.filterMetadata === null ? null : JSON.stringify(params.filterMetadata),
+      params.includeSuperseded,
     ];
 
     try {

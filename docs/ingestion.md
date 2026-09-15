@@ -1,17 +1,21 @@
 # The ingestion pipeline
 
 > **Status: live.** `ingest/` has loaded the full claude-mem export and the
-> vault into `harness-memory`: 1,319 documents and 2,312 chunks across 27
-> collections as of 2026-09-10. 261 tests, run with `uv run pytest`.
+> vault into `harness-memory`: 1,324 documents and 2,360 chunks across 27
+> collections as of 2026-09-15. 354 tests, run with `uv run pytest`.
 
 Ingestion turns source artifacts into rows the retrieval function can rank. It
 runs as a batch job, not a service — you point it at a source and it reconciles
-the database with what is on disk.
+the database with what is on disk. It runs three ways: by hand, one note at a
+time from the session-capture hook, and nightly from Task Scheduler.
 
 ```bash
 cd C:/Users/estac/agentic-harness/ingest
 uv run ingest --source claude-mem --path C:/Users/estac/.claude-archive/2026-09-09/claude-mem-export   # one-time import
 uv run ingest --source obsidian   --path "C:/Users/estac/OneDrive - Syracuse University/vault"      # re-run any time; unchanged notes cost nothing
+uv run ingest --source obsidian   --path "<vault>" --only projects/bb2dash/sessions/<id>.md         # one note, what the hook runs
+uv run ingest sweep-concluded     --path "<vault>" --dry-run                                        # conclude stale sessions
+uv run ingest --health                                                                              # is the nightly reconcile still running?
 ```
 
 ---
@@ -101,6 +105,45 @@ This was tested the hard way: the first full ingest died at document 276 when
 the Supabase pooler reaped a connection held open across a long embedding run,
 failing the remaining 1,029. The store now reconnects and retries with TCP
 keepalives, and the re-run picked up exactly where the hashes said it should.
+
+---
+
+## Single-note runs: `--only`
+
+```bash
+uv run ingest --source obsidian --path "<vault>" --only projects/bb2dash/sessions/<id>.md
+```
+
+A full vault walk reads every note to find the two that changed. That is cheap
+enough nightly and far too slow to hang off the end of a session, so `--only`
+runs the *same* pipeline over exactly one note. The path may be absolute or
+vault-relative; a relative one resolves against the vault, never against the
+process's working directory, because the caller is a background process started
+from wherever the session happened to be.
+
+Four things are refused rather than tolerated, because nobody is watching this
+run's stdout:
+
+| Refused | Why |
+| --- | --- |
+| A note that is not inside `--path` | The vault boundary is the whole security model of the flag. `..` and symlinks are resolved before the check. |
+| A missing file | A typo'd path that "succeeded" having done nothing is the worst possible outcome for a background job. |
+| A path the full walk skips (`templates/`, `.obsidian/`) | It would create a row the next `--prune` sweep immediately deletes. |
+| `--only` together with `--prune` | The orphan sweep deletes everything the run did not produce. After a one-note run, that is the entire vault. |
+
+`ingest: false` and an empty body are **not** errors. They come back as skips
+with the same wording a full walk would use, and the run exits 0.
+
+Re-running `--only` on a note that has not changed performs **zero embeddings**:
+it is one hash, one indexed lookup by `(source, external_id)`, and a decision to
+stop. What it does not avoid is loading the tokenizer, because the chunker asks
+for the model's own WordPiece counter when it is built — so an unchanged note
+costs a model load and no inference. That is the difference between a second and
+a minute, which is why this is fine behind a detached spawn and would not be
+fine inside the hook.
+
+A `--only` run never refreshes the health timestamp. It reconciled one note, not
+the vault, and health means "the nightly reconcile is still happening".
 
 ---
 
@@ -394,6 +437,170 @@ could not be derived were left empty.
 checkout exists on disk any more, so an explicit table in `hooks/lib/migrate.mjs`
 maps them to `bb2dash`; nothing is inferred from a folder name.
 
+### Ingest on capture
+
+Writing the note is not the end of it. Until the note is embedded, `rag` cannot
+answer anything about the session that just happened, and before this the note
+waited for whenever somebody next ran `ingest` by hand.
+
+So the hook, immediately after a successful write, calls
+`hooks/lib/enqueue-ingest.mjs`, which **starts** a single-note ingest and
+returns:
+
+```
+SessionEnd
+  └─ session-capture.mjs writes vault/projects/<c>/sessions/<id>.md
+       └─ enqueueIngest()                                   9-16 ms
+            └─ detached: uv --directory <project> run ingest
+                          --source obsidian --path <vault> --only <note>
+                 └─ stdout + stderr -> ~/.claude/hooks/ingest-on-capture.log
+```
+
+The child is spawned `detached` and `unref()`ed, with its output going to a file
+rather than a pipe — an unread pipe buffer would tie the parent's lifetime back
+to the child and undo the whole point. The note path is passed as one element of
+an argument array with `shell: false`, never interpolated into a command string.
+`uv` is resolved to an absolute path (or the enqueue refuses), and the project
+is passed with `uv --directory` rather than a spawn `cwd`, because Windows
+resolves a bare command name against the child's working directory before
+`PATH`. The module cannot throw; every refusal returns a reason and writes it to
+`session-capture.log`.
+
+```
+2026-09-15T14:38:02.114Z ingest-enqueue started for projects/agentic-harness/sessions/2026-09-10-92056c02.md
+```
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `HARNESS_INGEST_ON_CAPTURE` | on | `0` / `false` / `off` / `no` disables the enqueue |
+| `HARNESS_INGEST_PROJECT` | `~/agentic-harness/ingest` | Which uv project runs `ingest` |
+| `HARNESS_UV_BIN` | `~/.local/bin/uv.exe`, else the first `uv` on `PATH` | The `uv` executable; never a bare name |
+| `HARNESS_INGEST_LOG` | `~/.claude/hooks/ingest-on-capture.log` | Where the detached run's output lands |
+
+The default project directory is the **main checkout**, never a worktree: a
+worktree is deleted when its branch merges, and a hook pointing into a deleted
+one fails quietly. The child inherits `HARNESS_INGEST_ON_CAPTURE=0`, so an
+ingest can never enqueue another ingest.
+
+Measured cost of the enqueue itself: **9–16 ms** warm. The first spawn after a
+reboot cost 2.8 s while Windows validated `uv.exe`, which is charged to the
+caller — so the first session ended after a reboot can exit noticeably slower.
+Turning the kill switch off leaves the nightly reconcile to pick the note up.
+
+Full detail is in [../hooks/README.md](../hooks/README.md).
+
+---
+
+## The nightly reconcile
+
+The per-note run covers the common case. The nightly job covers everything it
+missed — a session ended while OneDrive was offline, a note edited by hand, a
+machine that was asleep — and it is the only thing that concludes stale
+sessions.
+
+```powershell
+./scripts/register-nightly-ingest.ps1                       # idempotent; -Force replaces
+./scripts/register-nightly-ingest.ps1 -At 02:30 -SweepMode DryRun
+./scripts/register-nightly-ingest.ps1 -Unregister
+```
+
+That registers `AgenticHarness-NightlyIngest`, which runs
+`scripts/nightly-ingest.ps1` daily. Every path is explicit — PowerShell, `uv`,
+the project, the vault — because a scheduled task inherits almost none of a
+login shell's environment and a bare `uv` that resolves interactively will not
+resolve at 03:00. `-StartWhenAvailable` is the setting that matters on a laptop:
+the machine is usually asleep at 03:00, and without it a missed run is simply
+lost.
+
+The script does two things, in this order:
+
+1. **`ingest sweep-concluded --apply`** — see below.
+2. **`ingest --source obsidian --path <vault>`** — a full walk, which picks up
+   the notes the sweep just edited in the same night.
+
+A failing sweep does not abort the ingest: a stale status is a smaller problem
+than a stale index. The task's exit code is the ingest's, so Task Scheduler's
+"last result" means what it looks like it means.
+
+### The 24 h conclude sweep
+
+R-27.2 concludes a session when no resume has followed within 24 hours. The hook
+cannot know that — it has already exited — so the sweep decides it:
+
+```bash
+uv run ingest sweep-concluded --path "<vault>" --dry-run   # the default
+uv run ingest sweep-concluded --path "<vault>" --apply
+```
+
+It visits every note the vault walk visits whose frontmatter says
+`type: session`, and for each one:
+
+| Frontmatter | What happens |
+| --- | --- |
+| `status: active`, `ended_at` over 24 h ago | `status: concluded`, `concluded_at: <now>` |
+| `status: active`, `ended_at` recent | left alone |
+| `status: concluded` or `superseded` | left alone — status never regresses |
+| no `status`, or an unparseable `ended_at` | **refused**, with the reason, and nothing written |
+
+**It merges; it does not rewrite.** Exactly two keys change, and the edit is made
+on the raw text line by line rather than by loading and re-dumping the YAML. Key
+order, quoting style, blank lines, indentation, CRLF endings, an inline `#`
+comment on the `status:` line and every tag added by hand all survive
+byte-for-byte. That matters because these notes are Stack's, and a sweep that
+reformatted them nightly would be worse than no sweep.
+
+Two more rules, both learned from the same instinct — this job runs unattended
+at 03:00 over files the user also edits by hand:
+
+- **The write is atomic.** A note is written to a sibling file and renamed over
+  the original, so a crash mid-write cannot leave one of Stack's notes empty.
+- **A block scalar is refused, not edited.** `status: |` or `status: >` puts the
+  value on the lines *below*, which a line-wise edit would strand as invalid
+  YAML. Neither key is ever written that way; if one is, it was a hand edit and
+  the sweep leaves it alone.
+
+On the live vault, the seven session notes now carry the v2 schema and are all
+already concluded, so the sweep correctly does nothing:
+
+```
+$ uv run ingest sweep-concluded --path "<vault>" --dry-run
+
+--- conclude sweep: dry run, nothing written ---
+  scanned 7 session note(s)
+      7  left-alone
+```
+
+Before those notes gained a `status`, the same command refused all seven with
+`no 'status' in frontmatter; refusing to invent one` — which is the behaviour
+that matters: the sweep never guesses a lifecycle it cannot read.
+
+### Health is staleness, not failure
+
+A scheduled task that never fires reports nothing at all: no error, no log line,
+no alert. So the check is not "did it fail" but "how long since it last worked".
+
+A **complete** run — obsidian, not dry, no `--limit`, no `--only`, no failures —
+writes `~/.claude/hooks/ingest-state.json`:
+
+```json
+{
+  "schema_version": 1,
+  "last_success": "2026-09-15T15:12:08.465430+00:00",
+  "source": "obsidian",
+  "path": "C:\Users\estac\OneDrive - Syracuse University\vault",
+  "documents": 18,
+  "chunks_written": 47
+}
+```
+
+```bash
+uv run ingest --health     # exits 1 past 36 h, 0 inside it
+```
+
+36 hours is one missed night plus margin for a laptop that was closed at 03:00.
+Set `HARNESS_INGEST_STATE_FILE` to move the file. Logs for the job itself are in
+`~/.claude/hooks/nightly-ingest.log`.
+
 ---
 
 ## Windows path gotcha
@@ -418,10 +625,14 @@ This has already broken two commands during this project.
 Ingestion reads its one credential from the environment and never hardcodes it:
 
 ```
-DATABASE_URL          # direct Postgres — postgresql://postgres.<ref>:<pw>@aws-0-us-east-1.pooler.supabase.com:5432/postgres
-DATABASE_CA_CERT      # absolute path to certs/prod-ca.crt — connections are sslmode=verify-full, never downgraded
-FASTEMBED_CACHE_DIR   # defaults to ~/.cache/fastembed; keep it out of OneDrive
+DATABASE_URL                # direct Postgres — postgresql://postgres.<ref>:<pw>@aws-0-us-east-1.pooler.supabase.com:5432/postgres
+DATABASE_CA_CERT            # absolute path to certs/prod-ca.crt — connections are sslmode=verify-full, never downgraded
+FASTEMBED_CACHE_DIR         # defaults to ~/.cache/fastembed; keep it out of OneDrive
+HARNESS_INGEST_STATE_FILE   # defaults to ~/.claude/hooks/ingest-state.json; the nightly last-success timestamp
 ```
+
+The credential is never passed on a command line and never written to a log.
+`--check-env` reports which variables are set and never prints a value.
 
 **Connect over `DATABASE_URL`, not PostgREST.** The `rag` schema is deliberately
 not exposed to the REST API — a `supabase-js` RPC returns `HTTP 406 PGRST106` and

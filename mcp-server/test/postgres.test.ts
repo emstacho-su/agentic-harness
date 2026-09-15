@@ -34,6 +34,8 @@ const params = {
   rrfK: 60,
   maxPerDocument: 3,
   minSimilarity: 0.7,
+  filterMetadata: null,
+  includeSuperseded: false,
 };
 
 describe('PostgresRagClient.search', () => {
@@ -87,7 +89,9 @@ describe('PostgresRagClient.search', () => {
     const { pool, calls } = mockPool([]);
     await client(pool).search(params);
 
-    expect(calls[0]?.values).toEqual(['[0.1,0.2,0.3]', 'ledger invariants', 7, null, null, 60, 3, 0.7]);
+    expect(calls[0]?.values).toEqual([
+      '[0.1,0.2,0.3]', 'ledger invariants', 7, null, null, 60, 3, 0.7, null, false,
+    ]);
   });
 
   it('casts using the configured pgvector type', async () => {

@@ -38,6 +38,7 @@ const PAYLOAD = [
   'lib/capture.mjs',
   'lib/collection.mjs',
   'lib/constants.mjs',
+  'lib/enqueue-ingest.mjs',
   'lib/frontmatter.mjs',
   'lib/git-log.mjs',
   'lib/logger.mjs',

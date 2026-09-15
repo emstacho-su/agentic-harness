@@ -43,6 +43,7 @@ import {
   VAULT_ENV_VAR,
 } from './lib/constants.mjs';
 import { createLogger } from './lib/logger.mjs';
+import { enqueueIngest } from './lib/enqueue-ingest.mjs';
 import { parseHookInput, readStdin } from './lib/stdin.mjs';
 
 const STARTED_AT_MS = Date.now();
@@ -83,15 +84,12 @@ function main() {
   }
 
   // ------------------------------------------------------------------ SEAM
-  // The note is on disk and correct. W-H2 (R-27.5) adds the detached per-note
-  // ingest here and nowhere else:
-  //
-  //   import { enqueueIngest } from './lib/enqueue-ingest.mjs';   // with the imports above
-  //   enqueueIngest({ notePath: outcome.notePath, vaultRoot: outcome.vaultRoot, log });
-  //
-  // It must not await, must not throw, and must leave the log line below as the
-  // last thing this function does.
+  // The note is on disk and correct. The detached per-note ingest (R-27.5)
+  // starts here and nowhere else: enqueueIngest does not await, cannot throw,
+  // and leaves the log line below as the last thing this function does.
   // ----------------------------------------------------------------------
+
+  enqueueIngest({ notePath: outcome.notePath, vaultRoot: outcome.vaultRoot, log });
 
   log(`${outcome.action} ${outcome.detail} ms=${ms}`);
 }
