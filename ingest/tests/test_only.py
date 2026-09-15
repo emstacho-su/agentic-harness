@@ -8,6 +8,7 @@ quietly ingesting nothing.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -281,6 +282,55 @@ def test_vault_relative_path_wins_over_a_same_named_cwd_file(vault_path, tmp_pat
 def test_note_path_may_not_be_empty(vault_path):
     with pytest.raises(SourceError):
         load_vault_note(vault_path, "   ")
+
+
+def test_a_null_byte_is_a_typed_error_not_a_traceback(vault_path):
+    # Path.exists() raises ValueError, not OSError, on an embedded null. Left
+    # unhandled it escapes main()'s IngestError handler as a stack trace.
+    with pytest.raises(SourceError, match="null byte"):
+        load_vault_note(vault_path, "\x00notes/rag-design.md")
+
+
+def test_a_null_byte_exits_cleanly_through_the_cli(clean_env, vault_path, capsys):
+    code = main(
+        ["--source", "obsidian", "--path", str(vault_path), "--only", "\x00notes/a.md",
+         "--dry-run", "--env-file", str(clean_env)]
+    )
+    assert code == 1
+    assert "null byte" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(os.name != "nt", reason="path casing is only forgiving on Windows")
+def test_a_differently_cased_spelling_resolves_on_windows(vault_path):
+    loaded = load_vault_note(vault_path, "NOTES/RAG-DESIGN.MD")
+    assert loaded.documents[0].external_id == "notes/rag-design.md"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "./notes/rag-design.md",
+        "notes/../notes/rag-design.md",  # a '..' that stays inside
+        "notes/rag-design.md ",          # trailing whitespace
+    ],
+)
+def test_equivalent_spellings_of_the_same_note_all_resolve(vault_path, case):
+    loaded = load_vault_note(vault_path, case)
+    assert loaded.documents[0].external_id == "notes/rag-design.md"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "../../../../Windows/System32/drivers/etc/hosts.md",
+        "C:/Windows/System32/config.md",
+        "//?/C:/Windows/evil.md",        # the Win32 extended-length prefix
+        "\\\\server\\share\\evil.md",    # a UNC path
+    ],
+)
+def test_every_escape_from_the_vault_is_refused(vault_path, case):
+    with pytest.raises(SourceError):
+        load_vault_note(vault_path, case)
 
 
 def test_symlinked_note_pointing_outside_is_refused(vault_path, tmp_path):

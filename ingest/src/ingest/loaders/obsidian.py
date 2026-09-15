@@ -66,11 +66,36 @@ OPT_OUT_REASON = "frontmatter ingest: false"
 def vault_root(vault_path: str | Path) -> Path:
     """Validate and return the vault directory. Shared by both entry points."""
     root = Path(vault_path).expanduser()
-    if not root.exists():
+    if not _exists(root):
         raise SourceError(f"Vault path does not exist: {root}")
-    if not root.is_dir():
+    if not _is_dir(root):
         raise SourceError(f"Vault path is not a directory: {root}")
     return root
+
+
+# Filesystem probes that turn an unusable path into a typed error rather than a
+# traceback. `Path.exists()` raises ValueError — not OSError — on a path holding
+# a null byte, and OSError on names the platform rejects outright; both reach a
+# CLI flag, so both are handled here instead of escaping as a crash.
+def _exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except (OSError, ValueError):
+        return False
+
+
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except (OSError, ValueError):
+        return False
+
+
+def _is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except (OSError, ValueError):
+        return False
 
 
 def load_vault(vault_path: str | Path) -> LoadedSource:
@@ -145,6 +170,10 @@ def _resolve_note(root: Path, note_path: str | Path) -> tuple[Path, str]:
     raw = str(note_path).strip()
     if not raw:
         raise SourceError("Note path is empty; --only needs a path to one markdown note")
+    if "\x00" in raw:
+        # Path.exists() raises ValueError rather than OSError on this, which
+        # would escape as a traceback from a plain CLI flag.
+        raise SourceError("Note path contains a null byte")
 
     # Windows callers pass backslashes; the hook passes whatever Node gave it.
     candidate = Path(raw.replace("\\", "/")).expanduser()
@@ -155,17 +184,22 @@ def _resolve_note(root: Path, note_path: str | Path) -> tuple[Path, str]:
 
     # resolve() collapses '..' and follows symlinks, so neither can be used to
     # step outside the vault after this check.
-    resolved = candidate.resolve()
     try:
-        relative = resolved.relative_to(root.resolve()).as_posix()
+        resolved = candidate.resolve()
+        vault = root.resolve()
+    except (OSError, ValueError) as exc:
+        raise SourceError(f"Note path cannot be resolved ({exc})") from exc
+
+    try:
+        relative = resolved.relative_to(vault).as_posix()
     except ValueError as exc:
         raise SourceError(
-            f"{resolved} is outside the vault {root.resolve()}; --only may only name a note in the vault"
+            f"{resolved} is outside the vault {vault}; --only may only name a note in the vault"
         ) from exc
 
-    if not resolved.exists():
+    if not _exists(resolved):
         raise SourceError(f"Note does not exist: {resolved}")
-    if not resolved.is_file():
+    if not _is_file(resolved):
         raise SourceError(f"Note is not a file: {resolved}")
     if resolved.suffix.lower() not in MARKDOWN_SUFFIXES:
         raise SourceError(
