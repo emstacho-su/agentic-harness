@@ -53,10 +53,14 @@ describe('createRagServer', () => {
     expect(search?.inputSchema.required).toEqual(['query']);
     expect(Object.keys(search?.inputSchema.properties ?? {}).sort()).toEqual([
       'collection',
+      'include_superseded',
       'limit',
       'min_similarity',
+      'phase',
       'query',
+      'repo',
       'source',
+      'tags',
     ]);
 
     const source = (search?.inputSchema.properties as Record<string, { enum?: string[] }>)['source'];
