@@ -28,8 +28,16 @@ export const GIT_TIMEOUT_MS = 400;
 export const LOG_MAX_BYTES = 64 * 1024;
 export const LOG_KEEP_LINES = 200;
 
-/** Transcript reading. A larger file is read tail-first; the head is dropped. */
-export const MAIN_TRANSCRIPT_MAX_BYTES = 96 * 1024 * 1024;
+/**
+ * Transcript reading. A larger file is read tail-first; the head is dropped.
+ *
+ * 16 MB, not the 96 MB this started at: the budget test covers 18 MB across a
+ * main transcript and its subagents, and the largest real transcript on this
+ * machine is 4.6 MB. A 96 MB read holds the buffer, the decoded string, the
+ * line array and the parsed entries in memory at once — hundreds of megabytes
+ * and seconds of wall clock, inside a 1,200 ms budget.
+ */
+export const MAIN_TRANSCRIPT_MAX_BYTES = 16 * 1024 * 1024;
 export const SUBAGENT_BUDGET_BYTES = 24 * 1024 * 1024;
 
 /** Note body limits. */
@@ -38,6 +46,8 @@ export const MAX_PROMPT_CHARS = 1200;
 export const MAX_FILES_LISTED = 60;
 export const MAX_COMMANDS_LISTED = 20;
 export const MAX_COMMAND_CHARS = 160;
+/** Agent descriptions, skill names, artifact URLs — short labels, capped too. */
+export const MAX_LABEL_CHARS = 200;
 
 /** Frontmatter array caps — a session note is an index, not an archive. */
 export const MAX_HOOK_TAGS = 5;
@@ -69,6 +79,10 @@ export const END_REASONS = new Set(['clear', 'resume', 'logout', 'prompt_input_e
 
 /** The one reason that does *not* conclude a session (R-27.2). */
 export const RESUME_REASON = 'resume';
+
+/** The hook events this entry point serves. */
+export const SESSION_END_EVENT = 'SessionEnd';
+export const SUBAGENT_STOP_EVENT = 'SubagentStop';
 
 /** Vault top-level areas the hook may write into. */
 export const AREA_PROJECTS = 'projects';

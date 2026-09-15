@@ -24,7 +24,7 @@ import path from 'node:path';
 import { backfillSession } from './lib/backfill.mjs';
 import { DEFAULT_VAULT_SEGMENTS, VAULT_ENV_VAR } from './lib/constants.mjs';
 import { serializeFrontmatter } from './lib/frontmatter.mjs';
-import { COLLECTION_OVERRIDES, RETIRED_FOLDERS, migrateNote, planNote } from './lib/migrate.mjs';
+import { COLLECTION_OVERRIDES, RETIRED_FOLDERS, alreadyMigrated, migrateNote, planNote } from './lib/migrate.mjs';
 import { makeRepoResolver } from './lib/paths.mjs';
 import { resolveRepo } from './lib/repo.mjs';
 import { toPosix } from './lib/text.mjs';
@@ -59,6 +59,7 @@ function parseArgs(argv) {
     vault: process.env[VAULT_ENV_VAR] || path.join(os.homedir(), ...DEFAULT_VAULT_SEGMENTS),
     backup: '',
     dryRun: false,
+    force: false,
     network: true,
     repoRoots: { ...DEFAULT_REPO_ROOTS },
   };
@@ -67,6 +68,7 @@ function parseArgs(argv) {
     const arg = argv[index];
     const value = argv[index + 1];
     if (arg === '--dry-run') args.dryRun = true;
+    else if (arg === '--force') args.force = true;
     else if (arg === '--no-network') args.network = false;
     else if (arg === '--vault' || arg === '--backup') {
       if (!value) throw new Error(`${arg} needs a value`);
@@ -119,6 +121,18 @@ function backfillFor({ plan, note, args }) {
   });
 }
 
+/** Copy every file under `dir` into the backup, preserving vault-relative paths. */
+function backupTree(dir, vaultRoot, backupDir) {
+  if (!backupDir) return 0;
+  let count = 0;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true, recursive: true })) {
+    if (!entry.isFile()) continue;
+    backupOriginal(path.join(entry.parentPath ?? entry.path ?? dir, entry.name), vaultRoot, backupDir);
+    count += 1;
+  }
+  return count;
+}
+
 function backupOriginal(from, vaultRoot, backupDir) {
   const relative = path.relative(vaultRoot, from);
   const destination = path.join(backupDir, relative);
@@ -133,7 +147,7 @@ function backupOriginal(from, vaultRoot, backupDir) {
  * `movedOut` is how a dry run tells the truth: the files are still on disk, so
  * the folder only counts as empty if every file in it is one the plan moves.
  */
-function removeRetiredFolders(vaultRoot, dryRun, report, movedOut) {
+function removeRetiredFolders(vaultRoot, dryRun, report, movedOut, backupDir) {
   for (const folder of RETIRED_FOLDERS) {
     const dir = path.join(vaultRoot, 'projects', folder);
     if (!fs.existsSync(dir)) continue;
@@ -155,8 +169,12 @@ function removeRetiredFolders(vaultRoot, dryRun, report, movedOut) {
       report.push(`would remove projects/${folder}/ (empty sessions/ and its index.md)`);
       continue;
     }
+    // The index note is hand-authored and `readSessionNotes` never saw it, so
+    // it has not been backed up by the plan loop. Rule 2 says every original is
+    // copied before anything is written; this is the rest of that promise.
+    const saved = backupTree(dir, vaultRoot, backupDir);
     fs.rmSync(dir, { recursive: true, force: true });
-    report.push(`removed projects/${folder}/`);
+    report.push(`removed projects/${folder}/ (${saved} file(s) backed up first)`);
   }
 }
 
@@ -175,21 +193,52 @@ function main() {
 
   const report = [];
   const movedOut = new Set();
+  // Two plans can name one destination: two v1 notes for one resumed session
+  // carry the same session_id and both map to `<session_id>.md`. Tracking the
+  // claims here means a dry run refuses the same one the real run will.
+  const claimed = new Map();
   let written = 0;
   let refused = 0;
+  let skipped = 0;
 
   for (const entry of plans) {
     const { note, plan, from, to, repoFor } = entry;
+
+    if (alreadyMigrated(note) && !args.force) {
+      console.log(`${relativeTo(args.vault, from)}
+  -> already schema_version 2, left alone (--force to redo)`);
+      skipped += 1;
+      continue;
+    }
     const backfill = backfillFor({ plan, note, args });
     const { fields, body, emptied } = migrateNote({ note, plan, backfill, repoFor });
     const text = `${serializeFrontmatter(fields)}\n\n${body.replace(/^\n+/, '')}`;
 
+    // The destination is built from a note's own frontmatter, so containment is
+    // asserted rather than assumed: a future change to the naming rules cannot
+    // write outside the vault without failing here first.
+    if (!isInsideVault(args.vault, to)) {
+      console.log(`REFUSED ${relativeTo(args.vault, from)}: destination is outside the vault`);
+      refused += 1;
+      continue;
+    }
+
     const moving = toPosix(from) !== toPosix(to);
+    const claimant = claimed.get(toPosix(to));
+    if (claimant) {
+      console.log(
+        `REFUSED ${relativeTo(args.vault, from)} -> ${relativeTo(args.vault, to)}: ` +
+          `already claimed by ${relativeTo(args.vault, claimant)}`,
+      );
+      refused += 1;
+      continue;
+    }
     if (moving && fs.existsSync(to)) {
       console.log(`REFUSED ${relativeTo(args.vault, from)} -> ${relativeTo(args.vault, to)}: target exists`);
       refused += 1;
       continue;
     }
+    claimed.set(toPosix(to), from);
 
     console.log(`${relativeTo(args.vault, from)}`);
     console.log(`  -> ${relativeTo(args.vault, to)}   (${plan.decidedBy})`);
@@ -210,20 +259,33 @@ function main() {
     written += 1;
   }
 
-  removeRetiredFolders(args.vault, args.dryRun, report, movedOut);
+  removeRetiredFolders(args.vault, args.dryRun, report, movedOut, backupDir);
 
   console.log('');
   for (const line of report) console.log(line);
   if (args.dryRun) {
-    console.log(`\ndry run: ${plans.length - refused} note(s) would be written, ${refused} refused. Nothing changed.`);
+    console.log(
+      `\ndry run: ${plans.length - refused - skipped} note(s) would be written, ` +
+        `${refused} refused, ${skipped} already migrated. Nothing changed.`,
+    );
   } else {
-    console.log(`\nwrote ${written} note(s), refused ${refused}. Originals backed up to ${backupDir}`);
+    console.log(
+      `\nwrote ${written} note(s), refused ${refused}, skipped ${skipped} already migrated. ` +
+        `Originals backed up to ${backupDir}`,
+    );
     console.log('ingest was NOT run; re-ingest at integration.');
   }
 }
 
 function relativeTo(root, file) {
   return toPosix(path.relative(root, file));
+}
+
+/** Is `candidate` strictly inside `vault`? */
+function isInsideVault(vault, candidate) {
+  const root = path.resolve(vault);
+  const target = path.resolve(candidate);
+  return target.startsWith(root + path.sep);
 }
 
 try {

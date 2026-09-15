@@ -16,11 +16,12 @@ import {
   EDIT_TOOLS,
   MAX_COMMANDS_LISTED,
   MAX_COMMAND_CHARS,
+  MAX_LABEL_CHARS,
   SHELL_TOOLS,
   SUBAGENT_BUDGET_BYTES,
 } from './constants.mjs';
 import { redact } from './redact.mjs';
-import { toPosix } from './text.mjs';
+import { isLocalPath, toPosix } from './text.mjs';
 
 /** Wrapper tags Claude Code uses for machinery that is not a human turn. */
 const NOISE_TAG =
@@ -47,7 +48,7 @@ export function sanitizeCwdForProjectDir(cwd) {
  * bounded by the deadline.
  */
 export function resolveTranscript({ declaredPath, sessionId, cwd, projectsRoot, deadlineAt }) {
-  if (declaredPath && fs.existsSync(declaredPath)) return toPosix(declaredPath);
+  if (declaredPath && isLocalPath(declaredPath) && fs.existsSync(declaredPath)) return toPosix(declaredPath);
   if (!sessionId || !projectsRoot) return '';
 
   const guess = path.join(projectsRoot, sanitizeCwdForProjectDir(cwd), `${sessionId}.jsonl`);
@@ -70,8 +71,12 @@ export function resolveTranscript({ declaredPath, sessionId, cwd, projectsRoot, 
  *
  * A tail read can start mid-line; that line fails to parse and is dropped,
  * which is the correct outcome and the reason the parser never throws.
+ *
+ * `deadlineAt` stops the parse rather than the read: this is the most expensive
+ * step in the hot path, and returning the entries parsed so far makes a slightly
+ * thinner note, where running past the budget makes no note at all.
  */
-export function readEntries(file, maxBytes) {
+export function readEntries(file, maxBytes, deadlineAt = Number.POSITIVE_INFINITY) {
   let raw;
   try {
     const size = fs.statSync(file).size;
@@ -198,7 +203,8 @@ export function createAccumulator() {
 export function extractTools(entries, into) {
   for (const entry of entries) {
     if (typeof entry?.gitBranch === 'string' && entry.gitBranch.trim()) {
-      into.branches.add(entry.gitBranch.trim());
+      // Free-form and it lands in frontmatter, so it goes through the same call.
+      into.branches.add(redact(entry.gitBranch.trim()).slice(0, MAX_LABEL_CHARS));
     }
     if (entry?.type !== 'assistant') continue;
     const content = entry.message?.content;
@@ -209,6 +215,20 @@ export function extractTools(entries, into) {
       recordToolUse(block, into);
     }
   }
+}
+
+/**
+ * Every string that leaves a tool input for the note goes through here.
+ *
+ * The rule `redact.mjs` states — nothing reaches the vault unredacted — has to
+ * hold for *all* of these, not just the command line. A tool `description` is
+ * model-authored free text with no length limit and no schema, so it is exactly
+ * where a secret ends up when a session has been talked into putting one there,
+ * and the earlier `description || redact(command)` form skipped redaction
+ * entirely whenever a description existed.
+ */
+function label(text, max = MAX_COMMAND_CHARS) {
+  return redact(String(text ?? '').trim()).slice(0, max);
 }
 
 function recordToolUse(block, into) {
@@ -228,26 +248,26 @@ function recordToolUse(block, into) {
     if (commandText) into.commandTexts.push(commandText);
     if (block.id && GH_PR_COMMAND.test(commandText)) into.shellByToolUseId.set(block.id, commandText);
 
-    const description = typeof args.description === 'string' ? args.description.trim() : '';
+    const description = typeof args.description === 'string' ? args.description : '';
     const firstLine = commandText.split('\n').find((line) => line.trim()) || '';
-    const label = description || redact(firstLine).slice(0, MAX_COMMAND_CHARS);
-    if (label && into.commands.length < MAX_COMMANDS_LISTED * 3) into.commands.push(label);
+    const text = label(description || firstLine);
+    if (text && into.commands.length < MAX_COMMANDS_LISTED * 3) into.commands.push(text);
     return;
   }
   if (name === 'Agent') {
-    const description = typeof args.description === 'string' ? args.description.trim() : '';
-    const type = typeof args.subagent_type === 'string' ? args.subagent_type.trim() : '';
+    const description = label(args.description);
+    const type = label(args.subagent_type, MAX_LABEL_CHARS);
     if (description || type) into.agents.push(description ? `${description}${type ? ` (${type})` : ''}` : type);
     return;
   }
   if (name === 'Skill') {
-    const skill = typeof args.skill === 'string' ? args.skill.trim() : '';
+    const skill = label(args.skill, MAX_LABEL_CHARS);
     if (skill) into.skills.add(skill);
     return;
   }
   if (name === 'Artifact') {
     if (block.id) into.artifactToolUseIds.add(block.id);
-    const url = typeof args.url === 'string' ? args.url.trim() : '';
+    const url = label(args.url, MAX_LABEL_CHARS);
     if (url) into.artifacts.push(url);
   }
 }
@@ -328,7 +348,12 @@ export function extractSubagentTools({ transcriptPath, sessionId, into, deadline
     }
     if (spent + size > SUBAGENT_BUDGET_BYTES) continue;
     spent += size;
-    extractTools(readEntries(file, SUBAGENT_BUDGET_BYTES), into);
+    const subagentEntries = readEntries(file, SUBAGENT_BUDGET_BYTES, deadlineAt);
+    extractTools(subagentEntries, into);
+    // Scanned here, while the entries are still in hand: a PR opened by a
+    // worker's `gh pr create` is registered as a candidate id in this pass, and
+    // the parent's entries will never contain its result.
+    scanToolResults(subagentEntries, into);
     filesRead += 1;
   }
   return { filesRead, agentIds };

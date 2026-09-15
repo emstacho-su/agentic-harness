@@ -38,12 +38,13 @@ files_modified:
 prompt_count: 1
 command_count: 0
 agent: claude-code
+agent_type: ''
 generator: 'session-capture.mjs 2.0.0'
 tools_used:
   Write: 1
 ---
 
-# Session — 2026-09-14 — ist323
+# Session 2026-09-14 — ist323
 
 Working directory `__SANDBOX__/onedrive/.fall2026/ist323`. Ran 26m, 1 prompt, 0 shell commands, 1 file touched. Ended: clear.
 

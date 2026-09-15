@@ -40,7 +40,7 @@ import {
 import { classifyPaths } from './paths.mjs';
 import { classify } from './tags.mjs';
 import { noteFilename, noteId, renderFacts } from './note.mjs';
-import { uniqueCapped } from './text.mjs';
+import { isSafeFilenameSegment, slugify, uniqueCapped } from './text.mjs';
 
 /**
  * Checkouts that no longer exist, and the collection their notes belong to.
@@ -59,6 +59,19 @@ export const RETIRED_FOLDERS = Object.freeze(Object.keys(COLLECTION_OVERRIDES));
 const FACTS_HEADING = /^##\s+Session facts\s*$/m;
 
 /**
+ * Has this note already been migrated?
+ *
+ * Re-running the migration over a schema-v2 note would rebuild its frontmatter
+ * from scratch: `status` forced back to `concluded` (ratcheting *backwards*,
+ * which the merge rules exist to prevent), resume chains erased, hand-added
+ * tags recomputed away, and any key Stack added by hand dropped entirely. The
+ * migration is a one-time job and says so by refusing the second pass.
+ */
+export function alreadyMigrated(note) {
+  return Number(note?.fields?.schema_version ?? 0) >= SCHEMA_VERSION;
+}
+
+/**
  * Decide where one note goes and what its collection becomes.
  *
  * @param {object} args
@@ -68,22 +81,32 @@ const FACTS_HEADING = /^##\s+Session facts\s*$/m;
  *            repoFullName: string, filename: string, decidedBy: string}}
  */
 export function planNote({ note, resolveRepoFor, overrides = COLLECTION_OVERRIDES }) {
-  const sessionId = String(note.fields.session_id ?? '').trim();
-  const filename = sessionId ? noteFilename(sessionId) : note.name;
+  // The session id read out of a note's frontmatter becomes a filename, exactly
+  // as the one from the hook's stdin does, and it is held to the same rule. A
+  // note is a file a person edits; "it came off disk" is not a trust boundary.
+  const declaredId = String(note.fields.session_id ?? '').trim();
+  const sessionId = isSafeFilenameSegment(declaredId) ? declaredId : '';
+  // `note.name` came from a directory listing, but basename() costs nothing and
+  // means no caller has to know that.
+  const filename = sessionId ? noteFilename(sessionId) : path.basename(note.name);
 
   const repo = resolveRepoFor(String(note.fields.cwd ?? ''));
   if (repo?.repoSlug) {
     return {
       area: AREA_PROJECTS,
-      collection: repo.repoSlug,
+      // Slugified exactly as the hook's own resolver does: a collection is a
+      // directory name, and one rule for it lives in text.mjs.
+      collection: slugify(repo.repoSlug) || note.collection,
       collectionSource: COLLECTION_FROM_GIT,
       repoFullName: repo.repoFullName,
       filename,
-      decidedBy: 'git remote of the recorded cwd',
+      decidedBy: sessionId
+        ? 'git remote of the recorded cwd'
+        : 'git remote of the recorded cwd; session_id is not a safe filename, name kept',
     };
   }
 
-  const override = overrides[note.collection];
+  const override = Object.hasOwn(overrides, note.collection) ? overrides[note.collection] : '';
   if (override) {
     return {
       area: AREA_PROJECTS,
@@ -117,7 +140,8 @@ export function planNote({ note, resolveRepoFor, overrides = COLLECTION_OVERRIDE
  */
 export function migrateNote({ note, plan, backfill, repoFor }) {
   const old = note.fields;
-  const sessionId = String(old.session_id ?? '').trim();
+  const declaredId = String(old.session_id ?? '').trim();
+  const sessionId = isSafeFilenameSegment(declaredId) ? declaredId : '';
   const rawFiles = asList(old.files_modified).map((file) => [String(file), 1]);
 
   const paths = classifyPaths(rawFiles, {

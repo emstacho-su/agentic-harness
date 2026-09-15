@@ -106,7 +106,7 @@ What is verifiable right now, against the live project:
 - The `SessionEnd` hook has been observed firing unprompted; its note was
   ingested on the next run as the store's first `source='obsidian'` document.
 - `npm test` in `mcp-server/` passes 117 tests; `uv run pytest` in `ingest/`
-  passes 261; `npm test` in `hooks/` passes 114. All three mock the database,
+  passes 261; `npm test` in `hooks/` passes 163. All three mock the database,
   the model and the network, so they need no credentials.
 
 ---
@@ -224,7 +224,7 @@ After restarting Claude Code the tools appear as `mcp__rag__search_context` and
 ### 5. Install the session-capture hook
 
 ```bash
-cd hooks && npm test          # 114 tests, no dependencies
+cd hooks && npm test          # 163 tests, no dependencies
 node install.mjs --dry-run    # what would change in ~/.claude/hooks
 node install.mjs              # copy, then verify every file by SHA-256
 ```

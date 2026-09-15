@@ -39,13 +39,14 @@ files_modified:
 prompt_count: 2
 command_count: 2
 agent: claude-code
+agent_type: ''
 generator: 'session-capture.mjs 2.0.0'
 tools_used:
   Bash: 2
   Write: 1
 ---
 
-# Session — 2026-09-12 — agentic-harness
+# Session 2026-09-12 — agentic-harness
 
 Working directory `__SANDBOX__/repos/agentic-harness`. Ran 20m, 2 prompts, 2 shell commands, 1 file touched. Ended: clear.
 

@@ -14,6 +14,7 @@
 import { execFileSync } from 'node:child_process';
 
 import { GIT_TIMEOUT_MS, MAX_COMMITS, MAX_PRS } from './constants.mjs';
+import { repoArgs, trustedSpawnOptions } from './spawn.mjs';
 import { uniqueCapped } from './text.mjs';
 
 const RECORD = '';
@@ -22,17 +23,17 @@ const UNIT = '';
 /** `(#12)` in a squash-merge subject, or GitHub's own merge-commit wording. */
 const PR_IN_MESSAGE = /(?:\(#(\d{1,6})\)|\bMerge pull request #(\d{1,6})\b)/g;
 
-/** Default runner: `git`, bounded, stderr discarded, never throws. */
+/**
+ * Default runner: `git`, bounded, stderr discarded, never throws.
+ *
+ * `cwd` names the repository to run against, and is passed as `git -C <cwd>`
+ * rather than as the child's working directory — see `spawn.mjs` for why that
+ * distinction is the whole ballgame on Windows.
+ */
 export function runGitSync(args, { cwd, timeoutMs = GIT_TIMEOUT_MS } = {}) {
   try {
-    const stdout = execFileSync('git', ['--no-pager', ...args], {
-      cwd,
-      timeout: timeoutMs,
-      encoding: 'utf8',
-      maxBuffer: 4 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    });
+    const argv = ['--no-pager', ...repoArgs(cwd), ...args];
+    const stdout = execFileSync('git', argv, trustedSpawnOptions(timeoutMs, 4 * 1024 * 1024));
     return { ok: true, stdout: String(stdout ?? '') };
   } catch (err) {
     return { ok: false, stdout: '', error: err?.code || err?.message || 'git failed' };

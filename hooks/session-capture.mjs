@@ -32,12 +32,14 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { capture } from './lib/capture.mjs';
+import { captureSubagent } from './lib/subagent.mjs';
 import {
   BUDGET_MS,
   DEFAULT_VAULT_SEGMENTS,
   DISABLE_ENV_VAR,
   DISABLE_VALUES,
   LOG_ENV_VAR,
+  SUBAGENT_STOP_EVENT,
   VAULT_ENV_VAR,
 } from './lib/constants.mjs';
 import { createLogger } from './lib/logger.mjs';
@@ -62,7 +64,10 @@ function main() {
   }
 
   const input = parsed.value;
-  const outcome = capture({
+  // One entry point, two events. `SubagentStop` writes the worker's own note and
+  // links it to its parent; `SessionEnd` writes the session's.
+  const write = input.hookEventName === SUBAGENT_STOP_EVENT ? captureSubagent : capture;
+  const outcome = write({
     input,
     vaultRoot: process.env[VAULT_ENV_VAR] || path.join(os.homedir(), ...DEFAULT_VAULT_SEGMENTS),
     projectsRoot: path.join(os.homedir(), '.claude', 'projects'),
@@ -73,7 +78,7 @@ function main() {
   const ms = Date.now() - STARTED_AT_MS;
 
   if (!outcome.written) {
-    log(`${outcome.action} ${input.sessionId}: ${outcome.skip} ms=${ms}`);
+    log(`${outcome.action} ${input.hookEventName || 'SessionEnd'} ${input.sessionId}: ${outcome.skip} ms=${ms}`);
     return;
   }
 

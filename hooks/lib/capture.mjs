@@ -1,39 +1,30 @@
 /**
- * The capture itself: transcript in, one merged note on disk out.
+ * Capturing a finished session: transcript in, one merged note on disk out.
  *
  * Lives beside the hook rather than inside it so the whole pipeline can be
  * driven from a test with a fixture transcript, a fixture vault and a stubbed
- * `git`. `session-capture.mjs` is the thin process wrapper around this.
+ * `git`. `session-capture.mjs` is the thin process wrapper around this, and
+ * `subagent.mjs` is its sibling for `SubagentStop`.
  *
- * Order of business, and why: every cheap and certain thing happens first
- * (transcript, prompts, paths, collection), the one subprocess happens last and
- * only if the clock allows, and the write happens whatever the clock says. A
- * note missing its `commits:` is worth having; a note that never got written
- * because `git log` was slow is not.
+ * The analysis — repository, branch, files, tags, commits — is in
+ * `analyse.mjs`, shared with the subagent path. What stays here is the part
+ * that is specific to a *session*: its identity, its resume chain, and the
+ * write.
  */
 
-import fs from 'node:fs';
 import path from 'node:path';
 
+import { analyseTranscript } from './analyse.mjs';
 import {
   BUDGET_MS,
   MAIN_TRANSCRIPT_MAX_BYTES,
-  MAX_ARTIFACTS,
   MAX_CHILD_SESSIONS,
-  MAX_CWDS_SEEN,
-  MAX_DOCS_TOUCHED,
-  MAX_FILES_LISTED,
-  MAX_MEMORY_FILES,
-  MAX_PRS,
-  MAX_REPOS_TOUCHED,
   RESERVE_MS,
   RESUME_REASON,
   STATUS_ACTIVE,
   STATUS_CONCLUDED,
 } from './constants.mjs';
-import { deriveCollection } from './collection.mjs';
-import { collectCommits, runGitSync } from './git-log.mjs';
-import { parseFrontmatter } from './frontmatter.mjs';
+import { runGitSync } from './git-log.mjs';
 import {
   ACTION_CREATE,
   ACTION_MERGE,
@@ -42,24 +33,18 @@ import {
   markSuperseded,
   planWrite,
 } from './merge.mjs';
-import { buildFields, noteFilename, noteId, renderBody, renderNote } from './note.mjs';
-import { classifyPaths, makeRepoResolver } from './paths.mjs';
-import { resolveRepo } from './repo.mjs';
-import { classify } from './tags.mjs';
-import { isoDate, toPosix, uniqueCapped } from './text.mjs';
+import { buildFields, childNoteId, noteFilename, noteId, renderBody, renderNote } from './note.mjs';
+import { persist, readNote, resolveChainHead, vaultAvailable } from './notes-io.mjs';
+import { isoDate, uniqueCapped } from './text.mjs';
 import {
-  createAccumulator,
   extractPrompts,
   extractSubagentTools,
   extractTools,
+  createAccumulator,
   parentSessionFromPath,
   readEntries,
   resolveTranscript,
-  scanToolResults,
 } from './transcript.mjs';
-
-/** A resume chain longer than this is a bug, not a work pattern. */
-const MAX_RESUME_INDEX = 50;
 
 /**
  * Capture one finished session.
@@ -86,7 +71,7 @@ export function capture({
   });
   if (!transcriptPath) return skip('no transcript found');
 
-  const entries = readEntries(transcriptPath, MAIN_TRANSCRIPT_MAX_BYTES);
+  const entries = readEntries(transcriptPath, MAIN_TRANSCRIPT_MAX_BYTES, deadlineAt - RESERVE_MS);
   if (entries.length === 0) return skip('transcript unreadable or empty');
 
   const prompts = extractPrompts(entries);
@@ -94,6 +79,8 @@ export function capture({
 
   if (!vaultAvailable(vaultRoot)) return skip(`vault root unavailable (${vaultRoot})`);
 
+  // A subagent's edits are the session's edits, so its transcripts are folded
+  // into the same accumulator before anything is derived from it.
   const accumulator = createAccumulator();
   extractTools(entries, accumulator);
   const subagents = extractSubagentTools({
@@ -102,87 +89,81 @@ export function capture({
     into: accumulator,
     deadlineAt: deadlineAt - RESERVE_MS,
   });
-  scanToolResults(entries, accumulator);
 
-  const timing = deriveTiming(entries);
-  const cwdsSeen = uniqueCapped(entries.map((entry) => toPosix(entry.cwd)).filter(Boolean), MAX_CWDS_SEEN);
-  const hookCwd = input.cwd || cwdsSeen[cwdsSeen.length - 1] || '';
-
-  const repo = resolveRepo(hookCwd);
-  const { area, collection, collectionSource } = deriveCollection({ cwd: hookCwd, vaultRoot, repo });
-  const branch = repo.branch || lastBranchSeen(accumulator) || '';
-
-  const paths = classifyPaths(sortedFiles(accumulator), {
-    repoFor: makeRepoResolver(),
-    maxFiles: MAX_FILES_LISTED,
-    maxDocs: MAX_DOCS_TOUCHED,
-    maxMemory: MAX_MEMORY_FILES,
-    maxRepos: MAX_REPOS_TOUCHED,
+  const facts = analyseTranscript({
+    entries,
+    prompts,
+    cwd: input.cwd,
+    vaultRoot,
+    deadlineAt,
+    runGit,
+    into: accumulator,
   });
 
-  const { tags, phase } = classify({
-    files: paths.files,
-    docsTouched: paths.docsTouched,
-    commandTexts: accumulator.commandTexts,
-    promptTexts: prompts.map((prompt) => prompt.text),
-    skills: [...accumulator.skills],
-    toolNames: [...accumulator.toolCounts.keys()],
-    branch,
-  });
-
-  const git = deriveCommits({ repo, timing, runGit, deadlineAt });
   const concluded = input.endReason !== RESUME_REASON;
 
   const context = {
     sessionId: input.sessionId,
     noteId: noteId(input.sessionId),
-    collection,
-    collectionSource,
-    date: isoDate(timing.endedAt) || isoDate(new Date().toISOString()),
-    cwd: hookCwd,
-    cwdsSeen,
+    collection: facts.collection,
+    collectionSource: facts.collectionSource,
+    date: isoDate(facts.timing.endedAt) || isoDate(new Date().toISOString()),
+    cwd: facts.cwd,
+    cwdsSeen: facts.cwdsSeen,
     endReason: input.endReason,
-    startedAt: timing.startedAt,
-    endedAt: timing.endedAt,
-    durationMs: timing.durationMs,
+    startedAt: facts.timing.startedAt,
+    endedAt: facts.timing.endedAt,
+    durationMs: facts.timing.durationMs,
     status: concluded ? STATUS_CONCLUDED : STATUS_ACTIVE,
-    concludedAt: concluded ? timing.endedAt : '',
-    repo: repo.repoFullName,
-    branch,
-    worktree: repo.worktree,
-    reposTouched: paths.reposTouched,
-    phase,
-    tags,
+    concludedAt: concluded ? facts.timing.endedAt : '',
+    repo: facts.repo.repoFullName,
+    branch: facts.branch,
+    worktree: facts.repo.worktree,
+    reposTouched: facts.paths.reposTouched,
+    phase: facts.phase,
+    tags: facts.tags,
     supersedes: [],
     resumedFrom: '',
     parentSession: input.parentSession || parentSessionFromPath(transcriptPath),
-    childSessions: uniqueCapped(subagents.agentIds, MAX_CHILD_SESSIONS),
-    commits: git.shas,
-    prs: uniqueCapped([...accumulator.prNumbers, ...git.prs], MAX_PRS),
-    memoryFiles: paths.memoryFiles,
-    planFile: paths.planFile,
-    docsTouched: paths.docsTouched,
-    artifacts: uniqueCapped(accumulator.artifacts, MAX_ARTIFACTS),
-    files: paths.files,
+    // The child note ids, which are the ingest external_ids, so a search can
+    // follow the link straight to the worker's own note. The `SubagentStop`
+    // hook writes those notes; this back-fill is what makes the list complete
+    // even for children that ended before their parent's note existed.
+    childSessions: uniqueCapped(
+      subagents.agentIds.map((agentId) => childNoteId(input.sessionId, agentId)),
+      MAX_CHILD_SESSIONS,
+    ),
+    agentType: '',
+    commits: facts.commits,
+    prs: facts.prs,
+    memoryFiles: facts.paths.memoryFiles,
+    planFile: facts.paths.planFile,
+    docsTouched: facts.paths.docsTouched,
+    artifacts: facts.artifacts,
+    files: facts.paths.files,
     prompts,
     commands: accumulator.commands,
     commandCount: accumulator.commandCount,
     agents: accumulator.agents,
     skills: [...accumulator.skills],
-    toolCounts: sortedToolCounts(accumulator),
+    toolCounts: facts.toolCounts,
     subagentFilesRead: subagents.filesRead,
     transcriptPath,
   };
 
-  const sessionsDir = path.join(vaultRoot, area, collection, 'sessions');
-  return writeNote({ context, sessionsDir, area, collection, vaultRoot });
+  const sessionsDir = path.join(vaultRoot, facts.area, facts.collection, 'sessions');
+  return writeNote({ context, sessionsDir, area: facts.area, collection: facts.collection, vaultRoot });
 }
 
 // -------------------------------------------------------------- the write
 
 function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
   const next = buildFields(context);
-  const targetPath = path.join(sessionsDir, noteFilename(context.sessionId));
+  // The head of the chain, not the base note: once an `-r2` exists it is the
+  // one that carries the session's current state, and planning against the
+  // superseded base would fork a new note on every later SessionEnd.
+  const head = resolveChainHead(sessionsDir, context.sessionId);
+  const targetPath = head.path;
 
   const current = readNote(targetPath);
   if (current.error) {
@@ -197,12 +178,14 @@ function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
   }
 
   if (plan.action === ACTION_RESUME) {
-    return writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, previous: current, plan, previousPath: targetPath });
+    return writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, previous: current, plan, previousPath: targetPath, index: head.nextIndex });
   }
 
   const fields = plan.fields;
-  const text = renderNote(fields, renderBody(context, fields));
-  const result = persist(targetPath, text);
+  // The previous body carries anything Stack typed below the generated marker;
+  // `renderBody` regenerates the machine sections and re-appends the rest.
+  const merged = { ...context, previousBody: current.body };
+  const result = persist(targetPath, renderNote(fields, renderBody(merged, fields)));
   if (!result.ok) {
     return { written: false, action: 'skip', skip: `write failed (${result.error})`, notePath: targetPath, vaultRoot, detail: '' };
   }
@@ -222,8 +205,7 @@ function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
  * it continues is marked `superseded` (R-27.2, Stack 2026-09-14). Ids never
  * change meaning, so a row already in the store stays the row it was.
  */
-function writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, previous, plan, previousPath }) {
-  const index = nextFreeResumeIndex(sessionsDir, context.sessionId);
+function writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, previous, plan, previousPath, index }) {
   if (index === 0) {
     return { written: false, action: 'skip', skip: 'resume chain is implausibly long', notePath: '', vaultRoot, detail: '' };
   }
@@ -239,8 +221,7 @@ function writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, pr
 
   // Only after the successor exists: a crash between the two leaves a complete
   // note and a stale status, never a superseded note with no successor.
-  const supersededText = renderNote(markSuperseded(previous.fields), previous.body);
-  const flipped = persist(previousPath, supersededText);
+  const flipped = persist(previousPath, renderNote(markSuperseded(previous.fields), previous.body));
 
   return {
     written: true,
@@ -252,82 +233,4 @@ function writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, pr
       `${area}/${collection}/sessions/${path.basename(targetPath)} ` +
       `supersedes=${path.basename(previousPath)}${flipped.ok ? '' : ' (status flip failed)'}`,
   };
-}
-
-function readNote(notePath) {
-  let raw;
-  try {
-    raw = fs.readFileSync(notePath, 'utf8');
-  } catch {
-    return { fields: null, body: '', error: '' }; // absent is not an error
-  }
-  const parsed = parseFrontmatter(raw);
-  if (!parsed.ok) return { fields: null, body: '', error: parsed.error };
-  if (Object.keys(parsed.fields).length === 0) return { fields: null, body: '', error: 'no frontmatter' };
-  return { fields: parsed.fields, body: parsed.body.replace(/^\n+/, ''), error: '' };
-}
-
-function persist(notePath, text) {
-  try {
-    fs.mkdirSync(path.dirname(notePath), { recursive: true });
-    fs.writeFileSync(notePath, text, 'utf8');
-    return { ok: true, error: '' };
-  } catch (err) {
-    return { ok: false, error: err?.code || err?.message || 'unknown' };
-  }
-}
-
-function nextFreeResumeIndex(sessionsDir, sessionId) {
-  for (let index = 2; index <= MAX_RESUME_INDEX; index += 1) {
-    if (!fs.existsSync(path.join(sessionsDir, noteFilename(sessionId, index)))) return index;
-  }
-  return 0;
-}
-
-// ------------------------------------------------------------- derivations
-
-function vaultAvailable(vaultRoot) {
-  if (!vaultRoot) return false;
-  // Auto-create inside an existing parent only. If OneDrive is unmounted the
-  // parent is gone too, and inventing a vault on the wrong drive is worse than
-  // skipping one session.
-  return fs.existsSync(vaultRoot) || fs.existsSync(path.dirname(vaultRoot));
-}
-
-function deriveTiming(entries) {
-  // Transcript order is chronological, but a resumed session interleaves files;
-  // sorting the stamps costs nothing and removes the assumption.
-  const stamps = entries
-    .map((entry) => entry.timestamp)
-    .filter((stamp) => typeof stamp === 'string' && stamp)
-    .sort();
-  const startedAt = stamps[0] || '';
-  const endedAt = stamps[stamps.length - 1] || '';
-  const durationMs = startedAt && endedAt ? Date.parse(endedAt) - Date.parse(startedAt) : Number.NaN;
-  return { startedAt, endedAt, durationMs };
-}
-
-function deriveCommits({ repo, timing, runGit, deadlineAt }) {
-  if (!repo.mainRoot || !timing.startedAt) return { shas: [], prs: [] };
-  if (Date.now() > deadlineAt - RESERVE_MS) return { shas: [], prs: [] };
-  const result = collectCommits({
-    repoRoot: repo.mainRoot,
-    since: timing.startedAt,
-    until: timing.endedAt,
-    runGit,
-  });
-  return { shas: result.shas, prs: result.prs };
-}
-
-function sortedFiles(accumulator) {
-  return [...accumulator.files.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-}
-
-function sortedToolCounts(accumulator) {
-  return [...accumulator.toolCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-}
-
-function lastBranchSeen(accumulator) {
-  const branches = [...accumulator.branches];
-  return branches.length ? branches[branches.length - 1] : '';
 }

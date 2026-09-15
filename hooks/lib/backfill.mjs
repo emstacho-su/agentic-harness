@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process';
 
 import { collectCommits, runGitSync } from './git-log.mjs';
 import { MAX_PRS } from './constants.mjs';
+import { trustedSpawnOptions } from './spawn.mjs';
 import { isoToMillis, uniqueCapped } from './text.mjs';
 
 /** A migration can wait; the hook cannot. */
@@ -22,16 +23,16 @@ export const BACKFILL_GH_TIMEOUT_MS = 30_000;
 /** Branches that describe the project rather than the session's work. */
 const TRUNK_BRANCHES = new Set(['main', 'master', 'HEAD']);
 
-/** Default `gh` runner. Never throws; a failure means "no PR data". */
+/**
+ * Default `gh` runner. Never throws; a failure means "no PR data".
+ *
+ * Spawned through `trustedSpawnOptions` for the same reason `git` is: with no
+ * `cwd` of its own it would otherwise resolve `gh` against whatever directory
+ * the operator happened to run the migration from.
+ */
 export function runGhSync(args, { timeoutMs = BACKFILL_GH_TIMEOUT_MS } = {}) {
   try {
-    const stdout = execFileSync('gh', args, {
-      timeout: timeoutMs,
-      encoding: 'utf8',
-      maxBuffer: 8 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    });
+    const stdout = execFileSync('gh', args, trustedSpawnOptions(timeoutMs, 8 * 1024 * 1024));
     return { ok: true, stdout: String(stdout ?? '') };
   } catch (err) {
     return { ok: false, stdout: '', error: err?.code || err?.message || 'gh failed' };

@@ -12,7 +12,7 @@
 import path from 'node:path';
 
 import { resolveRepo } from './repo.mjs';
-import { toPosix, uniqueCapped } from './text.mjs';
+import { isLocalPath, toPosix, uniqueCapped } from './text.mjs';
 
 /**
  * Paths that are machinery rather than work.
@@ -28,6 +28,9 @@ import { toPosix, uniqueCapped } from './text.mjs';
  * this suite does.
  */
 const NOISE_PATTERNS = [
+  // A path on another host is not a file this session edited in any sense worth
+  // recording, and resolving one would hand that host an SMB authentication.
+  /^[\\/]{2}[^\\/]/,
   /\/Temp\/claude\//i,
   /\/scratchpad\//i,
   /\/\.claude\/projects\//i,
@@ -60,7 +63,7 @@ export function makeRepoResolver() {
   const cache = new Map();
   return function repoFor(filePath) {
     const dir = toPosix(path.dirname(toPosix(filePath)));
-    if (!dir) return null;
+    if (!dir || !isLocalPath(dir)) return null;
     if (cache.has(dir)) return cache.get(dir);
     const repo = resolveRepo(dir);
     const result = repo.repoRoot ? repo : null;

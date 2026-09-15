@@ -67,16 +67,36 @@ export const FIELD_SPEC = Object.freeze([
   ['prompt_count', PLAIN],
   ['command_count', PLAIN],
   ['agent', PLAIN],
+  ['agent_type', QUOTED],
   ['generator', QUOTED],
   ['tools_used', MAP],
 ]);
-
-const SPEC_BY_KEY = new Map(FIELD_SPEC);
 
 /** Field names in emit order. Handy for tests and for the migration. */
 export const FIELD_ORDER = Object.freeze(FIELD_SPEC.map(([name]) => name));
 
 const DELIMITER = /^---\s*$/;
+
+/**
+ * Keys that mean something to the JavaScript object model rather than to the
+ * note. These files are hand-edited, and their parsed shape is spread into new
+ * objects and serialized back out; a key that can move a prototype has no
+ * business in a session note's frontmatter.
+ */
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * The key shape `parseBlock` accepts, which is therefore the only shape the
+ * serializer may emit.
+ *
+ * `tools_used` was the one field whose keys went out unescaped, and its keys
+ * are tool names read straight from a transcript. A name containing a newline
+ * closed the block and wrote arbitrary keys at column zero — after every
+ * legitimate one, so they *won* on the next parse. Forging `status:
+ * 'superseded'` that way diverts the next merge into the resume branch and
+ * orphans the real note.
+ */
+const EMITTABLE_KEY = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
 
 /**
  * Split `raw` into frontmatter and body.
@@ -119,6 +139,7 @@ function parseBlock(lines) {
     const match = line.match(/^([A-Za-z_][A-Za-z0-9_.-]*):(.*)$/);
     if (!match) throw new Error(`not a key: "${line.trim()}"`);
     const [, key, rest] = match;
+    if (UNSAFE_KEYS.has(key)) throw new Error(`reserved key in frontmatter: "${key}"`);
     const inline = rest.trim();
 
     if (inline !== '') {
@@ -129,7 +150,11 @@ function parseBlock(lines) {
     // Block form: consume the indented lines that follow.
     const child = [];
     while (i + 1 < lines.length && (/^\s+\S/.test(lines[i + 1]) || lines[i + 1].trim() === '')) {
-      if (lines[i + 1].trim() !== '') child.push(lines[i + 1]);
+      const trimmed = lines[i + 1].trim();
+      // An indented comment is still a comment. Treating one as a mapping key
+      // made the note unparseable, which made the hook refuse to write it ever
+      // again — a comment beside a tag was enough to retire the note silently.
+      if (trimmed !== '' && !trimmed.startsWith('#')) child.push(lines[i + 1]);
       i += 1;
     }
     fields[key] = child.length === 0 ? '' : parseChildBlock(child);
@@ -145,7 +170,9 @@ function parseChildBlock(child) {
   for (const line of child) {
     const match = line.trim().match(/^([^:]+):\s*(.*)$/);
     if (!match) throw new Error(`not a nested key: "${line.trim()}"`);
-    map[match[1].trim()] = parseScalar(match[2].trim());
+    const key = match[1].trim();
+    if (UNSAFE_KEYS.has(key)) throw new Error(`reserved key in frontmatter: "${key}"`);
+    map[key] = parseScalar(match[2].trim());
   }
   return map;
 }
@@ -203,9 +230,16 @@ function parseScalar(text) {
   if (bare === 'true') return true;
   if (bare === 'false') return false;
   if (bare === 'null' || bare === '~') return '';
-  if (/^-?\d+$/.test(bare)) return Number.parseInt(bare, 10);
-  if (/^-?\d+\.\d+$/.test(bare)) return Number.parseFloat(bare);
+  // Only take the number when the number round-trips to the same text. `0012`
+  // and `+5` are strings a person typed, and turning them into `12` and `5`
+  // would rewrite their note on the next merge.
+  if (/^-?\d+$/.test(bare)) return numberIfExact(bare, Number.parseInt(bare, 10));
+  if (/^-?\d+\.\d+$/.test(bare)) return numberIfExact(bare, Number.parseFloat(bare));
   return bare;
+}
+
+function numberIfExact(text, value) {
+  return Number.isFinite(value) && String(value) === text ? value : text;
 }
 
 /**
@@ -225,7 +259,7 @@ export function serializeFrontmatter(fields) {
     lines.push(...emitField(key, fields[key], kind));
   }
   for (const key of Object.keys(fields)) {
-    if (emitted.has(key)) continue;
+    if (emitted.has(key) || UNSAFE_KEYS.has(key)) continue;
     lines.push(...emitField(key, fields[key], inferKind(fields[key])));
   }
 
@@ -252,9 +286,15 @@ function emitField(key, value, kind) {
       return [`${key}:`, ...items.map((item) => `  - ${render(item)}`)];
     }
     case MAP: {
-      const entries = value && typeof value === 'object' ? Object.entries(value) : [];
-      if (entries.length === 0) return [];
-      return [`${key}:`, ...entries.map(([name, count]) => `  ${name}: ${count}`)];
+      const source = value && typeof value === 'object' ? Object.entries(value) : [];
+      // Keys the parser would refuse are dropped rather than escaped: a tool
+      // name outside this shape is not a tool name. Counts are coerced so the
+      // value side cannot carry text either.
+      const entries = source.filter(([name]) => EMITTABLE_KEY.test(name) && !UNSAFE_KEYS.has(name));
+      // Emitted even when empty, so "no tools" and "field missing" stay
+      // distinguishable for a metadata filter.
+      if (entries.length === 0) return [`${key}: {}`];
+      return [`${key}:`, ...entries.map(([name, count]) => `  ${name}: ${Number(count) || 0}`)];
     }
     case QUOTED:
     default:

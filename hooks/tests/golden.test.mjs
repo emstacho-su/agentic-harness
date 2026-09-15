@@ -106,7 +106,12 @@ test('a subagent transcript records the session that spawned it', () => {
 
 test('the parent note lists its children, and scratchpad paths are gone', () => {
   const { fields } = parseFrontmatter(fs.readFileSync(path.join(GOLDEN_DIR, 'plain-main.md'), 'utf8'));
-  assert.deepEqual(fields.child_sessions, ['agent-aaa111', 'agent-bbb222']);
+  // Child note ids, which are the ingest external_ids, so a search follows the
+  // link straight to the worker's own note.
+  assert.deepEqual(fields.child_sessions, [
+    'session-11111111-1111-4111-8111-111111111111--aaa111',
+    'session-11111111-1111-4111-8111-111111111111--bbb222',
+  ]);
   assert.deepEqual(fields.prs, [6]);
   assert.equal(fields.plan_file, 'abundant-gathering-wirth');
   assert.deepEqual(fields.memory_files, ['pm-worker-arrangement']);

@@ -10,11 +10,7 @@
 import fs from 'node:fs';
 
 import { END_REASONS, PARENT_SESSION_ENV_VAR } from './constants.mjs';
-import { pick, toPosix } from './text.mjs';
-
-/** Session ids are UUIDs today; the allow-list is a little wider and no wider. */
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const PATH_CLIMB = /(^|[/\\])\.\.([/\\]|$)/;
+import { isSafeFilenameSegment, pick, toPosix } from './text.mjs';
 
 /**
  * Read stdin without ever blocking session exit.
@@ -40,13 +36,29 @@ export function readStdin(deadlineAt) {
     try {
       read = fs.readSync(0, buf, 0, buf.length, null);
     } catch (err) {
-      if (err && err.code === 'EAGAIN') continue; // pipe not ready yet
+      if (err && err.code === 'EAGAIN') {
+        // The pipe has nothing yet. Spinning here would burn a core for the
+        // whole budget before the capture even starts, so wait a millisecond —
+        // Atomics.wait is the only synchronous sleep Node has without a
+        // dependency.
+        pause(1);
+        continue;
+      }
       break; // EOF, EBADF, or a closed handle
     }
     if (read === 0) break;
     chunks.push(Buffer.from(buf.subarray(0, read)));
   }
   return Buffer.concat(chunks).toString('utf8');
+}
+
+/** A synchronous sleep, for the one place that genuinely needs one. */
+function pause(milliseconds) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+  } catch {
+    /* SharedArrayBuffer unavailable: fall through and spin, as before */
+  }
 }
 
 /**
@@ -67,12 +79,17 @@ export function parseHookInput(raw, env = process.env) {
 
   const sessionId = pick(input, 'session_id', 'sessionId');
   if (!sessionId) return { ok: false, error: 'no session_id' };
-  if (!SAFE_ID.test(sessionId) || PATH_CLIMB.test(sessionId)) {
+  if (!isSafeFilenameSegment(sessionId)) {
     return { ok: false, error: `session_id is not a safe filename: ${JSON.stringify(sessionId.slice(0, 64))}` };
   }
 
   const reasonRaw = pick(input, 'reason', 'end_reason');
   const endReason = END_REASONS.has(reasonRaw) ? reasonRaw : 'other';
+
+  // `SubagentStop` and `SessionEnd` share this payload shape; the event name is
+  // what says which note to write. An unknown event is not guessed at.
+  const hookEventName = pick(input, 'hook_event_name', 'hookEventName');
+  const agentId = pick(input, 'agent_id', 'agentId');
 
   const parentFromEnv = String(env?.[PARENT_SESSION_ENV_VAR] ?? '').trim();
   const parentSession = pick(input, 'parent_session_id', 'parentSessionId', 'parent_session') || parentFromEnv;
@@ -82,11 +99,15 @@ export function parseHookInput(raw, env = process.env) {
     value: {
       sessionId,
       endReason,
+      hookEventName,
       cwd: toPosix(pick(input, 'cwd')),
       transcriptPath: toPosix(pick(input, 'transcript_path', 'transcriptPath')),
-      agentId: pick(input, 'agent_id', 'agentId'),
+      // The agent id becomes half of a filename, so it is held to the same
+      // allow-list as the session id.
+      agentId: isSafeFilenameSegment(agentId.replace(/^agent-/, '')) ? agentId : '',
       agentType: pick(input, 'agent_type', 'agentType'),
-      parentSession: SAFE_ID.test(parentSession) ? parentSession : '',
+      agentTranscriptPath: toPosix(pick(input, 'agent_transcript_path', 'agentTranscriptPath')),
+      parentSession: isSafeFilenameSegment(parentSession) ? parentSession : '',
     },
   };
 }

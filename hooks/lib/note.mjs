@@ -10,7 +10,6 @@
  */
 
 import {
-  AREA_CLASSES,
   GENERATOR_VERSION,
   MAX_COMMANDS_LISTED,
   MAX_FILES_LISTED,
@@ -34,6 +33,33 @@ export function noteFilename(sessionId, resumeIndex = 1) {
 }
 
 /**
+ * A subagent's note id and filename.
+ *
+ * `<session_id>--<agent_id>`: the double dash cannot occur inside either half
+ * (a session id is a UUID and an agent id is hex), so the pair is unambiguous
+ * and the child sorts next to its parent in the folder. Stable for the note's
+ * life, like every other id here, because it is what ingest keys on.
+ */
+export function childNoteId(sessionId, agentId) {
+  return `session-${sessionId}--${normalizeAgentId(agentId)}`;
+}
+
+export function childNoteFilename(sessionId, agentId) {
+  return `${sessionId}--${normalizeAgentId(agentId)}.md`;
+}
+
+/**
+ * The agent id, however it arrived.
+ *
+ * `SubagentStop` reports `a0231c9e98b5b1c5c`; the transcript on disk is called
+ * `agent-a0231c9e98b5b1c5c.jsonl`. Both must produce the same id or the
+ * parent's back-filled `child_sessions` would not match the child's own note.
+ */
+export function normalizeAgentId(agentId) {
+  return String(agentId ?? '').replace(/^agent-/, '');
+}
+
+/**
  * The schema-v2 frontmatter for one session.
  *
  * Every field in R-27.2 and R-27.3 is present on every note, including the ones
@@ -45,7 +71,9 @@ export function noteFilename(sessionId, resumeIndex = 1) {
 export function buildFields(ctx) {
   return {
     id: ctx.noteId,
-    title: `Session ${ctx.date} — ${ctx.collection}`,
+    // A subagent supplies its own title so its note is distinguishable from its
+    // parent's in a search result, where the title is most of what you see.
+    title: ctx.title || `Session ${ctx.date} — ${ctx.collection}`,
     type: 'session',
     schema_version: SCHEMA_VERSION,
     collection: ctx.collection,
@@ -80,6 +108,7 @@ export function buildFields(ctx) {
     prompt_count: ctx.prompts.length,
     command_count: ctx.commandCount,
     agent: 'claude-code',
+    agent_type: ctx.agentType ?? '',
     generator: `session-capture.mjs ${GENERATOR_VERSION}`,
     tools_used: Object.fromEntries(ctx.toolCounts),
   };
@@ -88,7 +117,7 @@ export function buildFields(ctx) {
 /** The markdown body. Extracted, never summarised: no model runs at session end. */
 export function renderBody(ctx, fields) {
   const lines = [];
-  lines.push(`# Session — ${ctx.date} — ${ctx.collection}`);
+  lines.push(`# ${fields.title}`);
   lines.push('');
   lines.push(summaryLine(ctx, fields));
   lines.push('');
@@ -147,7 +176,33 @@ export function renderBody(ctx, fields) {
     }),
   );
 
-  return lines.join('\n');
+  return `${lines.join('\n')}${keptFrom(ctx.previousBody)}`;
+}
+
+/**
+ * The line the generated body ends with. Anything a person writes below it is
+ * theirs, and survives every rewrite.
+ */
+export const HANDWRITTEN_MARKER =
+  '_Generated mechanically by `session-capture.mjs` at session end — extracted, not summarised. ' +
+  'Tool output is never copied; prompts and commands are redacted for secrets._';
+
+/**
+ * Whatever a person added below the generated marker in the previous note.
+ *
+ * `merge.mjs` protects the frontmatter with real care — "a tag, a line of
+ * context, a field of his own" — but the body was rebuilt from scratch on every
+ * capture, so a paragraph typed into an `active` note vanished the moment the
+ * session resumed and ended. Everything above the marker is machine-generated
+ * and is regenerated; everything below it is kept verbatim.
+ */
+function keptFrom(previousBody) {
+  const text = String(previousBody ?? '');
+  if (!text) return '';
+  const at = text.lastIndexOf(HANDWRITTEN_MARKER);
+  if (at === -1) return '';
+  const tail = text.slice(at + HANDWRITTEN_MARKER.length).replace(/^\n+/, '');
+  return tail.trim() ? `\n${tail.replace(/\s+$/, '')}\n` : '';
 }
 
 /**
@@ -207,6 +262,7 @@ function factRows(fields, { transcriptPath, subagentFilesRead }) {
   ];
   if (fields.resumed_from) rows.push(['Resumed from', `\`${fields.resumed_from}\``]);
   if (fields.parent_session) rows.push(['Parent session', `\`${fields.parent_session}\``]);
+  if (fields.agent_type) rows.push(['Agent type', `\`${fields.agent_type}\``]);
   if (fields.commits.length) rows.push(['Commits', fields.commits.length]);
   if (fields.prs.length) rows.push(['PRs', fields.prs.map((pr) => `#${pr}`).join(', ')]);
   rows.push(['Transcript', `\`${toPosix(transcriptPath)}\``]);
@@ -217,9 +273,4 @@ function factRows(fields, { transcriptPath, subagentFilesRead }) {
 /** Frontmatter block, blank line, body. The exact bytes the goldens compare. */
 export function renderNote(fields, body) {
   return `${serializeFrontmatter(fields)}\n\n${body}`;
-}
-
-/** `classes` notes live under a course id, `projects` notes under a repo slug. */
-export function isClassArea(area) {
-  return area === AREA_CLASSES;
 }

@@ -17,7 +17,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
+import { MAX_COMMAND_CHARS } from '../lib/constants.mjs';
 import { looksRedacted, redact } from '../lib/redact.mjs';
+import { createAccumulator, extractTools } from '../lib/transcript.mjs';
 import { GOLDEN_DIR, createSandbox, readNote } from './helpers/sandbox.mjs';
 import { SCENARIOS, runScenario } from './helpers/scenarios.mjs';
 
@@ -59,6 +61,54 @@ test('no golden note anywhere carries a credential shape', () => {
   }
 });
 
+test('a tool description reaches the note redacted, and capped', () => {
+  // `description` is model-authored free text with no schema and no length
+  // limit. It used to short-circuit redaction entirely — `description ||
+  // redact(command)` — so a session talked into putting a key there wrote it
+  // straight into the vault.
+  const accumulator = createAccumulator();
+  extractTools(
+    [
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_1',
+              name: 'Bash',
+              input: {
+                command: 'gh auth status',
+                description: `Audit with ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 ${'x'.repeat(500)}`,
+              },
+            },
+            {
+              type: 'tool_use',
+              id: 'toolu_2',
+              name: 'Agent',
+              input: { description: 'Use sk-proj-abcdefghijklmnopqrstuvwxyz0123', subagent_type: 'general-purpose' },
+            },
+            { type: 'tool_use', id: 'toolu_3', name: 'Skill', input: { skill: 'sb_secret_9aQZ1kLmNOPqrstuvwxyz01' } },
+            { type: 'tool_use', id: 'toolu_4', name: 'Artifact', input: { url: 'https://x/?t=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8' } },
+          ],
+        },
+      },
+    ],
+    accumulator,
+  );
+
+  const everything = [...accumulator.commands, ...accumulator.agents, ...accumulator.skills, ...accumulator.artifacts].join('\n');
+  assert.ok(looksRedacted(everything), `a secret survived: ${everything}`);
+  assert.ok(accumulator.commands[0].length <= MAX_COMMAND_CHARS, 'the description must obey the cap too');
+});
+
+test('a branch name reaches frontmatter redacted', () => {
+  const accumulator = createAccumulator();
+  extractTools([{ type: 'user', gitBranch: 'feat/ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8' }], accumulator);
+  assert.ok(looksRedacted([...accumulator.branches].join('')));
+});
+
 test('each rule redacts the shape it is for', () => {
   const cases = [
     ['SUPABASE_SERVICE_ROLE_KEY=abc123def456', /\[REDACTED\]/],
@@ -78,6 +128,39 @@ test('each rule redacts the shape it is for', () => {
   ];
   for (const [input, expected] of cases) {
     assert.match(redact(input), expected, `not redacted: ${input.slice(0, 40)}`);
+  }
+});
+
+/**
+ * Build a secret-shaped string at runtime.
+ *
+ * These are invented values, but a vendor prefix followed by the right number
+ * of characters is exactly what a secret scanner looks for — and GitHub's push
+ * protection rejected this file when the literals were written out, which is the
+ * scanner doing its job. Joining the prefix to the body here keeps the test
+ * honest about the shape without putting the shape in the file.
+ */
+const shaped = (prefix, body) => `${prefix}${body}`;
+
+test('the shapes a rule-by-rule review found passing through are caught', () => {
+  const cases = [
+    // A quoted key: a JSON config or an MCP server block pasted into a prompt.
+    ['{"api_key": "9f8a7b6c5d4e3f2a1b"}', /"api_key":\s*\[REDACTED\]/],
+    ["supabase_service_role: 'abc123def456'", /\[REDACTED\]/],
+    // A quoted value with spaces: a passphrase usually has them.
+    ['PASSWORD="correct horse battery staple"', /PASSWORD=\[REDACTED\]/],
+    // GitHub's current default token format.
+    [`use ${shaped('github_', 'pat_11AABBCCDD0aBcDeFgHiJkLmNoPqRsTuVwXyZ012345')}`, /\[REDACTED-KEY\]/],
+    ['curl -H "Authorization: Basic dXNlcjpwYXNzd29yZA=="', /Basic \[REDACTED\]/],
+    [shaped('sk_', 'live_abcdefghijklmnopqrstuvwx'), /\[REDACTED-KEY\]/],
+    [shaped('AIza', 'SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7'), /\[REDACTED-KEY\]/],
+    [shaped('glpat-', 'ABCdefGHIjklMNOpqr'), /\[REDACTED-KEY\]/],
+    [shaped('npm_', 'abcdefghijklmnopqrstuvwxyz0123456789'), /\[REDACTED-KEY\]/],
+  ];
+  for (const [input, expected] of cases) {
+    const output = redact(input);
+    assert.match(output, expected, `not redacted: ${input.slice(0, 48)}`);
+    assert.ok(looksRedacted(output), `a probe still sees a secret in: ${output.slice(0, 48)}`);
   }
 });
 

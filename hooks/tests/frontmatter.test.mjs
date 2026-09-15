@@ -104,6 +104,46 @@ test('unparseable frontmatter is reported, never guessed at', () => {
   }
 });
 
+test('a number-looking scalar only becomes a number when it round-trips', () => {
+  // The merge writes these values back into the user's note, so a value that
+  // changes shape on the way through is a value the hook edited by accident.
+  const { fields } = parseFrontmatter(
+    ['---', 'count: 12', 'ticket: 0012', 'signed: +5', 'sha: 0e3b3d00', 'ver: 1.2.3', 'ratio: 1.50', '---', ''].join('\n'),
+  );
+  assert.equal(fields.count, 12);
+  assert.equal(fields.ticket, '0012');
+  assert.equal(fields.signed, '+5');
+  assert.equal(fields.sha, '0e3b3d00');
+  assert.equal(fields.ver, '1.2.3');
+  assert.equal(fields.ratio, '1.50');
+
+  const round = parseFrontmatter(serializeFrontmatter(fields));
+  assert.deepEqual(round.fields, fields, 'a second pass must not change anything again');
+});
+
+test('a key that could move a prototype is refused, not parsed', () => {
+  // These files are hand-edited and their parsed shape is spread into new
+  // objects. `__proto__` as a mapping key is the classic way that turns into a
+  // changed prototype; the parser refuses it, which makes the note unreadable,
+  // which makes the hook leave it alone.
+  for (const raw of [
+    '---\n__proto__:\n  polluted: 1\n---\n\nbody\n',
+    '---\nconstructor:\n  prototype: 1\n---\n\nbody\n',
+    '---\ntools_used:\n  __proto__: 1\n---\n\nbody\n',
+  ]) {
+    const parsed = parseFrontmatter(raw);
+    assert.equal(parsed.ok, false, `accepted: ${JSON.stringify(raw)}`);
+    assert.match(parsed.error, /reserved key/);
+  }
+  assert.equal({}.polluted, undefined, 'Object.prototype is untouched');
+});
+
+test('serialization drops a reserved key even if one reaches it', () => {
+  const output = serializeFrontmatter({ id: 'session-abc', __proto__: { x: 1 }, tags: [] });
+  assert.ok(!output.includes('__proto__'));
+  assert.ok(output.includes("id: 'session-abc'"));
+});
+
 test('keys the hook does not know about are kept, and kept last', () => {
   const output = serializeFrontmatter({
     reviewed_by: 'stack',
@@ -120,9 +160,40 @@ test('keys the hook does not know about are kept, and kept last', () => {
   assert.deepEqual(round.fields.my_own_list, ['a', 'b']);
 });
 
-test('an empty map field is omitted rather than emitted as {}', () => {
-  assert.ok(!serializeFrontmatter({ tools_used: {} }).includes('tools_used'));
+test('an empty map is still emitted, so absent and empty stay different', () => {
+  // A chat-only session used no tools. Dropping the key would make "no tools"
+  // and "field missing" the same thing to a metadata filter.
+  assert.ok(serializeFrontmatter({ tools_used: {} }).includes('tools_used: {}'));
   assert.ok(serializeFrontmatter({ tags: [] }).includes('tags: []'));
+  assert.deepEqual(parseFrontmatter(serializeFrontmatter({ tools_used: {} })).fields.tools_used, {});
+});
+
+test('a tool name that would break out of the frontmatter is dropped', () => {
+  // Confirmed exploitable before the fix: the map branch was the one field
+  // whose keys were not escaped, and its keys are tool names from a transcript.
+  const output = serializeFrontmatter({
+    tools_used: {
+      Bash: 3,
+      ["Evil: 1\nsession_id: 'FORGED'\nstatus: 'superseded'\nzz"]: 1,
+      ['__proto__']: 1,
+      'has space': 2,
+    },
+  });
+  assert.ok(output.includes('  Bash: 3'));
+  assert.ok(!output.includes('FORGED'));
+  assert.ok(!output.includes('__proto__'));
+  assert.ok(!output.includes('has space'));
+
+  const round = parseFrontmatter(output);
+  assert.equal(round.ok, true, round.error);
+  assert.deepEqual(round.fields.tools_used, { Bash: 3 });
+  assert.equal(round.fields.session_id, undefined, 'no forged key survived');
+});
+
+test('a map count that is not a number becomes one', () => {
+  const output = serializeFrontmatter({ tools_used: { Bash: "1\nid: 'forged'" } });
+  assert.ok(!output.includes('forged'));
+  assert.ok(output.includes('  Bash: 0'));
 });
 
 test('the field order is the frozen contract W-H2 builds against', () => {
@@ -135,6 +206,6 @@ test('the field order is the frozen contract W-H2 builds against', () => {
     'cwd', 'cwds_seen', 'phase', 'tags', 'supersedes', 'resumed_from',
     'parent_session', 'child_sessions', 'commits', 'prs', 'memory_files',
     'plan_file', 'docs_touched', 'artifacts', 'files_modified', 'prompt_count',
-    'command_count', 'agent', 'generator', 'tools_used',
+    'command_count', 'agent', 'agent_type', 'generator', 'tools_used',
   ]);
 });

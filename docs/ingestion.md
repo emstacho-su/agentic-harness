@@ -329,6 +329,20 @@ field keeps one type for metadata filtering.
 The v1 fields (`title`, `type`, `session_id`, `date`, `started_at`, `ended_at`,
 `cwd`, `cwds_seen`, `end_reason`, `agent`, `generator`) are unchanged.
 
+### Subagent capture
+
+A `SubagentStop` hook, the same entry point, writes one note per worker at
+`sessions/<session_id>--<agent_id>.md` with `parent_session` set to the session
+that spawned it and `agent_type` recording what kind of worker it was. The
+parent's `child_sessions` holds the child note ids, so a search follows the link
+in either direction: back from a worker by `parent_session`, forward from a
+session by `child_sessions`.
+
+The list is complete whichever order the events arrive in. A worker usually
+stops long before its parent, and the parent's `SessionEnd` back-fills
+`child_sessions` from the `subagents/` directory; a worker that stops after the
+parent was captured merges itself into the existing note.
+
 ### One note per session, and what "merge" means
 
 The filename is the full `session_id`, never the date: a resumed session changes
@@ -341,7 +355,10 @@ Stack edits these notes by hand, so a rewrite is a **merge**:
   reverse;
 - `status` never regresses, and a stale `SessionEnd` replayed over a concluded
   note writes nothing at all;
-- a note whose frontmatter will not parse is left alone rather than overwritten.
+- a note whose frontmatter will not parse is left alone rather than overwritten;
+- anything written **below the generated marker line** at the end of the body is
+  kept verbatim, so a paragraph of context typed into a note survives every
+  later capture.
 
 A resume that arrives after the note concluded starts a new `<id>-r2.md` naming
 what it continues in `resumed_from` and `supersedes`, and flips the earlier note

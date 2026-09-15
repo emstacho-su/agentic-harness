@@ -48,13 +48,14 @@ files_modified:
 prompt_count: 1
 command_count: 1
 agent: claude-code
+agent_type: ''
 generator: 'session-capture.mjs 2.0.0'
 tools_used:
   Edit: 3
   Bash: 1
 ---
 
-# Session — 2026-09-12 — bb2dash
+# Session 2026-09-12 — bb2dash
 
 Working directory `__SANDBOX__/repos/bb2dash`. Ran 45m, 1 prompt, 1 shell command, 3 files touched. Ended: prompt_input_exit.
 

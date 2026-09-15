@@ -45,11 +45,6 @@ export function isKnownTag(tag) {
   return KNOWN.has(tag) || PHASE_TAG_PATTERN.test(tag);
 }
 
-/** Every literal term, in vocabulary order. Used by the docs-parity test. */
-export function allLiteralTags() {
-  return [...AREA_TAGS, ...ACTIVITY_TAGS];
-}
-
 /** `phase-7` from `7`, or `''` when the number is out of range. */
 export function phaseTag(number) {
   const n = Number.parseInt(String(number ?? ''), 10);

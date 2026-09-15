@@ -19,8 +19,17 @@ hooks/
 
 ## What it writes
 
-`vault/<projects|classes>/<collection>/sessions/<session_id>.md` — **one note per
-session**, named by the full session id, rewritten on every `SessionEnd`.
+Two events, one entry point:
+
+| Event | Note | Named |
+| --- | --- | --- |
+| `SessionEnd` | the session | `<session_id>.md` |
+| `SubagentStop` | one worker | `<session_id>--<agent_id>.md` |
+
+**One note per session**, named by the full session id, rewritten on every
+`SessionEnd` — and one note per subagent beside it. The double dash cannot occur
+inside either half (a session id is a UUID, an agent id is hex), so the pair is
+unambiguous and a worker sorts next to the session that spawned it.
 
 Frontmatter is schema v2 (`schema_version: 2`). The field names are frozen: the
 retrieval side filters on them, so renaming one is a breaking change. Every
@@ -70,6 +79,14 @@ Step 2 reads `.git/config` and `.git/HEAD` directly rather than shelling out:
 The only subprocess is one bounded `git log` for `commits`, and it is skipped
 entirely when the clock is short.
 
+That subprocess goes through `lib/spawn.mjs`, which exists for one reason:
+`execFileSync('git', …, { cwd: repoRoot })` resolves the program against the
+child's working directory **before `PATH`** on Windows, so a `git.exe` sitting
+in a checkout root would run at session exit with output swallowed and the
+window hidden. The repository is therefore passed as `git -C <path>` and the
+process starts in the user's home directory with
+`NoDefaultCurrentDirectoryInExePath` set.
+
 ## Merge, never rewrite
 
 Stack edits these notes. The hook therefore reads the note back, merges, and
@@ -82,6 +99,33 @@ writes:
 
 A note whose frontmatter will not parse is **not written**. Refusing is the only
 safe answer to "somebody hand-edited this into a shape I do not understand".
+
+### Subagents
+
+A worker launched with the Agent tool does real work but shares its parent's
+`session_id` and never fires `SessionEnd`, so its edits used to disappear into
+the parent's note as a handful of file paths. `SubagentStop` gives it a note of
+its own, with `parent_session` set to the session that spawned it and
+`agent_type` recording what kind of worker it was. Collection, branch, tags and
+redaction are the session rules applied unchanged.
+
+The link holds whichever order the events arrive in, and both orders really
+happen:
+
+- **worker stops first** (the usual case) — the parent's own `SessionEnd`
+  back-fills `child_sessions` by reading the `subagents/` directory;
+- **worker stops after the parent was captured** — the `SubagentStop` run merges
+  the child into the parent note's `child_sessions`.
+
+`child_sessions` holds the **child note ids** (`session-<session_id>--<agent_id>`),
+which are the ingest `external_id`s, so a search follows the link straight to the
+worker's own note.
+
+A worker is captured when it has a prompt **or** any tool use: some are handed
+their task entirely through the parent's `Agent` call, and for those the task
+text comes from the `agent-<id>.meta.json` file beside the transcript. A worker
+with no transcript on disk is skipped — Claude Code does not persist one for
+every agent, and no transcript means no note.
 
 ### Resume chains
 
@@ -115,9 +159,18 @@ node install.mjs --dry-run    # what would change in ~/.claude/hooks
 node install.mjs              # copy, then verify every file by SHA-256
 ```
 
-`settings.json` already points at `~/.claude/hooks/session-capture.mjs`, and it
-stays that way. Pointing it at a worktree would mean the hook disappears the day
-the worktree is deleted.
+The installer also registers the hook for `SessionEnd` and `SubagentStop` in
+`~/.claude/settings.json`. That file is the user's — permissions, model,
+plugins, other tools' hooks — so the write is a read-merge-write that touches
+only those two events, keeps an existing entry's own `timeout` and
+`statusMessage`, and changes nothing on a second run. It writes through a
+temporary file and renames, because a half-written `settings.json` is read by
+every session.
+
+It registers `~/.claude/hooks/session-capture.mjs`, never a worktree path:
+a worktree gets deleted, and a hook that goes with it takes every future
+session's note along. `--target` without a matching `--settings` is refused for
+the same reason; `--skip-settings` deploys the files alone.
 
 Environment:
 
@@ -154,7 +207,7 @@ stream exists to fix.
 
 ## Tests
 
-`npm test` runs 114 tests with no dependencies and no network:
+`npm test` runs 163 tests with no dependencies and no network:
 
 | File | What it holds |
 | --- | --- |
@@ -165,6 +218,11 @@ stream exists to fix.
 | `migrate.test.mjs` | the migration, its dry run, and its refusals |
 | `tags.test.mjs` | every tag is in `docs/tags.md`, or exactly `unclassified` |
 | `hook-process.test.mjs` | the real process: exit 0, a log line, the W-H2 seam |
+| `spawn.test.mjs` | `git` and `gh` never resolve against a directory a repository controls |
+| `subagent.test.mjs` | a worker's note, and the parent link in both event orders |
+| `settings.test.mjs` | the settings merge keeps every key and hook it does not own |
+| `unc.test.mjs` | no path that resolves onto another host is ever touched |
+| `install.test.mjs` | the deploy payload is exactly the hook's transitive imports |
 
 The golden notes are approval tests. When one changes, read the diff: it is a
 change to what `ingest` stores and what retrieval can filter on.

@@ -59,13 +59,25 @@ export function readSessionNotes(vaultRoot) {
       const sessionsDir = path.join(areaDir, entry.name, 'sessions');
       let files;
       try {
-        files = fs.readdirSync(sessionsDir).filter((name) => name.endsWith('.md'));
+        files = fs
+          .readdirSync(sessionsDir, { withFileTypes: true })
+          .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+          .map((entry) => entry.name);
       } catch {
         continue;
       }
       for (const name of files) {
         const notePath = path.join(sessionsDir, name);
-        const parsed = parseFrontmatter(fs.readFileSync(notePath, 'utf8'));
+        let raw;
+        try {
+          raw = fs.readFileSync(notePath, 'utf8');
+        } catch (err) {
+          // A directory named `x.md`, or a OneDrive placeholder that will not
+          // hydrate. Reported, because throwing here aborts the whole migration.
+          problems.push({ path: notePath, error: err?.code || err?.message || 'unreadable' });
+          continue;
+        }
+        const parsed = parseFrontmatter(raw);
         if (!parsed.ok) {
           problems.push({ path: notePath, error: parsed.error });
           continue;

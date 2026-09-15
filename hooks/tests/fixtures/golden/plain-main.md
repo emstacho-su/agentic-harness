@@ -32,8 +32,8 @@ supersedes: []
 resumed_from: ''
 parent_session: ''
 child_sessions:
-  - 'agent-aaa111'
-  - 'agent-bbb222'
+  - 'session-11111111-1111-4111-8111-111111111111--aaa111'
+  - 'session-11111111-1111-4111-8111-111111111111--bbb222'
 commits: []
 prs:
   - 6
@@ -52,6 +52,7 @@ files_modified:
 prompt_count: 2
 command_count: 2
 agent: claude-code
+agent_type: ''
 generator: 'session-capture.mjs 2.0.0'
 tools_used:
   Edit: 5
@@ -60,7 +61,7 @@ tools_used:
   Agent: 1
 ---
 
-# Session — 2026-09-11 — bb2dash
+# Session 2026-09-11 — bb2dash
 
 Working directory `__SANDBOX__/repos/bb2dash`. Ran 1h 0m, 2 prompts, 2 shell commands, 5 files touched. Ended: clear.
 

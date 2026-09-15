@@ -16,7 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { toPosix } from './text.mjs';
+import { isLocalPath, toPosix } from './text.mjs';
 
 /** A cwd nested this deep below a repo root is not our problem. */
 const MAX_WALK_UP = 40;
@@ -42,7 +42,7 @@ const EMPTY = Object.freeze({
  */
 export function resolveRepo(cwd) {
   const start = toPosix(cwd);
-  if (!start) return EMPTY;
+  if (!start || !isLocalPath(start)) return EMPTY;
 
   const found = findGitEntry(start);
   if (!found) return EMPTY;
@@ -74,6 +74,7 @@ export function resolveRepo(cwd) {
 function findGitEntry(start) {
   let current = start;
   for (let depth = 0; depth < MAX_WALK_UP; depth += 1) {
+    if (!isLocalPath(current)) return null;
     const candidate = path.join(current, '.git');
     let stat = null;
     try {
@@ -102,7 +103,11 @@ function readGitdirPointer(gitFilePath) {
   const match = raw.match(/^\s*gitdir:\s*(.+?)\s*$/m);
   if (!match) return '';
   const pointer = toPosix(match[1]);
-  return path.isAbsolute(pointer) ? pointer : toPosix(path.resolve(path.dirname(gitFilePath), pointer));
+  const resolved = path.isAbsolute(pointer)
+    ? pointer
+    : toPosix(path.resolve(path.dirname(gitFilePath), pointer));
+  // A `.git` file is content, and content does not get to name another host.
+  return isLocalPath(resolved) ? resolved : '';
 }
 
 /**
@@ -120,8 +125,8 @@ function resolveCommonDir(gitDir) {
   try {
     const raw = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim();
     if (raw) {
-      const resolved = path.isAbsolute(raw) ? raw : path.resolve(gitDir, raw);
-      if (fs.existsSync(resolved)) return toPosix(resolved);
+      const resolved = toPosix(path.isAbsolute(raw) ? raw : path.resolve(gitDir, raw));
+      if (isLocalPath(resolved) && fs.existsSync(resolved)) return resolved;
     }
   } catch {
     /* fall through to the path split */

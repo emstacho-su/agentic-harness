@@ -131,6 +131,39 @@ test('a resume before the note settles merges into it, and status never regresse
   }
 });
 
+test('a paragraph written below the generated marker survives a rewrite', () => {
+  const sandbox = createSandbox();
+  try {
+    runScenario(sandbox, scenario('resume-first', 'resume'));
+
+    const notePath = path.join(sandbox.vaultRoot, FIRST_NOTE);
+    const handwritten = [
+      '',
+      '## Why this mattered',
+      '',
+      'The pooler port cost an hour. Do not forget again.',
+      '',
+    ].join('\n');
+    fs.appendFileSync(notePath, handwritten, 'utf8');
+
+    const outcome = runScenario(sandbox, scenario('resume-second', 'clear'));
+    assert.equal(outcome.action, 'merge');
+
+    const after = fs.readFileSync(notePath, 'utf8');
+    assert.match(after, /## Why this mattered/);
+    assert.match(after, /The pooler port cost an hour/);
+    // The machine sections were still regenerated around it.
+    assert.match(after, /^status: 'concluded'$/m);
+    assert.match(after, /docs\/tags\.md/);
+    // And it is not duplicated on a second pass.
+    runScenario(sandbox, scenario('resume-second', 'resume'));
+    const twice = fs.readFileSync(notePath, 'utf8');
+    assert.equal(twice.split('## Why this mattered').length - 1, 1);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
 test('a note whose frontmatter cannot be parsed is never overwritten', () => {
   const sandbox = createSandbox();
   try {

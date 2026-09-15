@@ -7,6 +7,7 @@
  */
 
 import { capture } from '../../lib/capture.mjs';
+import { captureSubagent } from '../../lib/subagent.mjs';
 import { expand, installTranscript, noGit } from './sandbox.mjs';
 
 export const SCENARIOS = Object.freeze([
@@ -57,6 +58,15 @@ export const SCENARIOS = Object.freeze([
     note: 'projects/agentic-harness/sessions/66666666-6666-4666-8666-666666666666.md',
   },
   {
+    name: 'subagent-parent',
+    description: 'a parent session whose two workers each get their own note',
+    fixture: 'subagent-parent',
+    sessionId: '88888888-8888-4888-8888-888888888888',
+    cwd: '__SANDBOX__/repos/bb2dash',
+    reason: 'clear',
+    note: 'projects/bb2dash/sessions/88888888-8888-4888-8888-888888888888.md',
+  },
+  {
     name: 'class',
     description: 'a class folder under OneDrive: classes/<course id>, collection_source folder',
     fixture: 'class',
@@ -74,6 +84,67 @@ export const SCENARIOS = Object.freeze([
  * objects, so a real `git log` would only add latency and a platform
  * dependency. `git-log.test.mjs` covers the parsing separately.
  */
+/**
+ * The workers of the `subagent-parent` fixture, each with a golden note.
+ *
+ * `c0ffee01` opens its transcript with the task prompt, the ordinary shape.
+ * `c0ffee02` has no user turn at all, so its task has to come from the meta
+ * file the parent's Agent call wrote beside the transcript.
+ */
+export const SUBAGENT_SCENARIOS = Object.freeze([
+  {
+    name: 'subagent-worker',
+    description: 'a worker with its own task prompt: one note, linked to its parent',
+    parent: 'subagent-parent',
+    sessionId: '88888888-8888-4888-8888-888888888888',
+    agentId: 'c0ffee01',
+    agentType: 'general-purpose',
+    cwd: '__SANDBOX__/repos/bb2dash',
+    note: 'projects/bb2dash/sessions/88888888-8888-4888-8888-888888888888--c0ffee01.md',
+  },
+  {
+    name: 'subagent-worker-no-prompt',
+    description: 'a worker that only ran tools: the task comes from the meta file',
+    parent: 'subagent-parent',
+    sessionId: '88888888-8888-4888-8888-888888888888',
+    agentId: 'c0ffee02',
+    agentType: 'feature-dev:code-reviewer',
+    cwd: '__SANDBOX__/repos/bb2dash',
+    note: 'projects/bb2dash/sessions/88888888-8888-4888-8888-888888888888--c0ffee02.md',
+  },
+]);
+
+/** Install the parent fixture, then stop one of its workers. */
+export function runSubagentScenario(sandbox, scenario) {
+  const transcriptPath = installTranscript(sandbox, scenario.parent, scenario.sessionId);
+  return runSubagentStop(sandbox, { ...scenario, transcriptPath });
+}
+
+/**
+ * Drive `SubagentStop` for one worker of an already-installed parent fixture.
+ *
+ * Returns the outcome; the caller decides whether the parent note existed
+ * first, which is what the two link orders come down to.
+ */
+export function runSubagentStop(sandbox, { sessionId, agentId, agentType, cwd, transcriptPath }) {
+  return captureSubagent({
+    input: {
+      sessionId,
+      endReason: 'other',
+      hookEventName: 'SubagentStop',
+      cwd: expand(cwd, sandbox),
+      transcriptPath,
+      agentId,
+      agentType: agentType ?? '',
+      agentTranscriptPath: '',
+      parentSession: '',
+    },
+    vaultRoot: sandbox.vaultRoot,
+    projectsRoot: sandbox.projectsRoot,
+    runGit: noGit,
+  });
+}
+
 export function runScenario(sandbox, scenario, overrides = {}) {
   const transcriptPath = installTranscript(
     sandbox,

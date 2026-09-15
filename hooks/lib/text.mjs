@@ -82,3 +82,47 @@ export function isoToMillis(value) {
   const parsed = Date.parse(String(value ?? ''));
   return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
+
+/**
+ * A path beginning `\host\...` or `//host/...` is a UNC path.
+ *
+ * Windows resolves one by connecting to `host` over SMB and authenticating as
+ * the logged-in user, which hands that host a Net-NTLMv2 exchange. This hook
+ * stats and reads paths that came out of a transcript — a tool input naming
+ * `//attacker/share/x` is recorded even when the write was *denied* — and it
+ * runs unattended at session exit with nobody watching. So a path that points
+ * at another machine is simply not a path this package touches.
+ *
+ * `path.isAbsolute('//host/share')` is true, so an absoluteness check does not
+ * cover this.
+ */
+const UNC_PREFIX = /^[\\/]{2}[^\\/]/;
+
+/** Is this a local path — one no other host can answer for? */
+export function isLocalPath(candidate) {
+  const text = String(candidate ?? '');
+  if (!text) return false;
+  return !UNC_PREFIX.test(text);
+}
+
+/**
+ * Identifiers that are allowed to become a filename.
+ *
+ * Session ids are UUIDs today; the allow-list is a little wider and no wider. It
+ * is an allow-list rather than a sanitiser because sanitising a path is a game
+ * you lose eventually — `..%2f`, a UNC prefix, a trailing dot on Windows.
+ */
+const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const PATH_CLIMB = /(^|[/\\])\.\.([/\\]|$)/;
+
+/**
+ * May `value` be used as one path segment?
+ *
+ * Every filename the hook and its tools build from data — a session id from
+ * stdin, a session id read back out of a vault note — passes through here. One
+ * rule, one place.
+ */
+export function isSafeFilenameSegment(value) {
+  const text = String(value ?? '');
+  return SAFE_SEGMENT.test(text) && !PATH_CLIMB.test(text);
+}

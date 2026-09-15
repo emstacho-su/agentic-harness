@@ -12,17 +12,21 @@
  */
 
 export const SECRET_RULES = Object.freeze([
-  // KEY=value / KEY: value where the key name itself signals a secret.
+  // KEY=value / KEY: value / "key": "value" where the key name signals a secret.
   //
-  // The closing backreference is `\3`, the quote group. Version 1.0.0 of this
-  // hook wrote `\4` — the *value* group — so the rule only fired when the value
-  // happened to be the same string twice (`hunter2hunter2` matched; a real key
-  // did not). The whole-note assertion in `redaction.test.mjs` is what caught
-  // it, which is the argument for keeping that second, rule-blind layer.
+  // Three things this has to get right, each of which it previously did not:
+  //
+  //   - the closing backreference is `\1`, the *key's* quote. Version 1.0.0
+  //     closed on the value group, so the rule only fired when the value
+  //     happened to be the same string twice (`hunter2hunter2` matched; a real
+  //     key did not);
+  //   - the key may be quoted, so a JSON or YAML mapping is covered and not
+  //     just a shell assignment;
+  //   - a quoted value may contain spaces, because a passphrase usually does.
   {
     name: 'named-secret-assignment',
-    re: /\b([A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|SERVICE[_-]?ROLE|ANON[_-]?KEY|AUTH[_-]?KEY|BEARER|DSN|APIKEY|PAT)[A-Za-z0-9_]*)(\s*[:=]\s*)(["']?)[^\s"'`,;)]{4,}\3/gi,
-    to: (_m, key, sep, quote) => `${key}${sep}${quote}[REDACTED]${quote}`,
+    re: /(["']?)\b([A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|SERVICE[_-]?ROLE|ANON[_-]?KEY|AUTH[_-]?KEY|BEARER|DSN|APIKEY|PAT)[A-Za-z0-9_]*)\1(\s*[:=]\s*)(?:"[^"\n]{4,}"|'[^'\n]{4,}'|[^\s"'`,;)]{4,})/gi,
+    to: (_m, quote, key, sep) => `${quote}${key}${quote}${sep}[REDACTED]`,
   },
   // Connection strings carrying an inline password: postgresql://user:pw@host.
   {
@@ -32,8 +36,15 @@ export const SECRET_RULES = Object.freeze([
   },
   { name: 'jwt', re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, to: '[REDACTED-JWT]' },
   { name: 'supabase-key', re: /\bsb[a-z]{0,12}_[A-Za-z0-9_-]{16,}/g, to: '[REDACTED-KEY]' },
+  // `github_pat_…` is GitHub's current default and does not start `gh?_`, so it
+  // needs its own rule; without one a pasted fine-grained token passes through.
+  { name: 'github-fine-grained-pat', re: /\bgithub_pat_[A-Za-z0-9_]{20,}/g, to: '[REDACTED-KEY]' },
   { name: 'github-token', re: /\bgh[pousr]_[A-Za-z0-9]{16,}/g, to: '[REDACTED-KEY]' },
   { name: 'openai-key', re: /\bsk-[A-Za-z0-9_-]{20,}/g, to: '[REDACTED-KEY]' },
+  { name: 'stripe-key', re: /\b[sruwp]k_(?:live|test)_[A-Za-z0-9]{16,}/g, to: '[REDACTED-KEY]' },
+  { name: 'google-api-key', re: /\bAIza[A-Za-z0-9_-]{30,}/g, to: '[REDACTED-KEY]' },
+  { name: 'gitlab-pat', re: /\bglpat-[A-Za-z0-9_-]{16,}/g, to: '[REDACTED-KEY]' },
+  { name: 'npm-token', re: /\bnpm_[A-Za-z0-9]{30,}/g, to: '[REDACTED-KEY]' },
   { name: 'aws-access-key-id', re: /\bAKIA[0-9A-Z]{16}\b/g, to: '[REDACTED-KEY]' },
   { name: 'slack-token', re: /\bxox[baprs]-[A-Za-z0-9-]{10,}/g, to: '[REDACTED-KEY]' },
   {
@@ -42,6 +53,9 @@ export const SECRET_RULES = Object.freeze([
     to: '[REDACTED-PRIVATE-KEY]',
   },
   { name: 'bearer-header', re: /\b[Bb]earer\s+[A-Za-z0-9._~+/-]{16,}=*/g, to: 'Bearer [REDACTED]' },
+  // `Authorization` matches none of the key names above, so Basic auth needs a
+  // rule of its own; the base64 blob is a username and password.
+  { name: 'basic-header', re: /\b([Bb]asic)\s+[A-Za-z0-9+/]{12,}={0,2}/g, to: '$1 [REDACTED]' },
 ]);
 
 /**
@@ -78,7 +92,13 @@ export function looksRedacted(text) {
     /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./,
     /\bsb[a-z]{0,12}_[A-Za-z0-9_-]{16,}/,
     /\bgh[pousr]_[A-Za-z0-9]{16,}/,
+    /\bgithub_pat_[A-Za-z0-9_]{20,}/,
+    /\b[sruwp]k_(?:live|test)_[A-Za-z0-9]{16,}/,
+    /\bAIza[A-Za-z0-9_-]{30,}/,
+    /\bglpat-[A-Za-z0-9_-]{16,}/,
+    /\bnpm_[A-Za-z0-9]{30,}/,
     /:\/\/[^\s:@/]{1,64}:(?!\[REDACTED)[^\s@/]{8,}@/,
+    /\b[Bb]asic\s+(?!\[REDACTED)[A-Za-z0-9+/]{12,}={0,2}/,
     /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   ];
   return !probes.some((re) => re.test(String(text ?? '')));

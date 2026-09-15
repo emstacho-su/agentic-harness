@@ -38,7 +38,6 @@ export const ACTION_RESUME = 'resume';
 export const ACTION_NOOP = 'noop';
 
 const LIST_CAPS = Object.freeze({
-  tags: null, // manual tags are uncapped; the hook's own five are capped upstream
   supersedes: 20,
   child_sessions: MAX_CHILD_SESSIONS,
   commits: MAX_COMMITS,
@@ -139,9 +138,20 @@ export function mergeFields(existing, next) {
   }
 
   merged.status = STATUS_RANK[Math.max(statusRank(existing.status), statusRank(next.status))];
+  // `tags` is not in LIST_CAPS: manual tags are uncapped, and mergeTags owns
+  // the union and the `unclassified` rule outright.
   merged.tags = mergeTags(existing.tags, next.tags);
+
+  // Monotone facts. `preferNonEmpty` would let a tail-truncated transcript move
+  // these backwards, so each takes the side that can only be more complete.
   merged.prompt_count = Math.max(Number(existing.prompt_count ?? 0), Number(next.prompt_count ?? 0));
   merged.command_count = Math.max(Number(existing.command_count ?? 0), Number(next.command_count ?? 0));
+  merged.started_at = earlier(existing.started_at, next.started_at);
+  merged.ended_at = later(existing.ended_at, next.ended_at);
+  merged.duration_minutes = Math.max(
+    Number(existing.duration_minutes ?? 0),
+    Number(next.duration_minutes ?? 0),
+  );
   return merged;
 }
 
@@ -153,6 +163,20 @@ export function mergeTags(existingTags, nextTags) {
   const union = uniqueCapped([...asList(existingTags), ...asList(nextTags)], null);
   const real = union.filter((tag) => tag !== UNCLASSIFIED);
   return real.length > 0 ? real : [UNCLASSIFIED];
+}
+
+/** The earlier of two ISO instants, preferring whichever one exists. */
+function earlier(a, b) {
+  if (!a) return b ?? '';
+  if (!b) return a;
+  return isoToMillis(b) < isoToMillis(a) ? b : a;
+}
+
+/** The later of two ISO instants, preferring whichever one exists. */
+function later(a, b) {
+  if (!a) return b ?? '';
+  if (!b) return a;
+  return isoToMillis(b) > isoToMillis(a) ? b : a;
 }
 
 function preferNonEmpty(candidate, fallback) {

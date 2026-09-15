@@ -42,6 +42,7 @@ files_modified:
 prompt_count: 1
 command_count: 1
 agent: claude-code
+agent_type: ''
 generator: 'session-capture.mjs 2.0.0'
 tools_used:
   Edit: 2
@@ -49,7 +50,7 @@ tools_used:
   mcp__plugin_supabase_supabase__apply_migration: 1
 ---
 
-# Session — 2026-09-12 — bb2dash
+# Session 2026-09-12 — bb2dash
 
 Working directory `__SANDBOX__/repos/bb2dash-wt-sl`. Ran 31m, 1 prompt, 1 shell command, 2 files touched. Ended: logout.
 
