@@ -154,7 +154,7 @@ stream exists to fix.
 
 ## Tests
 
-`npm test` runs 107 tests with no dependencies and no network:
+`npm test` runs 114 tests with no dependencies and no network:
 
 | File | What it holds |
 | --- | --- |
