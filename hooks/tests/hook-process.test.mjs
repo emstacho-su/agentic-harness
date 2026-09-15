@@ -33,6 +33,7 @@ function runHook(sandbox, payload, extraEnv = {}) {
         ...process.env,
         HARNESS_VAULT: sandbox.vaultRoot,
         HARNESS_SESSION_CAPTURE_LOG: logPath,
+        HARNESS_INGEST_ON_CAPTURE: '0', // the real hook is under test; no detached ingest
         ...extraEnv,
       },
     });
@@ -81,7 +82,12 @@ test('malformed stdin exits 0 and says so in the log', () => {
         input: 'this is not json',
         encoding: 'utf8',
         timeout: 30_000,
-        env: { ...process.env, HARNESS_VAULT: sandbox.vaultRoot, HARNESS_SESSION_CAPTURE_LOG: logPath },
+        env: {
+          ...process.env,
+          HARNESS_VAULT: sandbox.vaultRoot,
+          HARNESS_SESSION_CAPTURE_LOG: logPath,
+          HARNESS_INGEST_ON_CAPTURE: '0',
+        },
       });
     } catch (err) {
       status = typeof err?.status === 'number' ? err.status : 1;
