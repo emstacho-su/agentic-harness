@@ -55,6 +55,7 @@ verbatim from that table.
 | `20260909175037_create_rag_schema.sql` | Schema `rag`, tables `documents` (with `collection`) and `chunks`, HNSW + GIN + btree indexes, the `updated_at` trigger, RLS enabled |
 | `20260909175058_create_rag_hybrid_search.sql` | `rag.search()`: hybrid vector + full-text retrieval fused with RRF, `filter_source`, `filter_collection`, `max_per_document`; raises when both query arguments are null |
 | `20260909190458_rag_search_relevance_floor.sql` | Adds `min_similarity` (default 0.70) gating the vector arm, and the `vector_similarity` output column. Measured on this corpus: relevant 0.79–0.83, nonsense 0.48–0.66 |
+| `20260915144257_rag_search_filter_metadata.sql` | Adds `filter_metadata jsonb` (a `@>` contains-match on frontmatter, pushed into both arms) and `include_superseded boolean default true`; re-asserts the `documents_metadata_idx` GIN index the filter needs, and pins the function's `search_path` |
 
 ## Access model
 
@@ -109,5 +110,35 @@ from supabase_migrations.schema_migrations
 order by version;
 ```
 
-Every row should have a matching `<version>_<name>.sql` in `migrations/`, and the three files
-above are the complete list as of 2026-09-09.
+Every row should have a matching `<version>_<name>.sql` in `migrations/`, and the four files
+above are the complete list as of 2026-09-15.
+
+"Mirror" means byte-identical, and that is checkable. `apply_migration` stores the query it was
+given verbatim — one array element, comments and all — so the file and the row must hash the
+same:
+
+```sql
+select version, name, md5(statements[1]) as applied, octet_length(statements[1]) as bytes
+from supabase_migrations.schema_migrations order by version;
+```
+
+```bash
+python -c "import hashlib,pathlib;print(hashlib.md5(pathlib.Path('db/migrations/<file>.sql').read_bytes()).hexdigest())"
+```
+
+Checked for `20260915144257`: both `0d221c15b32bc28c25ab7ddf4a42749c`, 7,771 bytes. Files are
+stored with LF endings (`.gitattributes`), which is what the hash is taken over — a CRLF working
+copy would not match.
+
+### Verifying a filter is index-served, not scanned
+
+`filter_metadata` is only worth having if Postgres reaches it through
+`documents_metadata_idx` rather than reading all 1,320 documents. `EXPLAIN` on either arm of
+`rag.search` should show a bitmap index scan:
+
+```
+->  Bitmap Heap Scan on documents d
+      Recheck Cond: (metadata @> '{"type": "session"}'::jsonb)
+      ->  Bitmap Index Scan on documents_metadata_idx
+            Index Cond: (metadata @> '{"type": "session"}'::jsonb)
+```
