@@ -197,6 +197,31 @@ def test_unrecognised_course_id_is_a_skip_not_an_abort():
 # --------------------------------------------------------------------------
 
 
+def test_null_course_id_is_a_skip_not_an_abort():
+    # bb_files.course_id is nullable: the classifier fills it in later. One
+    # unclassified file must not abort the export of every other file.
+    rows = [row(id=1), row(id=2, course_id=None), row(id=3, course_id="")]
+    planned = plan_notes(rows)
+    assert [n.file_id for n in planned.notes] == [1]
+    reasons = {s.external_id: s.reason for s in planned.skipped}
+    assert "no course id" in reasons["bb2dash-file-2"]
+    assert "no course id" in reasons["bb2dash-file-3"]
+
+
+def test_validate_row_accepts_a_null_course_id_but_not_a_non_string():
+    assert validate_row(row(course_id=None))["course_id"] is None
+    with pytest.raises(SourceError):
+        validate_row(row(course_id=323))
+
+
+def test_only_https_to_the_bb2dash_project_is_accepted():
+    # A plain-http URL would send the service-role key in cleartext.
+    with pytest.raises(ConfigError, match="https"):
+        assert_bb2dash_url(f"http://{BB2DASH_PROJECT_REF}.supabase.co")
+    with pytest.raises(ConfigError, match="https"):
+        assert_bb2dash_url(f"{BB2DASH_PROJECT_REF}.supabase.co")
+
+
 def test_only_the_bb2dash_project_url_is_accepted():
     assert_bb2dash_url(f"https://{BB2DASH_PROJECT_REF}.supabase.co")
     with pytest.raises(ConfigError):

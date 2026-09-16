@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 # or the wrong thing. Pin it.
 BB2DASH_PROJECT_REF = "goultdzqcavefcgnifdy"
 SUPABASE_HOST_SUFFIX = ".supabase.co"
+REQUIRED_SCHEME = "https"
 
 # One request shape: files with their text units embedded via the FK.
 FILE_COLUMNS = (
@@ -47,7 +48,15 @@ def assert_bb2dash_url(base_url: str | None) -> str:
     """Refuse any Supabase URL that is not the bb2dash project."""
     if not base_url or not base_url.strip():
         raise ConfigError("SUPABASE_URL is missing; pass the bb2dash .env with --env-file")
-    host = urllib.parse.urlsplit(base_url.strip()).hostname or ""
+    parts = urllib.parse.urlsplit(base_url.strip())
+    if parts.scheme != REQUIRED_SCHEME:
+        # The service-role key travels in a header; anything but TLS would send
+        # it in cleartext, and a missing scheme parses the host as a path.
+        raise ConfigError(
+            f"SUPABASE_URL must start with {REQUIRED_SCHEME}://, got "
+            f"{parts.scheme or 'no scheme'}. The bb2dash key is only ever sent over TLS."
+        )
+    host = parts.hostname or ""
     expected = f"{BB2DASH_PROJECT_REF}{SUPABASE_HOST_SUFFIX}"
     if host != expected:
         raise ConfigError(
@@ -139,9 +148,12 @@ def validate_row(row: Any) -> dict[str, Any]:
         raise SourceError(f"file row missing {missing}")
     if not isinstance(row["id"], int) or isinstance(row["id"], bool):
         raise SourceError(f"file id must be an int, got {row['id']!r}")
-    for name in ("file_name", "course_id"):
-        if not isinstance(row[name], str) or not row[name].strip():
-            raise SourceError(f"file {row['id']}: {name} must be a non-empty string")
+    if not isinstance(row["file_name"], str) or not row["file_name"].strip():
+        raise SourceError(f"file {row['id']}: file_name must be a non-empty string")
+    # course_id is nullable in bb_files: the classifier fills it in after capture.
+    # A null here is a planning decision (skip), not a malformed row.
+    if row["course_id"] is not None and not isinstance(row["course_id"], str):
+        raise SourceError(f"file {row['id']}: course_id must be a string or null")
     units = row["bb_file_text"]
     if not isinstance(units, list):
         raise SourceError(f"file {row['id']}: bb_file_text must be a list")

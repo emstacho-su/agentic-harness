@@ -277,7 +277,8 @@ idempotent and prevents two notes ever sharing an `id:`.
 The body is one `## Slide N` / `## Page N` / `## Document` section per text
 unit, in unit order, with speaker-note `[notes]` markers left verbatim. Files
 that are superseded, not extracted (`text_status ≠ extracted`), have no text
-units, or carry a course id the folder rule cannot map are reported as skips —
+units, have no course id yet (the classifier fills `course_id` in after
+capture), or carry a course id the folder rule cannot map are reported as skips —
 one odd row never aborts the export. `--course` must be an exact bb2dash id and
 must match at least one file; an empty match is an error, not a quiet no-op.
 Writes are idempotent: a note is rewritten only when its content differs, and
@@ -287,8 +288,8 @@ Why `ingest: false` is mandatory here: bb2dash embeds with **gte-small** and
 harness-memory with **bge-small-en-v1.5**. Both are 384-dim, so embedding the
 same text into both would raise no error — it would just rank confidently
 wrong. Materials are *read* in the vault and *searched* through the `bb2dash`
-MCP server. The exporter refuses any `SUPABASE_URL` whose host is not the
-bb2dash project and reads the bb2dash `.env` directly instead of loading it
+MCP server. The exporter refuses any `SUPABASE_URL` that is not `https://` or whose host is
+not the bb2dash project and reads the bb2dash `.env` directly instead of loading it
 into the process environment, so the harness `.env` can never be picked up by
 mistake. It only ever reads from bb2dash.
 
