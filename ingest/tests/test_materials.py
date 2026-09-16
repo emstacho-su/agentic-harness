@@ -230,6 +230,49 @@ def test_only_the_bb2dash_project_url_is_accepted():
         assert_bb2dash_url("")
 
 
+CANONICAL_ROOT = f"https://{BB2DASH_PROJECT_REF}.supabase.co"
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        CANONICAL_ROOT,
+        f"{CANONICAL_ROOT}/",
+        f"{CANONICAL_ROOT}///",
+        f"  {CANONICAL_ROOT}  ",
+        f"{CANONICAL_ROOT}/rest/v1",              # a path suffix would be interpolated
+        f"{CANONICAL_ROOT}/rest/v1/bb_files",
+        f"{CANONICAL_ROOT}:8443",                 # a non-default port
+        f"{CANONICAL_ROOT}:8443/rest/v1",
+        f"{CANONICAL_ROOT}?apikey=leaked",
+        f"{CANONICAL_ROOT}#fragment",
+        f"https://{BB2DASH_PROJECT_REF.upper()}.supabase.co",  # hosts are case-insensitive
+    ],
+)
+def test_the_request_root_is_built_from_the_pinned_constants(supplied):
+    """Whatever shape the env URL has, the root is the pinned project root.
+
+    Returning the caller's string let a path suffix or a port through, and the
+    exporter then built ``<root>/rest/v1/bb_files`` on top of it.
+    """
+    assert assert_bb2dash_url(supplied) == CANONICAL_ROOT
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        "https://evil.example.com",
+        f"https://{BB2DASH_PROJECT_REF}.supabase.co.evil.example.com",
+        f"https://evil.example.com/{BB2DASH_PROJECT_REF}.supabase.co",
+        f"https://user:pass@evil.example.com/{BB2DASH_PROJECT_REF}.supabase.co",
+        f"https://{BB2DASH_PROJECT_REF}.supabase.co.",   # trailing-dot FQDN
+    ],
+)
+def test_a_host_that_is_not_the_bb2dash_project_is_refused(supplied):
+    with pytest.raises(ConfigError, match="bb2dash project"):
+        assert_bb2dash_url(supplied)
+
+
 def test_validate_row_rejects_missing_fields():
     with pytest.raises(SourceError):
         validate_row({"id": 1})

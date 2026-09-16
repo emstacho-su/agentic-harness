@@ -27,6 +27,10 @@ BB2DASH_PROJECT_REF = "goultdzqcavefcgnifdy"
 SUPABASE_HOST_SUFFIX = ".supabase.co"
 REQUIRED_SCHEME = "https"
 
+# The only root this exporter ever requests. Built from the constants above, so
+# whatever shape SUPABASE_URL has, nothing from it is interpolated into the URL.
+BB2DASH_ROOT = f"{REQUIRED_SCHEME}://{BB2DASH_PROJECT_REF}{SUPABASE_HOST_SUFFIX}"
+
 # One request shape: files with their text units embedded via the FK.
 FILE_COLUMNS = (
     "id,file_name,course_id,bucket,week_no,path,sha256,captured_at,"
@@ -45,7 +49,15 @@ Opener = Callable[..., Any]
 
 
 def assert_bb2dash_url(base_url: str | None) -> str:
-    """Refuse any Supabase URL that is not the bb2dash project."""
+    """Check ``SUPABASE_URL`` names the bb2dash project, and return the pinned root.
+
+    Only the *scheme* and the *hostname* of the supplied URL are compared. What
+    comes back is :data:`BB2DASH_ROOT`, assembled from the constants above — the
+    caller's string is never returned. Returning it meant a path suffix
+    (``.../rest/v1``) or a non-default port survived the check and was then
+    interpolated into every request URL, because the host matched and nothing
+    looked at the rest.
+    """
     if not base_url or not base_url.strip():
         raise ConfigError("SUPABASE_URL is missing; pass the bb2dash .env with --env-file")
     parts = urllib.parse.urlsplit(base_url.strip())
@@ -56,6 +68,8 @@ def assert_bb2dash_url(base_url: str | None) -> str:
             f"SUPABASE_URL must start with {REQUIRED_SCHEME}://, got "
             f"{parts.scheme or 'no scheme'}. The bb2dash key is only ever sent over TLS."
         )
+    # urlsplit already lowercases nothing but the scheme; hostname is lowercased
+    # by urllib, and a trailing-dot FQDN is kept, so it fails the comparison.
     host = parts.hostname or ""
     expected = f"{BB2DASH_PROJECT_REF}{SUPABASE_HOST_SUFFIX}"
     if host != expected:
@@ -63,7 +77,14 @@ def assert_bb2dash_url(base_url: str | None) -> str:
             f"SUPABASE_URL host is '{host}', not the bb2dash project ({expected}). "
             "This exporter reads class materials from bb2dash only."
         )
-    return base_url.strip().rstrip("/")
+    if parts.port is not None or parts.path.strip("/") or parts.query or parts.fragment:
+        # Not fatal — the host is right — but say so rather than dropping it
+        # silently, because the operator wrote it for a reason.
+        log.warning(
+            "SUPABASE_URL carries a port, path or query; requests use %s only.",
+            BB2DASH_ROOT,
+        )
+    return BB2DASH_ROOT
 
 
 def fetch_materials(
