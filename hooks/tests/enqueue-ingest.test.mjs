@@ -400,6 +400,38 @@ describe('enqueueIngest — more than one note in one process', () => {
     assert.ok(lines.some((line) => line.includes('outside')), lines.join('\n'));
   });
 
+  it('says on the success line that something was dropped', () => {
+    // Otherwise a partial enqueue reads exactly like a complete one, and the
+    // refusal sits on an earlier line with nothing tying the two together.
+    const outside = path.join(workspace, 'elsewhere.md');
+    fs.writeFileSync(outside, 'body', 'utf8');
+
+    const { result } = call({ args: { notePaths: [outside, note] } });
+
+    assert.equal(result.dropped, 1);
+    const requested = lines.find((line) => line.includes('spawn requested'));
+    assert.match(requested, /1 dropped \(see above\)/);
+  });
+
+  it('dedupes by the injected platform, not the host it happens to run on', () => {
+    // The module takes `platform` for exactly this reason; reading the global
+    // here meant a win32-pinned call kept a case-sensitive key and would pass
+    // two --only flags for one file.
+    const upper = path.join(path.dirname(note), 'ABC.md');
+    const { spawn } = call({ args: { notePaths: [note, upper], platform: 'win32' } });
+
+    const only = spawn.calls[0].args.filter((value) => value === '--only');
+    assert.equal(only.length, 1, 'win32 treats the two spellings as one file');
+
+    lines.length = 0;
+    const posix = call({ args: { notePaths: [note, upper], platform: 'linux' } });
+    assert.equal(
+      posix.spawn.calls[0].args.filter((value) => value === '--only').length,
+      2,
+      'a case-sensitive filesystem has two files here',
+    );
+  });
+
   it('refuses with the first reason when no path survives', () => {
     const outside = path.join(workspace, 'elsewhere.md');
     const json = path.join(vault, 'data.json');

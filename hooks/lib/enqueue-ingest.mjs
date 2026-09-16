@@ -137,8 +137,11 @@ function run({ vaultRoot, notePaths }, { log, env, spawn, platform }) {
     return { enqueued: false, reason: Reason.NOTHING_TO_DO };
   }
 
-  const selection = selectNotes(vault, notePaths, log);
+  const selection = selectNotes(vault, notePaths, { log, platform });
   if (selection.notes.length === 0) {
+    // selectNotes always sets a refusal when it returns nothing — the only
+    // empty input is handled above — but a reason of `undefined` would be a
+    // worse bug than a slightly generic one.
     return { enqueued: false, reason: selection.refusal ?? Reason.BAD_ARGUMENTS };
   }
 
@@ -233,8 +236,20 @@ function run({ vaultRoot, notePaths }, { log, env, spawn, platform }) {
 
   // "requested", not "started": all this process knows is that the spawn was
   // accepted. Whether the ingest itself got anywhere is in the run log.
-  safely(log, `ingest-enqueue spawn requested for ${listed} (pid=${child.pid})`);
-  return { enqueued: true, reason: Reason.ENQUEUED, notes: selection.notes, command, runLog };
+  //
+  // A dropped note is named on its own line above this one; saying here that
+  // some were dropped is what correlates the two, so a partial enqueue cannot
+  // read as a complete one.
+  const partial = selection.dropped > 0 ? `, ${selection.dropped} dropped (see above)` : '';
+  safely(log, `ingest-enqueue spawn requested for ${listed} (pid=${child.pid})${partial}`);
+  return {
+    enqueued: true,
+    reason: Reason.ENQUEUED,
+    notes: selection.notes,
+    dropped: selection.dropped,
+    command,
+    runLog,
+  };
 }
 
 /**
@@ -246,15 +261,17 @@ function run({ vaultRoot, notePaths }, { log, env, spawn, platform }) {
  * capture wrote them all, and dropping the good ones over a bad one would lose
  * real work — so each refusal is logged on its own line.
  *
- * @returns {{notes: string[], refusal: string|null}}
+ * @returns {{notes: string[], dropped: number, refusal: string|null}}
  */
-function selectNotes(vault, notePaths, log) {
+function selectNotes(vault, notePaths, { log, platform }) {
   const notes = [];
   const seen = new Set();
+  let dropped = 0;
   let refusal = null;
   const refuse = (reason, line) => {
     safely(log, line);
     refusal = refusal ?? reason;
+    dropped += 1;
   };
 
   for (const raw of notePaths) {
@@ -274,14 +291,16 @@ function selectNotes(vault, notePaths, log) {
     }
 
     // A resume can name the same note twice, and the ingest would then embed it
-    // twice. Case-folded on Windows, where the two spellings are one file.
-    const key = process.platform === 'win32' ? note.toLowerCase() : note;
+    // twice. Case-folded on Windows, where the two spellings are one file — and
+    // from the injected `platform`, like every other platform decision here, so
+    // a test that pins one platform gets that platform's rule throughout.
+    const key = platform === 'win32' ? note.toLowerCase() : note;
     if (seen.has(key)) continue;
     seen.add(key);
     notes.push(note);
   }
 
-  return { notes, refusal };
+  return { notes, dropped, refusal };
 }
 
 // ---------------------------------------------------------------- helpers

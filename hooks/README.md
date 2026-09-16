@@ -207,7 +207,7 @@ stream exists to fix.
 
 ## Tests
 
-`npm test` runs 221 tests with no dependencies and no network:
+`npm test` runs 223 tests with no dependencies and no network:
 
 | File | What it holds |
 | --- | --- |
@@ -264,9 +264,17 @@ normal — and a re-render with nothing new in the transcript is byte-identical.
 When the transcript *has* grown, the note really is different and the ingest
 really is needed, so it still runs.
 
-One cost this does not solve: N workers stopping at once still means N detached
-ingest processes, each loading its own copy of the model. The enqueue batches
-within one hook invocation, not across concurrent ones.
+Two costs this does not solve, both bounded by the nightly reconcile:
+
+- N workers stopping at once still means N detached ingest processes, each
+  loading its own copy of the model. The enqueue batches within one hook
+  invocation, not across concurrent ones.
+- A capture that runs past its deadline skips the enqueue (rule 1), and if the
+  *next* capture then re-renders the same bytes there is nothing new to enqueue,
+  so that note waits for the nightly run. The hook has no memory across
+  processes, so it cannot know the store never saw it. This is the same fallback
+  every other enqueue refusal relies on — a missing `uv`, a missing project, the
+  kill switch — and the log says which one happened.
 
 Three properties make that safe to do on session exit:
 
