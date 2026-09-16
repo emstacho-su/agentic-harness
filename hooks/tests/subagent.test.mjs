@@ -205,6 +205,62 @@ test('an unknown agent, or one that did nothing, is a logged skip', () => {
   }
 });
 
+test('a worker hands the ingest its own note, and the parent when it linked one', () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+
+    // No parent note yet: there is nothing to link into, so one note.
+    const alone = stop(sandbox, transcriptPath, 'c0ffee01', 'general-purpose');
+    assert.deepEqual(alone.touchedPaths, [path.join(sandbox.vaultRoot, WORKER_ONE)]);
+
+    // With the parent note present, the link edits it — and `child_sessions` is
+    // frontmatter, so the ingest has to be told about the parent as well.
+    runScenario(sandbox, PARENT);
+    fs.writeFileSync(
+      path.join(sandbox.transcriptsDir, SESSION_ID, 'subagents', 'agent-c0ffee03.jsonl'),
+      fs.readFileSync(
+        path.join(sandbox.transcriptsDir, SESSION_ID, 'subagents', 'agent-c0ffee01.jsonl'),
+        'utf8',
+      ),
+      'utf8',
+    );
+    const late = stop(sandbox, transcriptPath, 'c0ffee03', 'general-purpose');
+
+    assert.deepEqual(late.touchedPaths, [
+      path.join(sandbox.vaultRoot, `${SESSIONS}/${SESSION_ID}--c0ffee03.md`),
+      path.join(sandbox.vaultRoot, PARENT_NOTE),
+    ]);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('the same worker stopping twice with nothing new to say enqueues nothing', () => {
+  // SubagentStop fires at every stop point of a multi-turn worker, not once at
+  // the end. When the transcript has not grown, the note re-renders to exactly
+  // the bytes already on disk, and a second ingest would start a process and
+  // load a 130 MB model to re-confirm a hash it already knows.
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+
+    const first = stop(sandbox, transcriptPath, 'c0ffee01', 'general-purpose');
+    assert.equal(first.touchedPaths.length, 1);
+    const before = fs.readFileSync(path.join(sandbox.vaultRoot, WORKER_ONE), 'utf8');
+
+    const second = stop(sandbox, transcriptPath, 'c0ffee01', 'general-purpose');
+
+    assert.equal(second.written, true);
+    assert.equal(second.action, 'merge');
+    assert.deepEqual(second.touchedPaths, []);
+    assert.match(second.detail, /identical on disk/);
+    assert.equal(fs.readFileSync(path.join(sandbox.vaultRoot, WORKER_ONE), 'utf8'), before);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
 test('an agent id that is not a safe filename never reaches a path', () => {
   const sandbox = createSandbox();
   try {

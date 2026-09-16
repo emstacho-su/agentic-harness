@@ -523,14 +523,41 @@ The child is spawned `detached` and `unref()`ed, with its output going to a file
 rather than a pipe — an unread pipe buffer would tie the parent's lifetime back
 to the child and undo the whole point. The note path is passed as one element of
 an argument array with `shell: false`, never interpolated into a command string.
-`uv` is resolved to an absolute path (or the enqueue refuses), and the project
-is passed with `uv --directory` rather than a spawn `cwd`, because Windows
-resolves a bare command name against the child's working directory before
-`PATH`. The module cannot throw; every refusal returns a reason and writes it to
-`session-capture.log`.
+`uv` is resolved to an absolute path *that exists* (or the enqueue refuses), and
+the project is passed with `uv --directory` rather than a spawn `cwd`, because
+Windows resolves a bare command name against the child's working directory
+before `PATH`. The module cannot throw; every refusal returns a reason and
+writes it to `session-capture.log`. Like every other optional step it is behind
+the hook's deadline check: a session already over budget logs
+`ingest-enqueue skipped: over budget` and leaves the note to the nightly run.
+
+**Every note the capture touched goes to one child.** A capture rarely changes
+one file: a resume rewrites the note it supersedes (`status: superseded`) and a
+`SubagentStop` rewrites its parent's `child_sessions`, both frontmatter-only
+edits that nothing else would carry into the store. The capture returns
+`touchedPaths`, and `--only` is repeatable, so they are embedded by one process
+rather than one process per note — each one loads the 130 MB model.
+
+**A note that re-rendered byte-identically is not enqueued at all.** The write
+is skipped, `touchedPaths` comes back empty and the log says
+`no note changed on disk`. This matters because `SubagentStop` fires at every
+stop point of a multi-turn worker rather than once at the end — nine firings for
+one worker is ordinary — and without the check each one paid for a full ingest
+process to re-confirm a hash. When the worker's transcript *has* grown the note
+genuinely differs and the ingest still runs.
+
+What this does not solve: N workers stopping at the same moment still means N
+detached processes, each loading its own copy of the model. The batching is
+within one hook invocation, not across concurrent ones.
+
+The log line says `spawn requested`, not `started`, because that is all the hook
+can know: a child that fails to start reports it through an asynchronous `error`
+event and the hook calls `process.exit(0)` before the next tick. The one
+synchronous failure it can see is a spawn that returns no `pid`, which is logged
+as such.
 
 ```
-2026-09-15T14:38:02.114Z ingest-enqueue started for projects/agentic-harness/sessions/2026-09-10-92056c02.md
+2026-09-15T14:38:02.114Z ingest-enqueue spawn requested for projects/agentic-harness/sessions/2026-09-10-92056c02.md (pid=48120)
 ```
 
 | Variable | Default | Purpose |

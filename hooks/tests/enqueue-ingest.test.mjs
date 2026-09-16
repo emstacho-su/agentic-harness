@@ -70,7 +70,7 @@ function call(overrides = {}) {
   const spawn = overrides.spawn ?? recordingSpawn();
   const result = enqueueIngest({
     vaultRoot: vault,
-    notePath: note,
+    notePaths: [note],
     log: (line) => lines.push(line),
     env: baseEnv(overrides.env),
     spawn,
@@ -158,7 +158,7 @@ describe('enqueueIngest — the command it builds', () => {
     const spawn = recordingSpawn();
     const result = enqueueIngest({
       vaultRoot: vault,
-      notePath: nasty,
+      notePaths: [nasty],
       log: (line) => lines.push(line),
       env: baseEnv(),
       spawn,
@@ -259,7 +259,7 @@ describe('enqueueIngest — input validation at the boundary', () => {
     const spawn = recordingSpawn();
     const result = enqueueIngest({
       vaultRoot: vault,
-      notePath: outside,
+      notePaths: [outside],
       log: (line) => lines.push(line),
       env: baseEnv(),
       spawn,
@@ -274,7 +274,7 @@ describe('enqueueIngest — input validation at the boundary', () => {
     const spawn = recordingSpawn();
     const result = enqueueIngest({
       vaultRoot: vault,
-      notePath: path.join(vault, '..', '..', 'escape.md'),
+      notePaths: [path.join(vault, '..', '..', 'escape.md')],
       log: (line) => lines.push(line),
       env: baseEnv(),
       spawn,
@@ -291,7 +291,7 @@ describe('enqueueIngest — input validation at the boundary', () => {
     const spawn = recordingSpawn();
     const result = enqueueIngest({
       vaultRoot: vault,
-      notePath: json,
+      notePaths: [json],
       log: (line) => lines.push(line),
       env: baseEnv(),
       spawn,
@@ -303,15 +303,17 @@ describe('enqueueIngest — input validation at the boundary', () => {
 
   for (const [label, args] of [
     ['an empty vault root', { vaultRoot: '   ' }],
-    ['an empty note path', { notePath: '' }],
-    ['a non-string note path', { notePath: 42 }],
-    ['a null note path', { notePath: null }],
+    ['an empty note path', { notePaths: [''] }],
+    ['a non-string note path', { notePaths: [42] }],
+    ['a null note path', { notePaths: [null] }],
+    ['a note path that is not an array', { notePaths: 'one/note.md' }],
+    ['no note paths at all', { notePaths: undefined }],
   ]) {
     it(`refuses ${label} without throwing`, () => {
       const spawn = recordingSpawn();
       const result = enqueueIngest({
         vaultRoot: vault,
-        notePath: note,
+        notePaths: [note],
         log: (line) => lines.push(line),
         env: baseEnv(),
         spawn,
@@ -336,6 +338,80 @@ describe('enqueueIngest — input validation at the boundary', () => {
     const result = enqueueIngest();
     assert.equal(result.enqueued, false);
   });
+
+  it('an empty list is nothing to do, not a bad argument', () => {
+    // The capture ran and found the note on disk already byte-identical to what
+    // it would have written. Nothing changed, so there is nothing to ingest.
+    const { result, spawn } = call({ args: { notePaths: [] } });
+
+    assert.equal(result.enqueued, false);
+    assert.equal(result.reason, Reason.NOTHING_TO_DO);
+    assert.equal(spawn.calls.length, 0);
+    assert.ok(lines.some((line) => line.includes('no note changed on disk')));
+  });
+});
+
+describe('enqueueIngest — more than one note in one process', () => {
+  /** A second note beside the first, as a resume or a SubagentStop produces. */
+  function secondNote(name = 'def.md') {
+    const target = path.join(path.dirname(note), name);
+    fs.writeFileSync(target, 'body', 'utf8');
+    return target;
+  }
+
+  it('passes every note as its own --only, in one spawn', () => {
+    const other = secondNote();
+    const { result, spawn } = call({ args: { notePaths: [note, other] } });
+
+    assert.equal(result.enqueued, true);
+    assert.equal(spawn.calls.length, 1, 'one process, so the model loads once');
+    assert.deepEqual(spawn.calls[0].args.slice(-4), [
+      '--only',
+      path.resolve(note),
+      '--only',
+      path.resolve(other),
+    ]);
+  });
+
+  it('names every note in the one log line', () => {
+    const other = secondNote();
+    call({ args: { notePaths: [note, other] } });
+
+    assert.equal(lines.length, 1);
+    assert.ok(lines[0].includes('sessions/abc.md'), lines[0]);
+    assert.ok(lines[0].includes('sessions/def.md'), lines[0]);
+  });
+
+  it('ingests a note named twice only once', () => {
+    const { spawn } = call({ args: { notePaths: [note, note] } });
+
+    const only = spawn.calls[0].args.filter((value) => value === '--only');
+    assert.equal(only.length, 1);
+  });
+
+  it('drops one unusable path without costing the others their ingest', () => {
+    const outside = path.join(workspace, 'elsewhere.md');
+    fs.writeFileSync(outside, 'body', 'utf8');
+
+    const { result, spawn } = call({ args: { notePaths: [outside, note] } });
+
+    assert.equal(result.enqueued, true);
+    assert.deepEqual(spawn.calls[0].args.slice(-2), ['--only', path.resolve(note)]);
+    assert.ok(lines.some((line) => line.includes('outside')), lines.join('\n'));
+  });
+
+  it('refuses with the first reason when no path survives', () => {
+    const outside = path.join(workspace, 'elsewhere.md');
+    const json = path.join(vault, 'data.json');
+    fs.writeFileSync(outside, 'body', 'utf8');
+    fs.writeFileSync(json, '{}', 'utf8');
+
+    const { result, spawn } = call({ args: { notePaths: [outside, json] } });
+
+    assert.equal(result.enqueued, false);
+    assert.equal(result.reason, Reason.OUTSIDE_VAULT);
+    assert.equal(spawn.calls.length, 0);
+  });
 });
 
 describe('enqueueIngest — failure is logged, never thrown', () => {
@@ -346,7 +422,7 @@ describe('enqueueIngest — failure is logged, never thrown', () => {
 
     const result = enqueueIngest({
       vaultRoot: vault,
-      notePath: note,
+      notePaths: [note],
       log: (line) => lines.push(line),
       env: baseEnv(),
       spawn,
@@ -360,7 +436,7 @@ describe('enqueueIngest — failure is logged, never thrown', () => {
   it('releases the run-log descriptor when the spawn throws', () => {
     enqueueIngest({
       vaultRoot: vault,
-      notePath: note,
+      notePaths: [note],
       log: (line) => lines.push(line),
       env: baseEnv(),
       spawn: () => {
@@ -379,7 +455,7 @@ describe('enqueueIngest — failure is logged, never thrown', () => {
   it('survives a logger that throws', () => {
     const result = enqueueIngest({
       vaultRoot: vault,
-      notePath: note,
+      notePaths: [note],
       log: () => {
         throw new Error('log is read-only');
       },

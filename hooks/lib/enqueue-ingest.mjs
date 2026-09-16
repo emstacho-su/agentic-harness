@@ -74,6 +74,7 @@ export const Reason = {
   ENQUEUED: 'enqueued',
   DISABLED: 'disabled by HARNESS_INGEST_ON_CAPTURE',
   BAD_ARGUMENTS: 'bad arguments',
+  NOTHING_TO_DO: 'no note changed on disk',
   OUTSIDE_VAULT: 'note is outside the vault',
   NOT_MARKDOWN: 'note is not markdown',
   NO_PROJECT: 'ingest project directory not found',
@@ -82,15 +83,22 @@ export const Reason = {
 };
 
 /**
- * Start `uv run ingest --source obsidian --path <vault> --only <note>` detached.
+ * Start `uv run ingest --source obsidian --path <vault> --only <note> …` detached.
+ *
+ * Every note goes into **one** child process. A `SessionEnd` regularly touches
+ * more than one note — a resume rewrites the note it supersedes, a
+ * `SubagentStop` rewrites its parent's `child_sessions` — and each ingest
+ * process loads a 130 MB embedding model, so one process per note would pay
+ * that once per note for no benefit.
  *
  * @param {object} options
- * @param {string} options.vaultRoot   Vault directory the note was written into.
- * @param {string} options.notePath    Absolute path of the note just written.
+ * @param {string} options.vaultRoot      Vault directory the notes were written into.
+ * @param {string[]} options.notePaths    Absolute paths of the notes just written.
  * @param {(line: string) => void} [options.log]  Hook logger; failures go here.
  * @param {NodeJS.ProcessEnv} [options.env]
  * @param {typeof nodeSpawn} [options.spawn]      Injected for tests.
- * @returns {{enqueued: boolean, reason: string, command?: string[], runLog?: string}}
+ * @returns {{enqueued: boolean, reason: string, notes?: string[],
+ *            command?: string[], runLog?: string}}
  */
 export function enqueueIngest(options) {
   const {
@@ -110,28 +118,28 @@ export function enqueueIngest(options) {
   }
 }
 
-function run({ vaultRoot, notePath }, { log, env, spawn, platform }) {
+function run({ vaultRoot, notePaths }, { log, env, spawn, platform }) {
   if (!isEnabled(env)) {
     return { enqueued: false, reason: Reason.DISABLED };
   }
 
-  if (!isNonEmptyString(vaultRoot) || !isNonEmptyString(notePath)) {
-    safely(log, 'ingest-enqueue skipped: vaultRoot and notePath are both required');
+  if (!isNonEmptyString(vaultRoot) || !Array.isArray(notePaths)) {
+    safely(log, 'ingest-enqueue skipped: vaultRoot and a notePaths array are both required');
     return { enqueued: false, reason: Reason.BAD_ARGUMENTS };
   }
 
   const vault = path.resolve(vaultRoot);
-  const note = path.resolve(notePath);
 
-  // Defence in depth: `ingest --only` refuses a note outside the vault too, but
-  // the cheap check here keeps a bad path out of the argument list entirely.
-  if (!isInside(vault, note)) {
-    safely(log, `ingest-enqueue skipped: ${note} is outside ${vault}`);
-    return { enqueued: false, reason: Reason.OUTSIDE_VAULT };
+  if (notePaths.length === 0) {
+    // Not a defect: the capture ran, decided the note on disk was already
+    // exactly what it would have written, and changed nothing.
+    safely(log, 'ingest-enqueue skipped: no note changed on disk');
+    return { enqueued: false, reason: Reason.NOTHING_TO_DO };
   }
-  if (!MARKDOWN_SUFFIXES.includes(path.extname(note).toLowerCase())) {
-    safely(log, `ingest-enqueue skipped: ${note} is not markdown`);
-    return { enqueued: false, reason: Reason.NOT_MARKDOWN };
+
+  const selection = selectNotes(vault, notePaths, log);
+  if (selection.notes.length === 0) {
+    return { enqueued: false, reason: selection.refusal ?? Reason.BAD_ARGUMENTS };
   }
 
   const projectDir = resolveProjectDir(env);
@@ -164,8 +172,9 @@ function run({ vaultRoot, notePath }, { log, env, spawn, platform }) {
     'obsidian',
     '--path',
     vault,
-    '--only',
-    note,
+    // `--only` is repeatable on the ingest side, so every note this capture
+    // touched is embedded by this one process.
+    ...selection.notes.flatMap((note) => ['--only', note]),
   ];
 
   // Make the invariant the comment above relies on impossible to lose in a
@@ -208,7 +217,9 @@ function run({ vaultRoot, notePath }, { log, env, spawn, platform }) {
     if (output !== null) closeSafely(output);
   }
 
-  const relative = path.relative(vault, note).split(path.sep).join('/');
+  const listed = selection.notes
+    .map((note) => path.relative(vault, note).split(path.sep).join('/'))
+    .join(', ');
 
   // The one failure this process can still see for itself. libuv leaves `pid`
   // undefined when CreateProcess/execvp failed, and reports the reason through
@@ -216,14 +227,61 @@ function run({ vaultRoot, notePath }, { log, env, spawn, platform }) {
   // enough to receive. Without this check the log claimed an ingest had started
   // for a child that never existed.
   if (typeof child?.pid !== 'number') {
-    safely(log, `ingest-enqueue spawn returned no pid for ${relative}; nothing started`);
+    safely(log, `ingest-enqueue spawn returned no pid for ${listed}; nothing started`);
     return { enqueued: false, reason: Reason.SPAWN_FAILED, command, runLog };
   }
 
   // "requested", not "started": all this process knows is that the spawn was
   // accepted. Whether the ingest itself got anywhere is in the run log.
-  safely(log, `ingest-enqueue spawn requested for ${relative} (pid=${child.pid})`);
-  return { enqueued: true, reason: Reason.ENQUEUED, command, runLog };
+  safely(log, `ingest-enqueue spawn requested for ${listed} (pid=${child.pid})`);
+  return { enqueued: true, reason: Reason.ENQUEUED, notes: selection.notes, command, runLog };
+}
+
+/**
+ * The notes worth putting on the command line, and why any were dropped.
+ *
+ * Defence in depth: `ingest --only` refuses each of these again on the other
+ * side, but the cheap check here keeps a bad path out of the argument list
+ * entirely. One unusable path does not cost the others their ingest — the
+ * capture wrote them all, and dropping the good ones over a bad one would lose
+ * real work — so each refusal is logged on its own line.
+ *
+ * @returns {{notes: string[], refusal: string|null}}
+ */
+function selectNotes(vault, notePaths, log) {
+  const notes = [];
+  const seen = new Set();
+  let refusal = null;
+  const refuse = (reason, line) => {
+    safely(log, line);
+    refusal = refusal ?? reason;
+  };
+
+  for (const raw of notePaths) {
+    if (!isNonEmptyString(raw)) {
+      refuse(Reason.BAD_ARGUMENTS, `ingest-enqueue skipped a note path that is not a string: ${raw}`);
+      continue;
+    }
+
+    const note = path.resolve(raw);
+    if (!isInside(vault, note)) {
+      refuse(Reason.OUTSIDE_VAULT, `ingest-enqueue skipped: ${note} is outside ${vault}`);
+      continue;
+    }
+    if (!MARKDOWN_SUFFIXES.includes(path.extname(note).toLowerCase())) {
+      refuse(Reason.NOT_MARKDOWN, `ingest-enqueue skipped: ${note} is not markdown`);
+      continue;
+    }
+
+    // A resume can name the same note twice, and the ingest would then embed it
+    // twice. Case-folded on Windows, where the two spellings are one file.
+    const key = process.platform === 'win32' ? note.toLowerCase() : note;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    notes.push(note);
+  }
+
+  return { notes, refusal };
 }
 
 // ---------------------------------------------------------------- helpers

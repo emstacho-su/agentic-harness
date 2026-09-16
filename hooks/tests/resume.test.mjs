@@ -99,6 +99,53 @@ test('end, stale replay, resume: one concluded note, one superseded, chain intac
   }
 });
 
+test('a resume hands the ingest both notes: the successor and the one it superseded', () => {
+  const sandbox = createSandbox();
+  try {
+    const first = runScenario(sandbox, scenario('resume-first', 'clear'));
+    assert.deepEqual(
+      first.touchedPaths,
+      [path.join(sandbox.vaultRoot, FIRST_NOTE)],
+      'a plain capture touches the one note it wrote',
+    );
+
+    const resumed = runScenario(sandbox, scenario('resume-second', 'logout'));
+
+    // `status: superseded` on the predecessor is a frontmatter-only change, so
+    // nothing else would ever carry it into the store: the body hash is the
+    // same, and only the metadata path notices. Leaving it out of the enqueue
+    // left the old note reading `concluded` in search forever.
+    assert.deepEqual(resumed.touchedPaths, [
+      path.join(sandbox.vaultRoot, RESUMED_NOTE),
+      path.join(sandbox.vaultRoot, FIRST_NOTE),
+    ]);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('a capture that re-renders a note byte for byte hands the ingest nothing', () => {
+  const sandbox = createSandbox();
+  try {
+    const first = runScenario(sandbox, scenario('resume-first', 'resume'));
+    assert.equal(first.touchedPaths.length, 1);
+
+    const before = fs.readFileSync(path.join(sandbox.vaultRoot, FIRST_NOTE), 'utf8');
+
+    // The same transcript, the same reason: the merge produces exactly the file
+    // that is already there. Re-ingesting it would start a process and load a
+    // 130 MB model to re-confirm a hash.
+    const again = runScenario(sandbox, scenario('resume-first', 'resume'));
+
+    assert.equal(again.written, true);
+    assert.deepEqual(again.touchedPaths, []);
+    assert.match(again.detail, /identical on disk/);
+    assert.equal(fs.readFileSync(path.join(sandbox.vaultRoot, FIRST_NOTE), 'utf8'), before);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
 test('a resume before the note settles merges into it, and status never regresses', () => {
   const sandbox = createSandbox();
   try {

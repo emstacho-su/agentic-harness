@@ -10,30 +10,43 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { DISABLE_ENV_VAR, LOG_ENV_VAR, VAULT_ENV_VAR } from '../lib/constants.mjs';
+import {
+  ENV_ENABLED,
+  ENV_PROJECT_DIR,
+  ENV_RUN_LOG,
+  ENV_UV_BIN,
+} from '../lib/enqueue-ingest.mjs';
 import { createSandbox, installTranscript } from './helpers/sandbox.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HOOK = path.resolve(HERE, '..', 'session-capture.mjs');
 const SESSION_ID = '11111111-1111-4111-8111-111111111111';
 
-/** Run the hook exactly as settings.json does, but pointed at the sandbox. */
+/**
+ * Run the hook exactly as settings.json does, but pointed at the sandbox.
+ *
+ * `payload` is stringified unless it is already a string, so a test can feed the
+ * hook bytes that are not JSON at all without hand-copying this call.
+ */
 function runHook(sandbox, payload, extraEnv = {}) {
   const logPath = path.join(sandbox.root, 'session-capture.log');
   let status = 0;
   try {
     execFileSync(process.execPath, [HOOK], {
-      input: JSON.stringify(payload),
+      input: typeof payload === 'string' ? payload : JSON.stringify(payload),
       encoding: 'utf8',
       timeout: 30_000,
       env: {
         ...process.env,
-        HARNESS_VAULT: sandbox.vaultRoot,
-        HARNESS_SESSION_CAPTURE_LOG: logPath,
-        HARNESS_INGEST_ON_CAPTURE: '0', // the real hook is under test; no detached ingest
+        [VAULT_ENV_VAR]: sandbox.vaultRoot,
+        [LOG_ENV_VAR]: logPath,
+        [ENV_ENABLED]: '0', // the real hook is under test; no detached ingest
         ...extraEnv,
       },
     });
@@ -75,25 +88,10 @@ test('the hook writes a note, logs the elapsed milliseconds, and exits 0', () =>
 test('malformed stdin exits 0 and says so in the log', () => {
   const sandbox = createSandbox();
   try {
-    const logPath = path.join(sandbox.root, 'session-capture.log');
-    let status = 0;
-    try {
-      execFileSync(process.execPath, [HOOK], {
-        input: 'this is not json',
-        encoding: 'utf8',
-        timeout: 30_000,
-        env: {
-          ...process.env,
-          HARNESS_VAULT: sandbox.vaultRoot,
-          HARNESS_SESSION_CAPTURE_LOG: logPath,
-          HARNESS_INGEST_ON_CAPTURE: '0',
-        },
-      });
-    } catch (err) {
-      status = typeof err?.status === 'number' ? err.status : 1;
-    }
+    const { status, log } = runHook(sandbox, 'this is not json');
+
     assert.equal(status, 0);
-    assert.match(fs.readFileSync(logPath, 'utf8'), /stdin was not JSON/);
+    assert.match(log, /stdin was not JSON/);
   } finally {
     sandbox.cleanup();
   }
@@ -111,7 +109,7 @@ test('the kill switch stops the hook without stopping the session', () => {
         cwd: `${sandbox.root}/repos/bb2dash`,
         reason: 'clear',
       },
-      { HARNESS_SESSION_CAPTURE: '0' },
+      { [DISABLE_ENV_VAR]: '0' },
     );
 
     assert.equal(status, 0);
@@ -140,12 +138,118 @@ test('a session with no transcript is a logged skip, not a failure', () => {
   }
 });
 
+test('with the enqueue enabled, the real process asks for an ingest and says so', () => {
+  // Every other test here forces the enqueue off, so nothing ran the actual
+  // hook process with it on — the one configuration the machine uses.
+  //
+  // `uv` is process.execPath: the enqueue only requires an absolute path to a
+  // file that exists, and node started with `--directory` prints a bad-option
+  // error and exits. No ingest can run, no model is loaded, and the child's
+  // output goes to a run log outside the sandbox so tearing the sandbox down
+  // cannot race a still-exiting child.
+  const sandbox = createSandbox();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'enqueue-process-'));
+  try {
+    const transcriptPath = installTranscript(sandbox, 'plain-main', SESSION_ID);
+    const runLog = path.join(outside, 'ingest-on-capture.log');
+
+    // The enqueue refuses when the project directory is not there, so it has to
+    // exist. A pyproject.toml makes it look like the uv project it stands in for.
+    const projectDir = path.join(outside, 'ingest-project');
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'pyproject.toml'), '[project]\nname = "stub"\n', 'utf8');
+
+    const { status, log } = runHook(
+      sandbox,
+      {
+        session_id: SESSION_ID,
+        transcript_path: transcriptPath,
+        cwd: `${sandbox.root}/repos/bb2dash`,
+        hook_event_name: 'SessionEnd',
+        reason: 'clear',
+      },
+      {
+        [ENV_ENABLED]: '1',
+        [ENV_UV_BIN]: process.execPath,
+        [ENV_PROJECT_DIR]: projectDir,
+        [ENV_RUN_LOG]: runLog,
+      },
+    );
+
+    assert.equal(status, 0, 'the enqueue must never cost the session its clean exit');
+    assert.match(
+      log,
+      /ingest-enqueue spawn requested for projects\/bb2dash\/sessions\/11111111-1111-4111-8111-111111111111\.md \(pid=\d+\)/,
+      log,
+    );
+    assert.doesNotMatch(log, /ingest-enqueue skipped/);
+    assert.ok(fs.existsSync(runLog), 'the child was given the run log as its stdout');
+  } finally {
+    sandbox.cleanup();
+    try {
+      fs.rmSync(outside, { recursive: true, force: true });
+    } catch {
+      /* a child still holding the run log open is not this test's problem */
+    }
+  }
+});
+
+test('a missing ingest project is a refusal the hook survives and records', () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installTranscript(sandbox, 'plain-main', SESSION_ID);
+    const { status, log } = runHook(
+      sandbox,
+      {
+        session_id: SESSION_ID,
+        transcript_path: transcriptPath,
+        cwd: `${sandbox.root}/repos/bb2dash`,
+        reason: 'clear',
+      },
+      {
+        [ENV_ENABLED]: '1',
+        [ENV_UV_BIN]: process.execPath,
+        [ENV_PROJECT_DIR]: path.join(sandbox.root, 'no-such-project'),
+      },
+    );
+
+    assert.equal(status, 0);
+    assert.match(log, /ingest-enqueue skipped: no ingest project/);
+    assert.match(log, / ms=\d+$/m, 'the note itself was still captured and timed');
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
 test('the W-H2 seam is still a single obvious place in main()', () => {
-  // The brief promises W-H2 exactly one call site. If this file is refactored
-  // so the seam moves or multiplies, that promise quietly breaks.
+  // The brief promises W-H2 exactly one call site, and hooks/README.md repeats
+  // that promise. A presence check could not keep it: a second call added
+  // anywhere would still match. So this counts them.
   const source = fs.readFileSync(HOOK, 'utf8');
-  const marker = /-+ SEAM\n/g;
-  assert.equal([...source.matchAll(marker)].length, 1);
-  assert.match(source, /enqueueIngest\(\{ notePath: outcome\.notePath, vaultRoot: outcome\.vaultRoot, log \}\);/);
+
+  assert.equal([...source.matchAll(/-+ SEAM\n/g)].length, 1);
   assert.equal([...source.matchAll(/if \(!outcome\.written\)/g)].length, 1);
+
+  const withoutImports = source
+    .split('\n')
+    .filter((line) => !/^\s*import\b/.test(line) && !/^\s*enqueueIngest,?$/.test(line))
+    .join('\n');
+  assert.equal(
+    [...withoutImports.matchAll(/enqueueIngest\(/g)].length,
+    1,
+    'enqueueIngest must be called from exactly one place',
+  );
+
+  // And that one call hands it every note the capture touched, not just one.
+  assert.match(source, /enqueueIngest\(\{ notePaths: outcome\.touchedPaths,/);
+
+  // Rule 1 in the file header: everything optional is behind a deadline check.
+  // The enqueue is optional work — the nightly reconcile picks the note up —
+  // so a session already over budget must not pay for a spawn on the way out.
+  assert.match(
+    source,
+    /if \(Date\.now\(\) < DEADLINE_AT\) \{\n\s+enqueueIngest\(/,
+    'the enqueue must sit behind the deadline check',
+  );
+  assert.match(source, /ingest-enqueue skipped: over budget/);
 });

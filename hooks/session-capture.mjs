@@ -76,10 +76,11 @@ function main() {
     deadlineAt: DEADLINE_AT,
   });
 
-  const ms = Date.now() - STARTED_AT_MS;
-
   if (!outcome.written) {
-    log(`${outcome.action} ${input.hookEventName || 'SessionEnd'} ${input.sessionId}: ${outcome.skip} ms=${ms}`);
+    log(
+      `${outcome.action} ${input.hookEventName || 'SessionEnd'} ${input.sessionId}: ` +
+        `${outcome.skip} ms=${Date.now() - STARTED_AT_MS}`,
+    );
     return;
   }
 
@@ -87,11 +88,22 @@ function main() {
   // The note is on disk and correct. The detached per-note ingest (R-27.5)
   // starts here and nowhere else: enqueueIngest does not await, cannot throw,
   // and leaves the log line below as the last thing this function does.
+  //
+  // It is still optional work, so rule 1 applies to it like everything else:
+  // past the deadline the note waits for the nightly reconcile rather than
+  // holding up session exit. `touchedPaths` is every note the capture actually
+  // changed, which on a resume is two.
   // ----------------------------------------------------------------------
 
-  enqueueIngest({ notePath: outcome.notePath, vaultRoot: outcome.vaultRoot, log });
+  if (Date.now() < DEADLINE_AT) {
+    enqueueIngest({ notePaths: outcome.touchedPaths, vaultRoot: outcome.vaultRoot, log });
+  } else {
+    log('ingest-enqueue skipped: over budget');
+  }
 
-  log(`${outcome.action} ${outcome.detail} ms=${ms}`);
+  // Measured last, so the number in the log is the hook's real cost including
+  // the spawn, not the cost of everything that came before it.
+  log(`${outcome.action} ${outcome.detail} ms=${Date.now() - STARTED_AT_MS}`);
 }
 
 try {
