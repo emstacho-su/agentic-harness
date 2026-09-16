@@ -8,15 +8,14 @@ so the committed fixtures stay pristine and each test starts from the same bytes
 from __future__ import annotations
 
 import shutil
-import functools
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from ingest import sweep_cli
 from ingest.cli import main
 from ingest.sweep import Action, merge_conclusion, sweep_concluded
+from ingest.sweep_cli import run_sweep
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -328,14 +327,11 @@ def test_a_missing_vault_is_an_error(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_sweep_subcommand_defaults_to_a_dry_run(session_vault, capsys, monkeypatch):
-    # The subcommand reads the real clock; pin it, or the "fresh" fixture note
-    # ages past the 24 h threshold and the count drifts by the calendar.
-    monkeypatch.setattr(
-        sweep_cli, "sweep_concluded", functools.partial(sweep_concluded, now=NOW)
-    )
+def test_sweep_subcommand_defaults_to_a_dry_run(session_vault, capsys):
+    # Every subcommand test that reads the fixture pins the clock, as the
+    # library tests do: the "fresh" note is fresh relative to NOW, not today.
     before = {p: p.read_bytes() for p in session_vault.rglob("*.md")}
-    code = main(["sweep-concluded", "--path", str(session_vault)])
+    code = run_sweep(["--path", str(session_vault)], now=NOW)
     out = capsys.readouterr().out
 
     assert code == 0
@@ -345,24 +341,34 @@ def test_sweep_subcommand_defaults_to_a_dry_run(session_vault, capsys, monkeypat
 
 
 def test_sweep_subcommand_applies_only_when_asked(session_vault, capsys):
-    code = main(["sweep-concluded", "--path", str(session_vault), "--apply"])
+    code = run_sweep(["--path", str(session_vault), "--apply"], now=NOW)
     out = capsys.readouterr().out
 
     assert code == 0
     assert "status: concluded" in read(session_vault, f"{SESSIONS}/active-stale.md")
+    assert "status: active" in read(session_vault, f"{SESSIONS}/active-fresh.md")
     assert "dry run" not in out
 
 
 def test_sweep_subcommand_reports_refusals_on_stderr(session_vault, capsys):
-    main(["sweep-concluded", "--path", str(session_vault)])
+    run_sweep(["--path", str(session_vault)], now=NOW)
     captured = capsys.readouterr()
     assert "no-status.md" in captured.err
 
 
 def test_sweep_subcommand_refuses_both_flags(session_vault, capsys):
-    code = main(["sweep-concluded", "--path", str(session_vault), "--apply", "--dry-run"])
+    code = run_sweep(["--path", str(session_vault), "--apply", "--dry-run"], now=NOW)
     assert code == 2
     assert "--apply" in capsys.readouterr().err
+
+
+def test_sweep_subcommand_is_dispatched_by_main(session_vault, capsys):
+    # The one test that goes through the top-level CLI, on the real clock: it
+    # checks routing and the dry-run default, never a count.
+    code = main(["sweep-concluded", "--path", str(session_vault)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "dry run" in out
 
 
 def test_sweep_subcommand_requires_a_path(capsys):
@@ -379,4 +385,4 @@ def test_sweep_subcommand_reports_a_missing_vault(tmp_path, capsys):
 def test_sweep_subcommand_exit_code_is_zero_with_refusals(session_vault):
     # A refusal is information for the operator, not a failed job: exiting
     # non-zero would make the nightly task report failure every single night.
-    assert main(["sweep-concluded", "--path", str(session_vault)]) == 0
+    assert run_sweep(["--path", str(session_vault)], now=NOW) == 0
