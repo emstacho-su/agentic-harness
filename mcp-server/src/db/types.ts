@@ -63,6 +63,19 @@ export interface SearchParams {
   maxPerDocument: number;
   /** Cosine floor on the vector arm. Null removes the floor. */
   minSimilarity: number | null;
+  /**
+   * jsonb contains-match against `documents.metadata` — session frontmatter.
+   * `{"repo": "owner/name"}`, `{"phase": "phase-7"}`, `{"tags": ["review"]}`.
+   * Null applies no metadata filter. Served by the `documents_metadata_idx`
+   * GIN index, and applied inside both arms rather than after the fusion.
+   */
+  filterMetadata: Readonly<Record<string, unknown>> | null;
+  /**
+   * Keep documents whose metadata says `status: superseded`. False drops them.
+   * The SQL function defaults this to true; this client sends the tool's own
+   * default, which is false.
+   */
+  includeSuperseded: boolean;
 }
 
 /** A collection name and how many documents carry it. */

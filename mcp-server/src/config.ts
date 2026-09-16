@@ -45,6 +45,25 @@ export const DEFAULT_MAX_PER_DOCUMENT = 3;
 export const DEFAULT_MIN_SIMILARITY = 0.7;
 
 /**
+ * Whether superseded documents are in a result set by default.
+ *
+ * A resumed session leaves its earlier note ingested and searchable, marked
+ * `status: superseded` (R-27.2). Nothing is deleted, but the default answer to
+ * "what happened in that session" is the note that carried on, not the fragment
+ * it replaced — so the default here is false and a caller opts back in.
+ *
+ * `rag.search()` itself defaults this to true, which keeps every pre-existing
+ * caller unchanged. The policy lives here, at the agent-facing boundary.
+ */
+export const DEFAULT_INCLUDE_SUPERSEDED = false;
+
+/**
+ * Tags are ANDed by jsonb containment, so more than a handful can only ever
+ * narrow to nothing. The hook applies at most five (R-27.4).
+ */
+export const MAX_FILTER_TAGS = 10;
+
+/**
  * Fully-qualified name of the pgvector type. pgvector lives in schema
  * `extensions` on Supabase; self-hosted installs often put it in `public`.
  */

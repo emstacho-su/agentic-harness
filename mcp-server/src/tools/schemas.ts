@@ -8,11 +8,20 @@
  */
 
 import { z } from 'zod';
-import { DEFAULT_MIN_SIMILARITY, KNOWN_SOURCES, MAX_MATCH_COUNT } from '../config.js';
+import {
+  DEFAULT_INCLUDE_SUPERSEDED,
+  DEFAULT_MIN_SIMILARITY,
+  KNOWN_SOURCES,
+  MAX_FILTER_TAGS,
+  MAX_MATCH_COUNT,
+} from '../config.js';
 
 export const MAX_QUERY_CHARS = 2_000;
 export const MAX_EXTERNAL_ID_CHARS = 1_024;
 export const MAX_COLLECTION_CHARS = 256;
+export const MAX_REPO_CHARS = 256;
+export const MAX_PHASE_CHARS = 64;
+export const MAX_TAG_CHARS = 64;
 
 const sourceEnum = z.enum(KNOWN_SOURCES);
 
@@ -53,6 +62,44 @@ export const searchContextShape = {
     .optional()
     .describe(
       `Cosine floor for the semantic half of the search. Default ${DEFAULT_MIN_SIMILARITY}: on this corpus relevant hits score 0.79-0.83 and unrelated ones 0.48-0.66, so the default correctly returns nothing for an off-topic query. Lower it (e.g. 0.5) to deliberately widen the net. It does not gate literal keyword matches.`,
+    ),
+  repo: z
+    .string()
+    .trim()
+    .min(1, 'repo must not be empty')
+    .max(MAX_REPO_CHARS, `repo must be at most ${MAX_REPO_CHARS} characters`)
+    .optional()
+    .describe(
+      'Restrict results to sessions on one repository, written the way the frontmatter does: the git remote\'s "owner/name" slug, e.g. "emstacho-su/bb2dash". Matched exactly. Only session notes carry it, so setting it also excludes every other kind of document.',
+    ),
+  phase: z
+    .string()
+    .trim()
+    .min(1, 'phase must not be empty')
+    .max(MAX_PHASE_CHARS, `phase must be at most ${MAX_PHASE_CHARS} characters`)
+    .optional()
+    .describe(
+      'Restrict results to one project phase as the frontmatter spells it, e.g. "phase-7". Matched exactly.',
+    ),
+  tags: z
+    .array(
+      z
+        .string()
+        .trim()
+        .min(1, 'each tag must not be empty')
+        .max(MAX_TAG_CHARS, `each tag must be at most ${MAX_TAG_CHARS} characters`),
+    )
+    .min(1, 'tags must not be an empty array')
+    .max(MAX_FILTER_TAGS, `tags must hold at most ${MAX_FILTER_TAGS} entries`)
+    .optional()
+    .describe(
+      'Restrict results to documents carrying ALL of these tags — the vocabulary in docs/tags.md: area tags (ingest, db, retrieval, gui, mcp, harness, docs, review, planning), activity tags (phase-brief, integration, pr, hotfix, validation) and the phase tag. Tags are ANDed, so two or three is usually the most that still matches anything.',
+    ),
+  include_superseded: z
+    .boolean()
+    .optional()
+    .describe(
+      `Include documents marked status: superseded — the earlier half of a session that was resumed and carried on elsewhere. Default ${DEFAULT_INCLUDE_SUPERSEDED}: those notes stay searchable but are out of the way unless you are reconstructing a resume chain.`,
     ),
 } as const;
 

@@ -96,6 +96,12 @@ export class FakeRagClient implements RagClient {
     if (params.filterCollection) {
       matched = matched.filter((row) => row.doc_collection === params.filterCollection);
     }
+    if (params.filterMetadata) {
+      matched = matched.filter((row) => contains(row.doc_metadata, params.filterMetadata));
+    }
+    if (!params.includeSuperseded) {
+      matched = matched.filter((row) => statusOf(row) !== 'superseded');
+    }
     return matched.slice(0, params.matchCount);
   }
 
@@ -115,6 +121,30 @@ export class FakeRagClient implements RagClient {
   }
 
   async close(): Promise<void> {}
+}
+
+function statusOf(row: SearchRow): string | null {
+  const status = row.doc_metadata?.['status'];
+  return typeof status === 'string' ? status : null;
+}
+
+/**
+ * The subset of Postgres `jsonb @>` this suite needs: every key in the filter
+ * must be present, scalars compared by equality and arrays by containment.
+ * Mirroring the operator here is what makes the metadata tests mean something.
+ */
+function contains(
+  metadata: Record<string, unknown> | null,
+  filter: Readonly<Record<string, unknown>>,
+): boolean {
+  if (!metadata) return false;
+  return Object.entries(filter).every(([key, wanted]) => {
+    const actual = metadata[key];
+    if (Array.isArray(wanted)) {
+      return Array.isArray(actual) && wanted.every((entry) => actual.includes(entry));
+    }
+    return actual === wanted;
+  });
 }
 
 export function makeRow(overrides: Partial<SearchRow> = {}): SearchRow {
