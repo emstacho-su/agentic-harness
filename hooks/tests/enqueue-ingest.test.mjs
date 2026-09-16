@@ -32,13 +32,26 @@ let vault;
 let note;
 let projectDir;
 let runLog;
+let uvBin;
 let lines;
 
-function recordingSpawn() {
+/** The name a real `uv` has on this platform. */
+const UV_EXECUTABLE = process.platform === 'win32' ? 'uv.exe' : 'uv';
+
+/**
+ * A stand-in for ChildProcess. `pid` is part of it because the enqueue reads
+ * `pid` to tell a spawn that was accepted from one that failed synchronously,
+ * and a fake without it would hide exactly that check.
+ */
+function recordingSpawn(overrides = {}) {
+  // `'pid' in overrides`, not a default parameter: a default would turn an
+  // explicit `pid: undefined` — the shape this is here to model — back into a
+  // number, and the test would pass without exercising anything.
+  const pid = 'pid' in overrides ? overrides.pid : 4242;
   const calls = [];
   const spawn = (command, args, options) => {
     calls.push({ command, args, options });
-    return { unref() { this.unreffed = true; }, on() { return this; }, unreffed: false };
+    return { pid, unref() { this.unreffed = true; }, on() { return this; }, unreffed: false };
   };
   spawn.calls = calls;
   return spawn;
@@ -47,7 +60,7 @@ function recordingSpawn() {
 function baseEnv(overrides = {}) {
   return {
     [ENV_PROJECT_DIR]: projectDir,
-    [ENV_UV_BIN]: 'C:/tools/uv.exe',
+    [ENV_UV_BIN]: uvBin,
     [ENV_RUN_LOG]: runLog,
     ...overrides,
   };
@@ -73,8 +86,14 @@ beforeEach(() => {
   runLog = path.join(workspace, 'logs', 'ingest-on-capture.log');
   note = path.join(vault, 'projects', 'bb2dash', 'sessions', 'abc.md');
 
+  uvBin = path.join(workspace, 'bin', UV_EXECUTABLE);
+
   fs.mkdirSync(path.dirname(note), { recursive: true });
   fs.mkdirSync(projectDir, { recursive: true });
+  fs.mkdirSync(path.dirname(uvBin), { recursive: true });
+  // A real file: HARNESS_UV_BIN is checked for existence like every other
+  // candidate, so a made-up path is refused rather than spawned.
+  fs.writeFileSync(uvBin, '', 'utf8');
   fs.writeFileSync(note, '---\ntype: session\n---\n\nbody\n', 'utf8');
   lines = [];
 });
@@ -94,7 +113,7 @@ describe('enqueueIngest — the command it builds', () => {
     assert.equal(spawn.calls.length, 1);
 
     const { command, args } = spawn.calls[0];
-    assert.equal(command, path.resolve('C:/tools/uv.exe'));
+    assert.equal(command, path.resolve(uvBin));
     assert.deepEqual(args, [
       '--directory',
       path.resolve(projectDir),
@@ -381,11 +400,35 @@ describe('enqueueIngest — failure is logged, never thrown', () => {
     assert.equal(spawn.calls[0].options.stdio, 'ignore');
   });
 
-  it('logs one line when it does enqueue', () => {
+  it('logs one line when it does enqueue, and claims only that it asked', () => {
+    // "started" was a claim this process cannot make: a child that fails to
+    // start reports it through an asynchronous 'error' event, and the hook
+    // calls process.exit(0) before the next tick ever runs.
     call();
     assert.equal(lines.length, 1);
-    assert.ok(lines[0].startsWith('ingest-enqueue started for'));
+    assert.ok(lines[0].startsWith('ingest-enqueue spawn requested for'), lines[0]);
     assert.ok(lines[0].includes('projects/bb2dash/sessions/abc.md'));
+    assert.match(lines[0], /\(pid=\d+\)$/);
+  });
+
+  it('reports a spawn that came back without a pid', () => {
+    // libuv leaves pid undefined when the process could not be created at all.
+    const { result } = call({ spawn: recordingSpawn({ pid: undefined }) });
+
+    assert.equal(result.enqueued, false);
+    assert.equal(result.reason, Reason.SPAWN_FAILED);
+    assert.ok(lines.some((line) => line.includes('no pid')), lines.join('\n'));
+    assert.ok(!lines.some((line) => line.includes('spawn requested')));
+  });
+
+  it('refuses before spawning when the configured uv is gone', () => {
+    const { result, spawn } = call({
+      env: { [ENV_UV_BIN]: path.join(workspace, 'gone', UV_EXECUTABLE) },
+    });
+
+    assert.equal(result.enqueued, false);
+    assert.equal(result.reason, Reason.NO_UV);
+    assert.equal(spawn.calls.length, 0);
   });
 });
 
@@ -449,7 +492,16 @@ describe('enqueueIngest — resolution without hardcoded paths', () => {
     assert.equal(resolved, null);
   });
 
-  it('honours an explicit uv path', () => {
-    assert.equal(resolveUv({ [ENV_UV_BIN]: 'D:/uv/uv.exe' }), path.resolve('D:/uv/uv.exe'));
+  it('honours an explicit uv path that exists', () => {
+    assert.equal(resolveUv({ [ENV_UV_BIN]: uvBin }), path.resolve(uvBin));
+  });
+
+  it('refuses an explicit uv path that does not exist', () => {
+    // Returned unchecked, a stale override produced a log line claiming an
+    // ingest had started for a spawn that could only ever fail.
+    assert.equal(
+      resolveUv({ [ENV_UV_BIN]: path.join(workspace, 'gone', UV_EXECUTABLE) }),
+      null,
+    );
   });
 });

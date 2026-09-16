@@ -26,6 +26,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { DISABLE_VALUES } from './constants.mjs';
+
 /** `0` (or `false`/`off`/`no`) disables the enqueue. Anything else enables it. */
 export const ENV_ENABLED = 'HARNESS_INGEST_ON_CAPTURE';
 /** Directory holding the `ingest` uv project (the one with pyproject.toml). */
@@ -66,7 +68,6 @@ export function ingestEntry(platform) {
   return platform === 'win32' ? [...WINDOWLESS_ENTRY] : ['ingest'];
 }
 const RUN_LOG_MAX_BYTES = 256 * 1024;
-const DISABLED_VALUES = new Set(['0', 'false', 'off', 'no']);
 
 /** Reasons the enqueue did not happen. Stable strings — the tests assert them. */
 export const Reason = {
@@ -175,9 +176,10 @@ function run({ vaultRoot, notePath }, { log, env, spawn, platform }) {
   }
 
   let output = null;
+  let child = null;
   try {
     output = openRunLog(runLog);
-    const child = spawn(command[0], command.slice(1), {
+    child = spawn(command[0], command.slice(1), {
       // No shell. The note path is data, and a shell would re-parse it.
       shell: false,
       detached: true,
@@ -191,8 +193,12 @@ function run({ vaultRoot, notePath }, { log, env, spawn, platform }) {
       },
     });
 
+    // A safety net, not the report. `error` is delivered on the next tick and
+    // session-capture.mjs calls process.exit(0) immediately after main(), so
+    // this listener almost never runs — it exists so that an 'error' event with
+    // no listener cannot throw, which is how EventEmitter treats one.
     child.on('error', (error) => {
-      safely(log, `ingest-enqueue failed to start: ${describe(error)}`);
+      safely(log, `ingest-enqueue failed after start: ${describe(error)}`);
     });
     child.unref();
   } catch (error) {
@@ -202,7 +208,21 @@ function run({ vaultRoot, notePath }, { log, env, spawn, platform }) {
     if (output !== null) closeSafely(output);
   }
 
-  safely(log, `ingest-enqueue started for ${path.relative(vault, note).split(path.sep).join('/')}`);
+  const relative = path.relative(vault, note).split(path.sep).join('/');
+
+  // The one failure this process can still see for itself. libuv leaves `pid`
+  // undefined when CreateProcess/execvp failed, and reports the reason through
+  // the asynchronous 'error' event above, which this process does not live long
+  // enough to receive. Without this check the log claimed an ingest had started
+  // for a child that never existed.
+  if (typeof child?.pid !== 'number') {
+    safely(log, `ingest-enqueue spawn returned no pid for ${relative}; nothing started`);
+    return { enqueued: false, reason: Reason.SPAWN_FAILED, command, runLog };
+  }
+
+  // "requested", not "started": all this process knows is that the spawn was
+  // accepted. Whether the ingest itself got anywhere is in the run log.
+  safely(log, `ingest-enqueue spawn requested for ${relative} (pid=${child.pid})`);
   return { enqueued: true, reason: Reason.ENQUEUED, command, runLog };
 }
 
@@ -210,7 +230,7 @@ function run({ vaultRoot, notePath }, { log, env, spawn, platform }) {
 
 function isEnabled(env) {
   const raw = (env?.[ENV_ENABLED] ?? '').trim().toLowerCase();
-  return raw === '' || !DISABLED_VALUES.has(raw);
+  return raw === '' || !DISABLE_VALUES.has(raw);
 }
 
 function isNonEmptyString(value) {
@@ -244,7 +264,13 @@ export function resolveRunLog(env = process.env) {
  */
 export function resolveUv(env = process.env) {
   const override = (env?.[ENV_UV_BIN] ?? '').trim();
-  if (override) return path.resolve(override);
+  if (override) {
+    // Checked like every other candidate. Returned unchecked, a stale override
+    // left the enqueue reporting a started ingest for a spawn that could only
+    // ever fail, and the note waited for the nightly run without saying so.
+    const resolved = path.resolve(override);
+    return existsSafely(resolved) ? resolved : null;
+  }
 
   const executable = process.platform === 'win32' ? 'uv.exe' : 'uv';
 
