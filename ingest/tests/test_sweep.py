@@ -8,11 +8,13 @@ so the committed fixtures stay pristine and each test starts from the same bytes
 from __future__ import annotations
 
 import shutil
+import functools
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from ingest import sweep_cli
 from ingest.cli import main
 from ingest.sweep import Action, merge_conclusion, sweep_concluded
 
@@ -326,7 +328,12 @@ def test_a_missing_vault_is_an_error(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_sweep_subcommand_defaults_to_a_dry_run(session_vault, capsys):
+def test_sweep_subcommand_defaults_to_a_dry_run(session_vault, capsys, monkeypatch):
+    # The subcommand reads the real clock; pin it, or the "fresh" fixture note
+    # ages past the 24 h threshold and the count drifts by the calendar.
+    monkeypatch.setattr(
+        sweep_cli, "sweep_concluded", functools.partial(sweep_concluded, now=NOW)
+    )
     before = {p: p.read_bytes() for p in session_vault.rglob("*.md")}
     code = main(["sweep-concluded", "--path", str(session_vault)])
     out = capsys.readouterr().out
