@@ -86,7 +86,9 @@ uv run ingest --source claude-mem --path C:/Users/estac/.claude-archive/2026-09-
 uv run ingest --source obsidian --path C:/Users/estac/vault --dry-run
 
 # Just the notes one SessionEnd wrote (what the capture hook runs), one process
-uv run ingest --source obsidian --path "C:/Users/estac/OneDrive - Syracuse University/vault"     --only projects/bb2dash/sessions/<id>.md     --only projects/bb2dash/sessions/<id>--<agent>.md
+uv run ingest --source obsidian --path "C:/Users/estac/OneDrive - Syracuse University/vault" \
+    --only projects/bb2dash/sessions/<id>.md \
+    --only projects/bb2dash/sessions/<id>--<agent>.md
 
 # bb2dash class materials -> vault notes (ingest: false; read-only against bb2dash)
 uv run export-materials --env-file C:/Users/estac/projects/bb2dash/.env \
