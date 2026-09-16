@@ -100,7 +100,7 @@ export function enqueueIngest(options) {
   } = options ?? {};
 
   try {
-    return run(options ?? {}, { log, env, spawn });
+    return run(options ?? {}, { log, env, spawn, platform });
   } catch (error) {
     // Rule 1. Anything unforeseen is a logged non-event, never an exception
     // travelling up into SessionEnd.
@@ -109,7 +109,7 @@ export function enqueueIngest(options) {
   }
 }
 
-function run({ vaultRoot, notePath }, { log, env, spawn }) {
+function run({ vaultRoot, notePath }, { log, env, spawn, platform }) {
   if (!isEnabled(env)) {
     return { enqueued: false, reason: Reason.DISABLED };
   }
