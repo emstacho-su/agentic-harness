@@ -11,9 +11,10 @@ fails the document keeps its previous chunks — never a half-rewritten document
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from typing import Protocol, Sequence
+from typing import Any, Protocol, Sequence
 
 from .config import CHUNKS_TABLE, DOCUMENTS_TABLE, VECTOR_TYPE, DbSettings
 from .embedding import vector_literal
@@ -22,6 +23,28 @@ from .jsonutil import dumps
 from .models import Chunk, DocumentState, SourceDocument
 
 log = logging.getLogger(__name__)
+
+
+def _as_metadata(raw: Any) -> dict[str, Any]:
+    """The ``metadata`` column as a dict, whatever the driver handed back.
+
+    psycopg decodes ``jsonb`` to a dict, but a connection configured without the
+    json loader (or a fake in a test) returns the raw text. Both are accepted; a
+    column holding a JSON scalar or array is not metadata and comes back empty
+    rather than crashing a run over one odd row.
+    """
+    if raw is None:
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            log.warning("metadata column did not hold valid JSON; treating it as empty")
+            return {}
+    if isinstance(raw, dict):
+        return raw
+    log.warning("metadata column held %s, not an object", type(raw).__name__)
+    return {}
 
 # TCP keepalives so the OS notices a half-open socket rather than the next query
 # discovering it. Embedding runs leave the connection idle for long stretches and
@@ -79,10 +102,20 @@ ON CONFLICT (source, external_id) DO UPDATE SET
 RETURNING id, (xmax = 0) AS inserted
 """
 
+# title and metadata come back too: the pipeline compares them against the
+# freshly parsed ones to spot a frontmatter-only edit, which the body hash
+# cannot see.
 _SELECT_STATE = f"""
-SELECT id, content_hash
+SELECT id, content_hash, title, metadata
 FROM {DOCUMENTS_TABLE}
 WHERE source = %s AND external_id = %s
+"""
+
+# The frontmatter-only path: no chunk delete, no chunk insert, no embedding.
+_UPDATE_METADATA = f"""
+UPDATE {DOCUMENTS_TABLE}
+SET title = %s, metadata = %s::jsonb
+WHERE id = %s
 """
 
 _DELETE_CHUNKS = f"DELETE FROM {CHUNKS_TABLE} WHERE document_id = %s"
@@ -115,6 +148,10 @@ class ChunkStore(Protocol):
         chunks: Sequence[Chunk],
         embeddings: Sequence[Sequence[float]],
     ) -> tuple[int, bool]: ...
+
+    def update_document_metadata(
+        self, document_id: int, title: str | None, metadata: dict[str, Any]
+    ) -> None: ...
 
     def list_external_ids(self, source: str) -> set[str]: ...
 
@@ -241,7 +278,12 @@ class PostgresStore:
 
         if row is None:
             return None
-        return DocumentState(document_id=int(row[0]), content_hash=str(row[1]))
+        return DocumentState(
+            document_id=int(row[0]),
+            content_hash=str(row[1]),
+            title=None if row[2] is None else str(row[2]),
+            metadata=_as_metadata(row[3]),
+        )
 
     # -- writes ------------------------------------------------------------
 
@@ -317,6 +359,31 @@ class PostgresStore:
 
         return document_id, inserted
 
+    def update_document_metadata(
+        self, document_id: int, title: str | None, metadata: dict[str, Any]
+    ) -> None:
+        """Refresh ``title`` and ``metadata`` alone, leaving every chunk in place.
+
+        The body — and therefore every embedding derived from it — is unchanged,
+        so re-chunking and re-embedding would produce byte-identical vectors at
+        the cost of a model pass per document.
+        """
+        if not isinstance(document_id, int) or isinstance(document_id, bool):
+            raise StoreError(f"document_id must be an int, got {document_id!r}")
+
+        def _write() -> None:
+            with self._conn.cursor() as cur:
+                cur.execute(_UPDATE_METADATA, (title, dumps(metadata), document_id))
+            self._conn.commit()
+
+        try:
+            self._run(f"Metadata update of document {document_id}", _write)
+        except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
+            self._safe_rollback()
+            raise StoreError(
+                f"Metadata update of document {document_id} failed: {exc}"
+            ) from exc
+
     # -- orphan sweep ------------------------------------------------------
 
     def list_external_ids(self, source: str) -> set[str]:
@@ -370,6 +437,9 @@ class NullStore:
         return None
 
     def replace_document(self, *args, **kwargs) -> tuple[int, bool]:
+        raise StoreError("NullStore cannot write. This is a --dry-run store.")
+
+    def update_document_metadata(self, *args, **kwargs) -> None:
         raise StoreError("NullStore cannot write. This is a --dry-run store.")
 
     def list_external_ids(self, source: str) -> set[str]:

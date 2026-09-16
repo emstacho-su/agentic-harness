@@ -52,10 +52,18 @@ class Chunk:
 
 @dataclass(frozen=True)
 class DocumentState:
-    """What the store already knows about a ``(source, external_id)`` pair."""
+    """What the store already knows about a ``(source, external_id)`` pair.
+
+    ``title`` and ``metadata`` are carried so the pipeline can tell a document
+    whose *frontmatter* changed from one that did not change at all. The hash is
+    over the body only, so without them a status flip or a new ``child_sessions``
+    link would hit the unchanged short-circuit and never reach the database.
+    """
 
     document_id: int
     content_hash: str
+    title: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -8,8 +8,11 @@ embedded with a different model).
 Two loaders, one pipeline:
 
 ```
-loader ──▶ SourceDocument ──▶ sha256 hash ──▶ unchanged? ──yes──▶ skip (no embed, no write)
-                                                  │no
+loader ──▶ SourceDocument ──▶ sha256 hash ──▶ body unchanged? ──yes──▶ frontmatter changed?
+                                                  │no                      │yes         │no
+                                                  │                        ▼            ▼
+                                                  │              UPDATE title/metadata  skip
+                                                  │                (no embed)
                                                   ▼
                                     markdown chunker (token-aware)
                                                   ▼
@@ -302,11 +305,22 @@ text; only the hash input is normalised.
 
 On re-ingest:
 
-* **hash unchanged** → skipped entirely. No chunking, no embedding, no SQL write.
+* **hash unchanged, frontmatter unchanged** → skipped entirely. No chunking, no
+  embedding, no SQL write.
+* **hash unchanged, frontmatter changed** → one
+  `UPDATE rag.documents SET title, metadata`. No re-chunking, no embedding: the
+  vectors came from a body that did not change. Counted as `metadata-updated`
+  (`would-update-metadata` in a dry run). This is what makes a `status` flip, a
+  `child_sessions` link and `sweep-concluded --apply` visible to a metadata
+  filter; widening the hash to cover frontmatter would instead re-embed the
+  whole store.
 * **hash changed** → in one transaction: upsert the document on
   `(source, external_id)`, delete its chunks, insert the new ones. If any step
   fails, the document keeps its previous chunks — never a half-rewritten
   document, never duplicate chunks.
+
+Title and metadata are compared as canonical JSON with sorted keys, because
+`jsonb` does not preserve the order the loader produced.
 
 A failed document is logged and counted; the run continues and exits `1`.
 

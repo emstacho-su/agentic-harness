@@ -339,6 +339,18 @@ def _report_stats(stats: IngestStats, *, dry_run: bool) -> None:
     else:
         print(f"  chunks written: {stats.chunks_written}")
 
+    # Say what "metadata-updated" means where it is counted, rather than leaving
+    # an unexplained action name in the nightly log.
+    refreshed = stats.count(
+        Action.PLANNED_METADATA if dry_run else Action.METADATA_UPDATED
+    )
+    if refreshed:
+        verb = "would refresh" if dry_run else "refreshed"
+        print(
+            f"  {verb} title/metadata on {refreshed} document(s) whose body was "
+            "unchanged: no re-chunking, no embedding"
+        )
+
     _report_failures(stats)
 
 

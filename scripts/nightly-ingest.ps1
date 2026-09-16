@@ -13,6 +13,12 @@
     Running the sweep first is what makes the status change visible to search in
     the same night. The other way round, every concluded note would wait a day.
 
+    The sweep touches frontmatter only, and content_hash is over the body, so
+    the ingest reaches those notes through its metadata-only path: it compares
+    the stored title and metadata with the freshly parsed ones and issues one
+    UPDATE, with no re-chunking and no embedding. They are counted in the run
+    summary as 'metadata-updated'.
+
     A complete ingest writes its own last-success timestamp, which is what
     `ingest --health` reads. This script does not write that file; a run that
     fails must not look like a run that worked.

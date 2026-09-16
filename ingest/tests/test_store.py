@@ -90,7 +90,7 @@ VECTORS = ([0.1] * 384, [0.2] * 384)
 
 
 def test_state_lookup_uses_the_upsert_key():
-    conn = FakeConnection(next_row=(12, "abc123"))
+    conn = FakeConnection(next_row=(12, "abc123", "A", {"tags": ["rag"]}))
     state = PostgresStore(conn).get_document_state("obsidian", "notes/a.md")
 
     assert state is not None
@@ -98,6 +98,72 @@ def test_state_lookup_uses_the_upsert_key():
     sql, params = conn.log[0][1], conn.log[0][2]
     assert "source = %s AND external_id = %s" in sql
     assert params == ("obsidian", "notes/a.md")
+
+
+def test_state_lookup_returns_the_stored_title_and_metadata():
+    """The pipeline needs both to spot a frontmatter-only edit; the hash cannot."""
+    conn = FakeConnection(next_row=(12, "abc123", "A title", {"status": "concluded"}))
+    state = PostgresStore(conn).get_document_state("obsidian", "notes/a.md")
+
+    assert state.title == "A title"
+    assert state.metadata == {"status": "concluded"}
+    assert "metadata" in conn.log[0][1]
+
+
+@pytest.mark.parametrize(
+    "stored, expected",
+    [
+        ({"a": 1}, {"a": 1}),
+        ('{"a": 1}', {"a": 1}),      # a connection without the json loader
+        (None, {}),
+        ("not json at all", {}),
+        ([1, 2], {}),                # a JSON array is not metadata
+    ],
+)
+def test_metadata_column_shapes_all_come_back_as_a_dict(stored, expected):
+    conn = FakeConnection(next_row=(12, "abc123", None, stored))
+    state = PostgresStore(conn).get_document_state("obsidian", "notes/a.md")
+
+    assert state.metadata == expected
+    assert state.title is None
+
+
+def test_metadata_update_touches_no_chunk_and_commits_once():
+    conn = FakeConnection()
+    PostgresStore(conn).update_document_metadata(12, "A title", {"status": "superseded"})
+
+    statements = conn.statements()
+    assert len(statements) == 1
+    assert statements[0].startswith("UPDATE rag.documents")
+    assert "%s::jsonb" in statements[0]
+    assert "rag.chunks" not in statements[0]
+    assert conn.commits == 1
+    assert conn.rollbacks == 0
+
+    params = conn.log[0][2]
+    assert params[0] == "A title"
+    assert json.loads(params[1]) == {"status": "superseded"}
+    assert params[2] == 12
+
+
+def test_a_failed_metadata_update_rolls_back_and_raises_a_typed_error():
+    conn = FakeConnection(raise_on="UPDATE rag.documents")
+    with pytest.raises(StoreError, match="Metadata update"):
+        PostgresStore(conn).update_document_metadata(12, None, {})
+    assert conn.rollbacks >= 1
+    assert conn.commits == 0
+
+
+def test_metadata_update_refuses_a_non_integer_document_id():
+    conn = FakeConnection()
+    with pytest.raises(StoreError, match="document_id"):
+        PostgresStore(conn).update_document_metadata("12", None, {})
+    assert conn.statements() == []
+
+
+def test_null_store_refuses_a_metadata_update():
+    with pytest.raises(StoreError):
+        NullStore().update_document_metadata(1, "t", {})
 
 
 def test_missing_document_returns_none():

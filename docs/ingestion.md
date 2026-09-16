@@ -59,11 +59,57 @@ early as possible whether the expensive step is needed at all.
 time and indexed. On every run:
 
 1. Look up the document by `(source, external_id)` — the unique constraint that
-   makes this a single index probe.
-2. If the stored hash equals the freshly computed hash, **stop**. The chunks in
-   the database are already correct, because they were derived from exactly these
-   bytes. Nothing is re-chunked, nothing is re-embedded, no rows are written.
+   makes this a single index probe. The probe also returns the stored `title`
+   and `metadata`.
+2. If the stored hash equals the freshly computed hash, the chunks in the
+   database are already correct, because they were derived from exactly these
+   bytes. Nothing is re-chunked and nothing is re-embedded. What still gets
+   compared is the frontmatter — see below.
 3. Otherwise re-chunk and re-embed.
+
+### Frontmatter-only changes
+
+The hash is over the **body**, and several things change a note's frontmatter
+and nothing else: a resume flipping `status` to `superseded`, a `child_sessions`
+link added when a subagent stops after its parent, and `sweep-concluded --apply`
+writing `status` and `concluded_at`. All of them used to land behind the
+unchanged short-circuit, so `rag.documents.metadata` stayed as it was until the
+body happened to change — which for a concluded session is never.
+
+So when the body hash matches, the stored `title` and `metadata` are compared
+with the freshly parsed ones as canonical JSON (keys sorted, because `jsonb`
+does not preserve the loader's key order). If they differ, the document takes
+the **metadata-only path**: one
+
+```sql
+UPDATE rag.documents SET title = %s, metadata = %s::jsonb WHERE id = %s
+```
+
+and nothing else. No chunk is deleted, no chunk is inserted, and the embedder is
+never called — the vectors were derived from a body that did not change, so
+recomputing them would produce the same numbers. The run reports it as its own
+action:
+
+```
+--- ingest complete ---
+    2  metadata-updated
+   14  unchanged
+  chunks written: 0
+  refreshed title/metadata on 2 document(s) whose body was unchanged: no re-chunking, no embedding
+```
+
+`--dry-run` reports the same documents as `would-update-metadata` and writes
+nothing. `--force` skips the comparison entirely and takes the full re-embed
+path, as it does for every other document.
+
+Widening `content_hash` to cover frontmatter would be the other way to catch
+this, and would re-embed all 1,324 documents in the store the first time it ran,
+for no change in what any of them mean.
+
+One cost worth knowing: `metadata._ingest` carries the file's `modified_at` and
+`bytes`, so rewriting a note with identical frontmatter still counts as a
+metadata change. That is one UPDATE — no model work — and it keeps the stored
+metadata honest about the file on disk.
 
 Why this matters in practice: an Obsidian vault re-scan touches every note, but a
 typical editing session changes two or three of them. Without the hash check,
@@ -408,11 +454,12 @@ A resume that arrives after the note concluded starts a new `<id>-r2.md` naming
 what it continues in `resumed_from` and `supersedes`, and flips the earlier note
 to `superseded`. Nothing is deleted and no id ever changes meaning.
 
-One consequence worth knowing: `content_hash` is computed over the **body**, so
-a change confined to frontmatter would update the note on disk and nothing in
-the store. The fields that matter for retrieval are therefore mirrored into the
-note's `## Session facts` table — a note whose status flips is a new body, and
-the next run notices.
+`content_hash` is computed over the **body**, so a change confined to
+frontmatter does not change the hash. The pipeline compares the stored `title`
+and `metadata` against the parsed ones in that case and issues a metadata-only
+UPDATE — see [Frontmatter-only changes](#frontmatter-only-changes). The fields
+that matter for retrieval are *also* mirrored into the note's `## Session facts`
+table, so they are searchable as text as well as filterable as metadata.
 
 ### Tags
 
