@@ -24,6 +24,7 @@ def document(
     body: str = BODY,
     *,
     title: str | None = "Ingest Notes",
+    collection: str | None = "bb2dash",
     metadata: dict | None = None,
 ) -> SourceDocument:
     return SourceDocument(
@@ -32,6 +33,7 @@ def document(
         body=body,
         title=title,
         agent="claude-code",
+        collection=collection,
         metadata={"tags": ["rag"]} if metadata is None else metadata,
     )
 
@@ -220,6 +222,49 @@ def test_force_re_embeds_rather_than_only_refreshing_metadata(fake_store, fake_e
     assert fake_store.metadata_writes == 0
 
 
+def test_a_moved_note_gets_its_collection_corrected(fake_store, fake_embedder):
+    """A note with a stable id that moves folders keeps its body.
+
+    The collection is what `filter_collection` matches on, so leaving it stale
+    is invisible: the note simply stops coming back for its new project and
+    keeps coming back for its old one.
+    """
+    pipeline(fake_store, fake_embedder).run([document(collection="foo")])
+    stats = pipeline(fake_store, fake_embedder).run([document(collection="bar")])
+
+    assert stats.count(Action.METADATA_UPDATED) == 1
+    assert fake_store.documents[("obsidian", "notes/a.md")].collection == "bar"
+    assert len(fake_embedder.calls) == 1, "a move must not re-embed"
+
+
+def test_metadata_that_cannot_be_compared_is_refreshed_rather_than_failed(
+    fake_store, fake_embedder
+):
+    """canonical() can refuse a stored value; that must not fail the document.
+
+    This path used to be a guaranteed no-op. A document that raised here would
+    be counted FAILED on every run, and a run with failures never refreshes the
+    health timestamp — so `ingest --health` would report STALE for good over a
+    document nothing is trying to change.
+    """
+    from dataclasses import replace
+
+    pipeline(fake_store, fake_embedder).run([document()])
+    key = ("obsidian", "notes/a.md")
+    deep: dict = {}
+    cursor = deep
+    for _ in range(40):
+        cursor["n"] = {}
+        cursor = cursor["n"]
+    fake_store.documents[key] = replace(fake_store.documents[key], metadata=deep)
+
+    stats = pipeline(fake_store, fake_embedder).run([document()])
+
+    assert stats.count(Action.FAILED) == 0
+    assert stats.count(Action.METADATA_UPDATED) == 1
+    assert fake_store.documents[key].metadata == {"tags": ["rag"]}
+
+
 def test_dry_run_reports_a_frontmatter_only_change_without_writing(
     fake_store, fake_embedder
 ):
@@ -230,7 +275,8 @@ def test_dry_run_reports_a_frontmatter_only_change_without_writing(
 
     assert stats.count(Action.PLANNED_METADATA) == 1
     assert fake_store.metadata_writes == 0
-    assert fake_embedder.calls == [] or len(fake_embedder.calls) == 1
+    # Exactly the one call the first, non-dry run made: the dry run added none.
+    assert len(fake_embedder.calls) == 1
 
 
 # --------------------------------------------------------------------------

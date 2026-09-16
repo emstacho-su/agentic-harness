@@ -39,6 +39,18 @@ class FakeEmbedder:
         ]
 
 
+def _state(document_id: int, content_hash: str, document: SourceDocument) -> DocumentState:
+    """What the database would hold after writing this document."""
+    return DocumentState(
+        document_id=document_id,
+        content_hash=content_hash,
+        title=document.title,
+        collection=document.collection,
+        agent=document.agent,
+        metadata=dict(document.metadata),
+    )
+
+
 class FakeStore:
     """In-memory ChunkStore that records every write."""
 
@@ -75,22 +87,18 @@ class FakeStore:
         else:
             document_id = existing.document_id
             inserted = False
-        self.documents[key] = DocumentState(
-            document_id, content_hash, document.title, dict(document.metadata)
-        )
+        self.documents[key] = _state(document_id, content_hash, document)
         self.chunks[document_id] = list(chunks)
         self.embeddings[document_id] = [list(e) for e in embeddings]
         return document_id, inserted
 
-    def update_document_metadata(self, document_id, title, metadata) -> None:
-        """Refresh title and metadata alone; chunks and embeddings stay put."""
+    def update_document_metadata(self, document_id, document) -> None:
+        """Refresh everything but the body; chunks and embeddings stay put."""
         for key, state in self.documents.items():
             if state.document_id != document_id:
                 continue
             self.metadata_writes += 1
-            self.documents[key] = DocumentState(
-                document_id, state.content_hash, title, dict(metadata)
-            )
+            self.documents[key] = _state(document_id, state.content_hash, document)
             return
         raise StoreError(f"no document with id {document_id}")
 

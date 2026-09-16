@@ -102,19 +102,25 @@ ON CONFLICT (source, external_id) DO UPDATE SET
 RETURNING id, (xmax = 0) AS inserted
 """
 
-# title and metadata come back too: the pipeline compares them against the
-# freshly parsed ones to spot a frontmatter-only edit, which the body hash
-# cannot see.
+# Everything the upsert writes except body and content_hash comes back too: the
+# pipeline compares these against the freshly parsed ones to spot an edit the
+# body hash cannot see.
 _SELECT_STATE = f"""
-SELECT id, content_hash, title, metadata
+SELECT id, content_hash, title, collection, agent, metadata
 FROM {DOCUMENTS_TABLE}
 WHERE source = %s AND external_id = %s
 """
 
 # The frontmatter-only path: no chunk delete, no chunk insert, no embedding.
+#
+# It sets every column the upsert sets apart from body and content_hash, which
+# are unchanged by definition here. `collection` in particular: a note with a
+# stable frontmatter `id:` that moves between folders keeps its body, so this is
+# the only statement that would ever correct its collection — and a stale
+# collection is invisible, because `filter_collection` just stops matching.
 _UPDATE_METADATA = f"""
 UPDATE {DOCUMENTS_TABLE}
-SET title = %s, metadata = %s::jsonb
+SET title = %s, collection = %s, agent = %s, metadata = %s::jsonb
 WHERE id = %s
 """
 
@@ -150,7 +156,7 @@ class ChunkStore(Protocol):
     ) -> tuple[int, bool]: ...
 
     def update_document_metadata(
-        self, document_id: int, title: str | None, metadata: dict[str, Any]
+        self, document_id: int, document: SourceDocument
     ) -> None: ...
 
     def list_external_ids(self, source: str) -> set[str]: ...
@@ -282,7 +288,9 @@ class PostgresStore:
             document_id=int(row[0]),
             content_hash=str(row[1]),
             title=None if row[2] is None else str(row[2]),
-            metadata=_as_metadata(row[3]),
+            collection=None if row[3] is None else str(row[3]),
+            agent=None if row[4] is None else str(row[4]),
+            metadata=_as_metadata(row[5]),
         )
 
     # -- writes ------------------------------------------------------------
@@ -360,9 +368,9 @@ class PostgresStore:
         return document_id, inserted
 
     def update_document_metadata(
-        self, document_id: int, title: str | None, metadata: dict[str, Any]
+        self, document_id: int, document: SourceDocument
     ) -> None:
-        """Refresh ``title`` and ``metadata`` alone, leaving every chunk in place.
+        """Refresh everything but the body, leaving every chunk in place.
 
         The body — and therefore every embedding derived from it — is unchanged,
         so re-chunking and re-embedding would produce byte-identical vectors at
@@ -373,11 +381,32 @@ class PostgresStore:
 
         def _write() -> None:
             with self._conn.cursor() as cur:
-                cur.execute(_UPDATE_METADATA, (title, dumps(metadata), document_id))
+                cur.execute(
+                    _UPDATE_METADATA,
+                    (
+                        document.title,
+                        document.collection,
+                        document.agent,
+                        dumps(document.metadata),
+                        document_id,
+                    ),
+                )
+                affected = cur.rowcount
             self._conn.commit()
+            # An UPDATE that matched nothing commits happily. Without this the
+            # run would report a document refreshed after a concurrent --prune
+            # had already deleted it.
+            if affected is not None and affected == 0:
+                raise StoreError(
+                    f"{document.external_id}: no document with id {document_id} "
+                    "to update; it was deleted between the lookup and the write"
+                )
 
         try:
             self._run(f"Metadata update of document {document_id}", _write)
+        except StoreError:
+            self._safe_rollback()
+            raise
         except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
             self._safe_rollback()
             raise StoreError(

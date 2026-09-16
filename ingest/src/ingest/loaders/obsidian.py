@@ -120,22 +120,36 @@ def load_vault(vault_path: str | Path) -> LoadedSource:
             log.debug("Skipping %s: %s", relative, loaded.reason)
             skipped.append(loaded)
             continue
-        document = loaded
 
-        owner = claimed_by.get(document.external_id)
-        if owner is not None:
-            # Two notes claiming one id would silently overwrite each other
-            # through the (source, external_id) upsert key. Refuse the second.
-            reason = f"duplicate external_id '{document.external_id}', already used by {owner}"
-            log.warning("Skipping %s: %s", relative, reason)
-            skipped.append(SkippedRecord(relative, reason))
-            continue
-
-        claimed_by[document.external_id] = relative
-        documents.append(document)
+        if _claim(loaded, relative, claimed_by, skipped):
+            documents.append(loaded)
 
     notes = (f"vault root: {root.as_posix()}",)
     return LoadedSource(tuple(documents), tuple(skipped), notes)
+
+
+def _claim(
+    document: SourceDocument,
+    relative: str,
+    claimed_by: dict[str, str],
+    skipped: list[SkippedRecord],
+) -> bool:
+    """Reserve this document's ``external_id``, or record why it cannot have it.
+
+    Two notes claiming one id would silently overwrite each other through the
+    ``(source, external_id)`` upsert key, so the second is refused and the
+    conflict named. One function, because both walkers enforce it and a second
+    copy would drift.
+    """
+    owner = claimed_by.get(document.external_id)
+    if owner is not None:
+        reason = f"duplicate external_id '{document.external_id}', already used by {owner}"
+        log.warning("Skipping %s: %s", relative, reason)
+        skipped.append(SkippedRecord(relative, reason))
+        return False
+
+    claimed_by[document.external_id] = relative
+    return True
 
 
 def load_vault_note(vault_path: str | Path, note_path: str | Path) -> LoadedSource:
@@ -188,23 +202,24 @@ def load_vault_notes(
         seen.add(relative)
         notes.append(f"only: {relative}")
 
-        loaded = _load_note(note, relative)
+        try:
+            loaded = _load_note(note, relative)
+        except SourceError as exc:
+            # Exactly as in the full walk: a note that will not parse or will
+            # not read is one skipped note, not a dead run. Losing the other
+            # notes of the batch because OneDrive had this one locked would be
+            # worse than the old one-note-per-spawn behaviour it replaced.
+            log.warning("Skipping %s: %s", relative, exc)
+            skipped.append(SkippedRecord(relative, str(exc)))
+            continue
+
         if isinstance(loaded, SkippedRecord):
             log.debug("Skipping %s: %s", relative, loaded.reason)
             skipped.append(loaded)
             continue
 
-        owner = claimed_by.get(loaded.external_id)
-        if owner is not None:
-            # Same rule as the full walk: two notes claiming one id would
-            # overwrite each other through the (source, external_id) upsert key.
-            reason = f"duplicate external_id '{loaded.external_id}', already used by {owner}"
-            log.warning("Skipping %s: %s", relative, reason)
-            skipped.append(SkippedRecord(relative, reason))
-            continue
-
-        claimed_by[loaded.external_id] = relative
-        documents.append(loaded)
+        if _claim(loaded, relative, claimed_by, skipped):
+            documents.append(loaded)
 
     return LoadedSource(tuple(documents), tuple(skipped), tuple(notes))
 

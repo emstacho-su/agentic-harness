@@ -2,7 +2,7 @@
 
 > **Status: live.** `ingest/` has loaded the full claude-mem export and the
 > vault into `harness-memory`: 1,324 documents and 2,360 chunks across 27
-> collections as of 2026-09-15. 405 tests, run with `uv run pytest`.
+> collections as of 2026-09-15. 413 tests, run with `uv run pytest`.
 
 Ingestion turns source artifacts into rows the retrieval function can rank. It
 runs as a batch job, not a service — you point it at a source and it reconciles
@@ -32,11 +32,11 @@ flowchart TD
     E -->|"no"| F["INSERT rag.documents"]
     E -->|"yes"| G{"stored content_hash<br/>equals new hash?"}
 
-    G -->|"yes — body unchanged"| P{"stored title + metadata<br/>equal the parsed ones?"}
+    G -->|"yes — body unchanged"| P{"stored title, collection,<br/>agent, metadata all equal?"}
     G -->|"no — changed"| I["UPDATE rag.documents<br/>trigger bumps updated_at"]
 
     P -->|"yes"| H["SKIP<br/>no chunking<br/>no embedding<br/>no writes"]
-    P -->|"no — frontmatter only"| Q["UPDATE title + metadata<br/>chunks untouched, no embedding"]
+    P -->|"no — body identical"| Q["UPDATE title, collection,<br/>agent, metadata<br/>chunks untouched, no embedding"]
 
     F --> J["Chunk the body"]
     I --> K["DELETE existing chunks<br/>for this document_id"]
@@ -79,14 +79,23 @@ writing `status` and `concluded_at`. All of them used to land behind the
 unchanged short-circuit, so `rag.documents.metadata` stayed as it was until the
 body happened to change — which for a concluded session is never.
 
-So when the body hash matches, the stored `title` and `metadata` are compared
-with the freshly parsed ones as canonical JSON (keys sorted, because `jsonb`
-does not preserve the loader's key order). If they differ, the document takes
-the **metadata-only path**: one
+So when the body hash matches, every column the upsert writes apart from the
+body and its hash — `title`, `collection`, `agent`, `metadata` — is compared
+with the freshly parsed value (`metadata` as canonical JSON with sorted keys,
+because `jsonb` does not preserve the loader's order). If any differ, the
+document takes the **metadata-only path**: one
 
 ```sql
-UPDATE rag.documents SET title = %s, metadata = %s::jsonb WHERE id = %s
+UPDATE rag.documents
+SET title = %s, collection = %s, agent = %s, metadata = %s::jsonb
+WHERE id = %s
 ```
+
+`collection` is in there for a reason. A note with a stable frontmatter `id:`
+that moves from `projects/foo/` to `projects/bar/` keeps its body, so this is
+the only statement that would ever correct it — and `filter_collection` matches
+with `=`, so a stale collection is invisible: the note quietly stops coming back
+for its new project and keeps coming back for its old one.
 
 and nothing else. No chunk is deleted, no chunk is inserted, and the embedder is
 never called — the vectors were derived from a body that did not change, so

@@ -77,14 +77,30 @@ def assert_bb2dash_url(base_url: str | None) -> str:
             f"SUPABASE_URL host is '{host}', not the bb2dash project ({expected}). "
             "This exporter reads class materials from bb2dash only."
         )
-    if parts.port is not None or parts.path.strip("/") or parts.query or parts.fragment:
+    if _has_extras(parts):
         # Not fatal — the host is right — but say so rather than dropping it
-        # silently, because the operator wrote it for a reason.
+        # silently, because the operator wrote it for a reason. The URL is not
+        # echoed: it may carry a query string, and this exporter never logs one.
         log.warning(
             "SUPABASE_URL carries a port, path or query; requests use %s only.",
             BB2DASH_ROOT,
         )
     return BB2DASH_ROOT
+
+
+def _has_extras(parts: urllib.parse.SplitResult) -> bool:
+    """Does the URL carry anything beyond scheme and host?
+
+    ``SplitResult.port`` parses lazily and raises ``ValueError`` on a port that
+    is not a number or is out of range — an untyped traceback out of a function
+    whose whole contract is to raise :class:`ConfigError`. A port that cannot be
+    parsed is certainly an extra, so it answers the question either way.
+    """
+    try:
+        has_port = parts.port is not None
+    except ValueError:
+        has_port = True
+    return has_port or bool(parts.path.strip("/")) or bool(parts.query) or bool(parts.fragment)
 
 
 def fetch_materials(

@@ -37,18 +37,46 @@ log = logging.getLogger(__name__)
 def _metadata_difference(
     document: SourceDocument, state: DocumentState
 ) -> str | None:
-    """Why the stored title/metadata differ from the parsed ones, or None.
+    """Why the stored row differs from the parsed document, or None.
 
-    Compared as canonical JSON, so jsonb's key ordering — which is not the
-    loader's — never reads as a difference. A blank title and no title mean the
-    same thing; the column is nullable and the loaders disagree about which they
-    produce.
+    Every column the upsert writes apart from the body and its hash, because
+    every one of them can change without the body changing. ``collection`` is
+    the one that matters most: a note with a stable frontmatter ``id:`` that
+    moves between folders keeps its body, and a stale collection is invisible —
+    ``filter_collection`` simply stops matching it.
+
+    ``metadata`` is compared as canonical JSON, so jsonb's key ordering — which
+    is not the loader's — never reads as a difference. A blank scalar and a null
+    one mean the same thing; the columns are nullable and the loaders disagree
+    about which they produce.
     """
-    reasons: list[str] = []
-    if (document.title or None) != (state.title or None):
-        reasons.append("title")
-    if canonical(document.metadata) != canonical(state.metadata):
+    reasons = [
+        name
+        for name, parsed, stored in (
+            ("title", document.title, state.title),
+            ("collection", document.collection, state.collection),
+            ("agent", document.agent, state.agent),
+        )
+        if (parsed or None) != (stored or None)
+    ]
+
+    try:
+        if canonical(document.metadata) != canonical(state.metadata):
+            reasons.append("metadata")
+    except IngestError as exc:
+        # canonical() can refuse a value (metadata nested past its depth cap).
+        # This path used to be a guaranteed no-op, so raising here would turn an
+        # unchanged document into a FAILED one on every run — and a run with
+        # failures never refreshes the health timestamp, so `ingest --health`
+        # would report STALE for good. Rewriting from the freshly parsed
+        # metadata, which the loader already validated, is self-healing.
+        log.warning(
+            "%s: could not compare stored metadata (%s); refreshing it",
+            document.external_id,
+            exc,
+        )
         reasons.append("metadata")
+
     return " and ".join(reasons) + " changed" if reasons else None
 
 
@@ -196,9 +224,7 @@ class IngestPipeline:
             )
 
         log.debug("%s: %s; refreshing metadata only", document.external_id, difference)
-        self.store.update_document_metadata(
-            state.document_id, document.title, document.metadata
-        )
+        self.store.update_document_metadata(state.document_id, document)
         return DocumentOutcome(
             document.external_id, Action.METADATA_UPDATED, detail=difference
         )

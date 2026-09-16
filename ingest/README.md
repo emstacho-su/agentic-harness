@@ -8,10 +8,10 @@ embedded with a different model).
 Two loaders, one pipeline:
 
 ```
-loader ──▶ SourceDocument ──▶ sha256 hash ──▶ body unchanged? ──yes──▶ frontmatter changed?
-                                                  │no                      │yes         │no
-                                                  │                        ▼            ▼
-                                                  │              UPDATE title/metadata  skip
+loader ──▶ SourceDocument ──▶ sha256 hash ──▶ body unchanged? ──yes──▶ anything else changed?
+                                                  │no                      │yes            │no
+                                                  │                        ▼               ▼
+                                                  │      UPDATE title/collection/metadata  skip
                                                   │                (no embed)
                                                   ▼
                                     markdown chunker (token-aware)
@@ -334,8 +334,9 @@ On re-ingest:
 
 * **hash unchanged, frontmatter unchanged** → skipped entirely. No chunking, no
   embedding, no SQL write.
-* **hash unchanged, frontmatter changed** → one
-  `UPDATE rag.documents SET title, metadata`. No re-chunking, no embedding: the
+* **hash unchanged, anything else changed** → one
+  `UPDATE rag.documents SET title, collection, agent, metadata`. No re-chunking,
+  no embedding: the
   vectors came from a body that did not change. Counted as `metadata-updated`
   (`would-update-metadata` in a dry run). This is what makes a `status` flip, a
   `child_sessions` link and `sweep-concluded --apply` visible to a metadata

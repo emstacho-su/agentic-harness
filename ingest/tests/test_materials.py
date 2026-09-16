@@ -261,6 +261,20 @@ def test_the_request_root_is_built_from_the_pinned_constants(supplied):
 @pytest.mark.parametrize(
     "supplied",
     [
+        f"{CANONICAL_ROOT}:99999",   # out of range
+        f"{CANONICAL_ROOT}:abc",     # not a number
+    ],
+)
+def test_an_unparseable_port_is_a_typed_error_not_a_traceback(supplied):
+    """SplitResult.port parses lazily and raises ValueError, which the CLI's
+    handler does not catch — export-materials would die with a raw traceback
+    instead of the ConfigError this function exists to raise."""
+    assert assert_bb2dash_url(supplied) == CANONICAL_ROOT
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    [
         "https://evil.example.com",
         f"https://{BB2DASH_PROJECT_REF}.supabase.co.evil.example.com",
         f"https://evil.example.com/{BB2DASH_PROJECT_REF}.supabase.co",

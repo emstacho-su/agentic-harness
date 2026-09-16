@@ -20,6 +20,13 @@ from ingest.pipeline import Action, IngestPipeline
 
 CLEAN_VARS = ("DATABASE_URL", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE", "SUPABASE_SERVICE_KEY")
 
+# Note bodies used by the multi-note tests below. Kept as module constants so
+# the escapes live in one place.
+GOOD_NOTE = "---\ntitle: Good\n---\n\nA body long enough to chunk.\n"
+MALFORMED_NOTE = "---\ntitle: [unclosed\n---\n\nbody\n"
+SHARED_ID_NOTE = "---\nid: shared-id\n---\n\nA body long enough to chunk.\n"
+
+
 
 @pytest.fixture
 def clean_env(monkeypatch, tmp_path):
@@ -305,8 +312,57 @@ def test_each_requested_note_is_named_in_the_load_notes(vault_path):
 
 
 def test_one_bad_path_among_several_fails_the_run_rather_than_half_ingesting(vault_path):
+    # A path that does not resolve is a caller defect: the enqueue validated
+    # these before spawning, so a bad one must be loud rather than shrugged off.
     with pytest.raises(SourceError, match="does not exist"):
         load_vault_notes(vault_path, ["notes/rag-design.md", "notes/gone.md"])
+
+
+def test_one_unreadable_note_among_several_is_a_skip_not_a_dead_run(vault_path, tmp_path):
+    """A note that will not parse is one skipped note, exactly as in a full walk.
+
+    The vault is on OneDrive. If the sync engine locks one note, or a note's
+    YAML is malformed, losing the other notes of the batch would be worse than
+    the one-note-per-spawn behaviour this replaced.
+    """
+    vault = tmp_path / "vault"
+    (vault / "notes").mkdir(parents=True)
+    (vault / "notes" / "good.md").write_text(GOOD_NOTE, encoding="utf-8")
+    (vault / "notes" / "bad.md").write_text(MALFORMED_NOTE, encoding="utf-8")
+
+    loaded = load_vault_notes(vault, ["notes/bad.md", "notes/good.md"])
+
+    assert [d.external_id for d in loaded.documents] == ["notes/good.md"]
+    assert len(loaded.skipped) == 1
+    assert loaded.skipped[0].external_id == "notes/bad.md"
+    assert "YAML" in loaded.skipped[0].reason
+
+
+def test_a_full_walk_and_a_named_run_skip_a_malformed_note_the_same_way(tmp_path):
+    from ingest.loaders import load_vault
+
+    vault = tmp_path / "vault"
+    (vault / "notes").mkdir(parents=True)
+    (vault / "notes" / "bad.md").write_text(MALFORMED_NOTE, encoding="utf-8")
+
+    walked = load_vault(vault).skipped
+    named = load_vault_notes(vault, ["notes/bad.md"]).skipped
+
+    assert [(r.external_id, r.reason) for r in walked] == [
+        (r.external_id, r.reason) for r in named
+    ]
+
+
+def test_two_named_notes_claiming_one_id_refuse_the_second(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "notes").mkdir(parents=True)
+    for name in ("one.md", "two.md"):
+        (vault / "notes" / name).write_text(SHARED_ID_NOTE, encoding="utf-8")
+
+    loaded = load_vault_notes(vault, ["notes/one.md", "notes/two.md"])
+
+    assert len(loaded.documents) == 1
+    assert "duplicate external_id" in loaded.skipped[0].reason
 
 
 def test_an_opt_out_among_several_is_a_skip_and_the_rest_still_load(vault_path):
