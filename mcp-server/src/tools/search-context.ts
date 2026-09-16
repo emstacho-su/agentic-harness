@@ -8,7 +8,12 @@
 
 import { z } from 'zod';
 import type { Config } from '../config.js';
-import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID } from '../config.js';
+import {
+  DEFAULT_INCLUDE_SUPERSEDED,
+  EMBEDDING_DIMENSIONS,
+  EMBEDDING_MODEL_ID,
+} from '../config.js';
+import { buildFilterMetadata } from './filter-metadata.js';
 import type { CollectionCount, RagClient } from '../db/types.js';
 import type { Embedder } from '../embedder.js';
 import { assertDimensions } from '../embedder.js';
@@ -30,9 +35,11 @@ export interface ToolDeps {
 }
 
 export const SEARCH_CONTEXT_DESCRIPTION = [
-  'Search the shared knowledge store (Obsidian vault notes + migrated agent memory, tagged by project or class) for context relevant to a question.',
+  'Search the shared knowledge store (Obsidian vault notes, captured session histories and migrated agent memory, tagged by project or class) for context relevant to a question.',
   'Use this before answering anything that depends on past decisions, project history, or the user\'s own notes.',
   `Hybrid retrieval: the query is embedded locally with ${EMBEDDING_MODEL_ID} (${EMBEDDING_DIMENSIONS} dims) and simultaneously run through Postgres full-text search; the two ranked lists are fused with Reciprocal Rank Fusion.`,
+  'Narrow with `source` and `collection`, or — for captured sessions — with `repo`, `phase` and `tags`, which match the session note\'s own frontmatter and are combined with AND.',
+  `Superseded notes (the earlier half of a resumed session) are excluded unless \`include_superseded\` is true; the default is ${DEFAULT_INCLUDE_SUPERSEDED}.`,
   'Results carry a real cosine `similarity` — judge relevance by that. An empty result is a valid answer meaning the store holds nothing on the topic.',
   'Follow up with get_document to read a full document.',
 ].join(' ');
@@ -58,13 +65,25 @@ export async function handleSearchContext(deps: ToolDeps, rawArgs: unknown): Pro
     );
   }
 
-  const { query, limit, source, collection, min_similarity: minSimilarityArg } = parsed.data;
+  const {
+    query,
+    limit,
+    source,
+    collection,
+    min_similarity: minSimilarityArg,
+    repo,
+    phase,
+    tags,
+    include_superseded: includeSupersededArg,
+  } = parsed.data;
   const { search: searchConfig } = deps.config;
 
   const matchCount = Math.min(limit ?? searchConfig.defaultMatchCount, searchConfig.maxMatchCount);
   const filterSource = source ?? null;
   const filterCollection = collection ?? null;
   const minSimilarity = minSimilarityArg ?? searchConfig.minSimilarity;
+  const filterMetadata = buildFilterMetadata({ repo, phase, tags });
+  const includeSuperseded = includeSupersededArg ?? DEFAULT_INCLUDE_SUPERSEDED;
 
   const context = {
     query,
@@ -72,6 +91,8 @@ export async function handleSearchContext(deps: ToolDeps, rawArgs: unknown): Pro
     collection: filterCollection,
     matchCount,
     minSimilarity,
+    filterMetadata,
+    includeSuperseded,
   };
 
   try {
@@ -98,6 +119,8 @@ export async function handleSearchContext(deps: ToolDeps, rawArgs: unknown): Pro
       rrfK: searchConfig.rrfK,
       maxPerDocument: searchConfig.maxPerDocument,
       minSimilarity,
+      filterMetadata,
+      includeSuperseded,
     });
 
     if (rows.length === 0) {

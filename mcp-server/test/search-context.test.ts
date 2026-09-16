@@ -193,6 +193,218 @@ describe('search_context — retrieval', () => {
   });
 });
 
+describe('search_context — session frontmatter filters', () => {
+  const sessionRow = (overrides: Record<string, unknown> = {}, row: Partial<typeof makeRow> = {}) =>
+    makeRow({
+      doc_source: 'obsidian',
+      doc_collection: 'bb2dash',
+      doc_metadata: {
+        type: 'session',
+        repo: 'emstacho-su/bb2dash',
+        phase: 'phase-7',
+        status: 'concluded',
+        tags: ['retrieval', 'review'],
+        ...overrides,
+      },
+      ...(row as object),
+    });
+
+  it('sends no metadata filter when none of the three is given', async () => {
+    const rag = new FakeRagClient([makeRow()]);
+    await handleSearchContext(deps({ rag }), { query: 'x' });
+    expect(rag.searchCalls[0]?.filterMetadata).toBeNull();
+  });
+
+  it('builds a contains-match from repo', async () => {
+    const rag = new FakeRagClient([sessionRow()]);
+    await handleSearchContext(deps({ rag }), { query: 'x', repo: 'emstacho-su/bb2dash' });
+    expect(rag.searchCalls[0]?.filterMetadata).toEqual({ repo: 'emstacho-su/bb2dash' });
+  });
+
+  it('builds a contains-match from phase', async () => {
+    const rag = new FakeRagClient([sessionRow()]);
+    await handleSearchContext(deps({ rag }), { query: 'x', phase: 'phase-7' });
+    expect(rag.searchCalls[0]?.filterMetadata).toEqual({ phase: 'phase-7' });
+  });
+
+  it('builds a contains-match from tags', async () => {
+    const rag = new FakeRagClient([sessionRow()]);
+    await handleSearchContext(deps({ rag }), { query: 'x', tags: ['review'] });
+    expect(rag.searchCalls[0]?.filterMetadata).toEqual({ tags: ['review'] });
+  });
+
+  it('merges repo, phase and tags into one object', async () => {
+    const rag = new FakeRagClient([sessionRow()]);
+    await handleSearchContext(deps({ rag }), {
+      query: 'x',
+      repo: 'emstacho-su/bb2dash',
+      phase: 'phase-7',
+      tags: ['review', 'retrieval'],
+    });
+
+    expect(rag.searchCalls[0]?.filterMetadata).toEqual({
+      repo: 'emstacho-su/bb2dash',
+      phase: 'phase-7',
+      tags: ['review', 'retrieval'],
+    });
+  });
+
+  it('returns the matching session and drops the rest', async () => {
+    const rag = new FakeRagClient([
+      sessionRow({}, { chunk_id: 1, doc_external: 'session-pm', doc_title: 'PM session' }),
+      sessionRow(
+        { repo: 'emstacho-su/agentic-harness', phase: 'phase-10' },
+        { chunk_id: 2, doc_external: 'session-other', doc_title: 'Other repo' },
+      ),
+    ]);
+
+    const result = await handleSearchContext(deps({ rag }), {
+      query: 'matched passage snippets',
+      repo: 'emstacho-su/bb2dash',
+      phase: 'phase-7',
+    });
+
+    const text = textOf(result);
+    expect(text).toContain('session-pm');
+    expect(text).not.toContain('session-other');
+    expect(text).toContain('repo "emstacho-su/bb2dash"');
+    expect(text).toContain('phase "phase-7"');
+  });
+
+  it('carries parent_session through to the caller — the acceptance query shape', async () => {
+    const rag = new FakeRagClient([
+      sessionRow({ parent_session: null }, { chunk_id: 1, doc_external: 'session-pm' }),
+      sessionRow(
+        { parent_session: 'session-pm' },
+        { chunk_id: 2, doc_external: 'session-w1' },
+      ),
+      sessionRow(
+        { parent_session: 'session-pm' },
+        { chunk_id: 3, doc_external: 'session-w2' },
+      ),
+    ]);
+
+    const result = await handleSearchContext(deps({ rag }), {
+      query: 'matched passage snippets',
+      repo: 'emstacho-su/bb2dash',
+      phase: 'phase-7',
+    });
+
+    const text = textOf(result);
+    expect(text).toContain('3 results');
+    for (const id of ['session-pm', 'session-w1', 'session-w2']) expect(text).toContain(id);
+    expect(text).toContain('parent_session');
+  });
+
+  it('ANDs the tags: a document missing one of them does not match', async () => {
+    const rag = new FakeRagClient([sessionRow({ tags: ['retrieval'] })]);
+    const result = await handleSearchContext(deps({ rag }), {
+      query: 'x',
+      tags: ['retrieval', 'review'],
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(textOf(result)).toContain('Nothing relevant found');
+  });
+
+  it('explains the frontmatter filters when they emptied the result', async () => {
+    const rag = new FakeRagClient([]);
+    const result = await handleSearchContext(deps({ rag }), { query: 'x', repo: 'owner/nope' });
+
+    expect(result.isError).toBeUndefined();
+    expect(textOf(result)).toContain('ANDed');
+    expect(textOf(result)).toContain('Drop the filters');
+  });
+
+  for (const [label, args] of [
+    ['an empty repo', { repo: '   ' }],
+    ['an empty phase', { phase: '' }],
+    ['an empty tag', { tags: [''] }],
+    ['an empty tags array', { tags: [] }],
+    ['a non-array tags value', { tags: 'review' }],
+    ['a numeric tag', { tags: [6] }],
+    ['a numeric repo', { repo: 6 }],
+  ] as Array<[string, Record<string, unknown>]>) {
+    it(`rejects ${label}`, async () => {
+      const result = await handleSearchContext(deps(), { query: 'x', ...args });
+      expect(result.isError).toBe(true);
+    });
+  }
+
+  it('rejects more tags than the cap', async () => {
+    const tags = Array.from({ length: 11 }, (_unused, index) => `tag-${index}`);
+    const result = await handleSearchContext(deps(), { query: 'x', tags });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('at most 10');
+  });
+
+  it('rejects a repo longer than the cap', async () => {
+    const result = await handleSearchContext(deps(), { query: 'x', repo: 'a'.repeat(257) });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('repo must be at most 256 characters');
+  });
+});
+
+describe('search_context — superseded notes', () => {
+  const concluded = makeRow({
+    chunk_id: 1,
+    doc_external: 'session-current',
+    doc_metadata: { type: 'session', repo: 'emstacho-su/bb2dash', status: 'concluded' },
+  });
+  const superseded = makeRow({
+    chunk_id: 2,
+    doc_external: 'session-earlier',
+    doc_metadata: { type: 'session', repo: 'emstacho-su/bb2dash', status: 'superseded' },
+  });
+
+  it('excludes superseded documents by default', async () => {
+    const rag = new FakeRagClient([concluded, superseded]);
+    const result = await handleSearchContext(deps({ rag }), { query: 'x' });
+
+    expect(rag.searchCalls[0]?.includeSuperseded).toBe(false);
+    expect(textOf(result)).toContain('session-current');
+    expect(textOf(result)).not.toContain('session-earlier');
+  });
+
+  it('two calls differing only in include_superseded return different counts', async () => {
+    const rows = [concluded, superseded];
+
+    const excluded = new FakeRagClient([...rows]);
+    const withoutFlag = await handleSearchContext(deps({ rag: excluded }), { query: 'resume' });
+
+    const included = new FakeRagClient([...rows]);
+    const withFlag = await handleSearchContext(deps({ rag: included }), {
+      query: 'resume',
+      include_superseded: true,
+    });
+
+    expect(textOf(withoutFlag)).toContain('1 result for');
+    expect(textOf(withFlag)).toContain('2 results for');
+    expect(excluded.searchCalls[0]?.includeSuperseded).toBe(false);
+    expect(included.searchCalls[0]?.includeSuperseded).toBe(true);
+  });
+
+  it('says so when superseded notes were held back from an empty result', async () => {
+    const result = await handleSearchContext(deps({ rag: new FakeRagClient([]) }), { query: 'x' });
+    expect(textOf(result)).toContain('include_superseded: true');
+  });
+
+  it('labels the scope when superseded notes were included', async () => {
+    const rag = new FakeRagClient([concluded]);
+    const result = await handleSearchContext(deps({ rag }), {
+      query: 'x',
+      include_superseded: true,
+    });
+    expect(textOf(result)).toContain('superseded notes included');
+  });
+
+  it('rejects a non-boolean include_superseded', async () => {
+    const result = await handleSearchContext(deps(), { query: 'x', include_superseded: 'yes' });
+    expect(result.isError).toBe(true);
+  });
+});
+
 describe('search_context — empty results are a valid answer', () => {
   it('returns a non-error explanation when the floor excludes everything', async () => {
     const result = await handleSearchContext(deps({ rag: new FakeRagClient([]) }), {
