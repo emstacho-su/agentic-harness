@@ -140,7 +140,7 @@ Constraints and indexes that carry real weight:
 | --- | --- |
 | `unique (source, external_id)` on documents | Makes re-ingestion idempotent. The same vault note always lands on the same row. |
 | `unique (document_id, chunk_index)` on chunks | Chunk N of document D is one row, so re-chunking overwrites rather than duplicates. |
-| `content_hash` + btree index | Lets ingestion skip a document whose bytes have not changed. See [ingestion.md](./ingestion.md). |
+| `content_hash` + btree index | Lets ingestion skip a document whose body bytes have not changed; a frontmatter-only edit still refreshes `title` and `metadata` without re-embedding. See [ingestion.md](./ingestion.md). |
 | btree on `collection` | The project/class filter is an index probe, not a scan. |
 | HNSW on `embedding`, `vector_cosine_ops` | Approximate nearest-neighbour search. See [embeddings.md](./embeddings.md). |
 | GIN on `tsv` | Full-text search. `tsv` is a stored generated column, so it can never fall out of sync with `content`. |

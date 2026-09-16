@@ -304,3 +304,39 @@ def test_check_env_reports_the_ca_cert_path_state(monkeypatch, clean_env, capsys
     out = capsys.readouterr().out
     assert "DATABASE_CA_CERT" in out
     assert "verify-full" in out
+
+
+# --------------------------------------------------------------------------
+# reporting
+# --------------------------------------------------------------------------
+
+
+def test_the_summary_explains_what_a_metadata_update_did(capsys):
+    from ingest.cli import _report_stats
+    from ingest.pipeline import Action, DocumentOutcome, IngestStats
+
+    stats = IngestStats()
+    stats.record(DocumentOutcome("notes/a.md", Action.METADATA_UPDATED))
+    stats.record(DocumentOutcome("notes/b.md", Action.METADATA_UPDATED))
+    stats.record(DocumentOutcome("notes/c.md", Action.UNCHANGED))
+
+    _report_stats(stats, dry_run=False)
+    out = capsys.readouterr().out
+
+    assert "2  metadata-updated" in out
+    assert "no re-chunking, no embedding" in out
+    assert "chunks written: 0" in out
+
+
+def test_a_dry_run_says_it_would_refresh_metadata(capsys):
+    from ingest.cli import _report_stats
+    from ingest.pipeline import Action, DocumentOutcome, IngestStats
+
+    stats = IngestStats()
+    stats.record(DocumentOutcome("notes/a.md", Action.PLANNED_METADATA))
+
+    _report_stats(stats, dry_run=True)
+    out = capsys.readouterr().out
+
+    assert "would-update-metadata" in out
+    assert "would refresh" in out

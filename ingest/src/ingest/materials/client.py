@@ -25,6 +25,11 @@ log = logging.getLogger(__name__)
 # or the wrong thing. Pin it.
 BB2DASH_PROJECT_REF = "goultdzqcavefcgnifdy"
 SUPABASE_HOST_SUFFIX = ".supabase.co"
+REQUIRED_SCHEME = "https"
+
+# The only root this exporter ever requests. Built from the constants above, so
+# whatever shape SUPABASE_URL has, nothing from it is interpolated into the URL.
+BB2DASH_ROOT = f"{REQUIRED_SCHEME}://{BB2DASH_PROJECT_REF}{SUPABASE_HOST_SUFFIX}"
 
 # One request shape: files with their text units embedded via the FK.
 FILE_COLUMNS = (
@@ -44,17 +49,58 @@ Opener = Callable[..., Any]
 
 
 def assert_bb2dash_url(base_url: str | None) -> str:
-    """Refuse any Supabase URL that is not the bb2dash project."""
+    """Check ``SUPABASE_URL`` names the bb2dash project, and return the pinned root.
+
+    Only the *scheme* and the *hostname* of the supplied URL are compared. What
+    comes back is :data:`BB2DASH_ROOT`, assembled from the constants above — the
+    caller's string is never returned. Returning it meant a path suffix
+    (``.../rest/v1``) or a non-default port survived the check and was then
+    interpolated into every request URL, because the host matched and nothing
+    looked at the rest.
+    """
     if not base_url or not base_url.strip():
         raise ConfigError("SUPABASE_URL is missing; pass the bb2dash .env with --env-file")
-    host = urllib.parse.urlsplit(base_url.strip()).hostname or ""
+    parts = urllib.parse.urlsplit(base_url.strip())
+    if parts.scheme != REQUIRED_SCHEME:
+        # The service-role key travels in a header; anything but TLS would send
+        # it in cleartext, and a missing scheme parses the host as a path.
+        raise ConfigError(
+            f"SUPABASE_URL must start with {REQUIRED_SCHEME}://, got "
+            f"{parts.scheme or 'no scheme'}. The bb2dash key is only ever sent over TLS."
+        )
+    # urlsplit already lowercases nothing but the scheme; hostname is lowercased
+    # by urllib, and a trailing-dot FQDN is kept, so it fails the comparison.
+    host = parts.hostname or ""
     expected = f"{BB2DASH_PROJECT_REF}{SUPABASE_HOST_SUFFIX}"
     if host != expected:
         raise ConfigError(
             f"SUPABASE_URL host is '{host}', not the bb2dash project ({expected}). "
             "This exporter reads class materials from bb2dash only."
         )
-    return base_url.strip().rstrip("/")
+    if _has_extras(parts):
+        # Not fatal — the host is right — but say so rather than dropping it
+        # silently, because the operator wrote it for a reason. The URL is not
+        # echoed: it may carry a query string, and this exporter never logs one.
+        log.warning(
+            "SUPABASE_URL carries a port, path or query; requests use %s only.",
+            BB2DASH_ROOT,
+        )
+    return BB2DASH_ROOT
+
+
+def _has_extras(parts: urllib.parse.SplitResult) -> bool:
+    """Does the URL carry anything beyond scheme and host?
+
+    ``SplitResult.port`` parses lazily and raises ``ValueError`` on a port that
+    is not a number or is out of range — an untyped traceback out of a function
+    whose whole contract is to raise :class:`ConfigError`. A port that cannot be
+    parsed is certainly an extra, so it answers the question either way.
+    """
+    try:
+        has_port = parts.port is not None
+    except ValueError:
+        has_port = True
+    return has_port or bool(parts.path.strip("/")) or bool(parts.query) or bool(parts.fragment)
 
 
 def fetch_materials(
@@ -139,9 +185,12 @@ def validate_row(row: Any) -> dict[str, Any]:
         raise SourceError(f"file row missing {missing}")
     if not isinstance(row["id"], int) or isinstance(row["id"], bool):
         raise SourceError(f"file id must be an int, got {row['id']!r}")
-    for name in ("file_name", "course_id"):
-        if not isinstance(row[name], str) or not row[name].strip():
-            raise SourceError(f"file {row['id']}: {name} must be a non-empty string")
+    if not isinstance(row["file_name"], str) or not row["file_name"].strip():
+        raise SourceError(f"file {row['id']}: file_name must be a non-empty string")
+    # course_id is nullable in bb_files: the classifier fills it in after capture.
+    # A null here is a planning decision (skip), not a malformed row.
+    if row["course_id"] is not None and not isinstance(row["course_id"], str):
+        raise SourceError(f"file {row['id']}: course_id must be a string or null")
     units = row["bb_file_text"]
     if not isinstance(units, list):
         raise SourceError(f"file {row['id']}: bb_file_text must be a list")

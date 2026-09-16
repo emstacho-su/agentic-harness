@@ -207,7 +207,7 @@ stream exists to fix.
 
 ## Tests
 
-`npm test` runs 163 tests with no dependencies and no network:
+`npm test` runs 223 tests with no dependencies and no network:
 
 | File | What it holds |
 | --- | --- |
@@ -217,13 +217,13 @@ stream exists to fix.
 | `budget.test.mjs` | < 1,200 ms over 18 MB, with the real `git log` |
 | `migrate.test.mjs` | the migration, its dry run, and its refusals |
 | `tags.test.mjs` | every tag is in `docs/tags.md`, or exactly `unclassified` |
-| `hook-process.test.mjs` | the real process: exit 0, a log line, the W-H2 seam |
+| `hook-process.test.mjs` | the real process: exit 0, a log line, a live enqueue, the W-H2 seam |
 | `spawn.test.mjs` | `git` and `gh` never resolve against a directory a repository controls |
 | `subagent.test.mjs` | a worker's note, and the parent link in both event orders |
 | `settings.test.mjs` | the settings merge keeps every key and hook it does not own |
 | `unc.test.mjs` | no path that resolves onto another host is ever touched |
 | `install.test.mjs` | the deploy payload is exactly the hook's transitive imports |
-| `enqueue-ingest.test.mjs` | the detached `ingest --only` start: argv array, absolute `uv`, kill switch, never throws |
+| `enqueue-ingest.test.mjs` | the detached `ingest --only` start: argv array, several notes in one spawn, absolute `uv`, kill switch, never throws |
 
 The golden notes are approval tests. When one changes, read the diff: it is a
 change to what `ingest` stores and what retrieval can filter on.
@@ -242,9 +242,39 @@ SessionEnd
   └─ session-capture.mjs writes vault/projects/<c>/sessions/<id>.md
        └─ enqueueIngest()  ~10 ms
             └─ detached: uv --directory <project> run ingest
-                          --source obsidian --path <vault> --only <note>
+                          --source obsidian --path <vault>
+                          --only <note> [--only <note> …]
                  └─ stdout + stderr -> ~/.claude/hooks/ingest-on-capture.log
 ```
+
+**Every note the capture touched, in one process.** A capture rarely changes
+just one file: a resume rewrites the note it supersedes (`status: superseded`),
+and a `SubagentStop` rewrites its parent's `child_sessions`. Both of those are
+frontmatter-only edits, which nothing else would ever carry into the store. The
+outcome therefore carries `touchedPaths`, and `--only` is repeatable on the
+ingest side, so all of them go to one child — each ingest process loads a
+130 MB embedding model, and one process per note would pay that per note.
+
+**A note that did not change is not enqueued.** `persist` compares the rendered
+text with what is on disk and skips a write that would change nothing, leaving
+`touchedPaths` empty; the enqueue then logs `no note changed on disk` and
+spawns nothing. This matters because `SubagentStop` fires at *every* stop point
+of a multi-turn worker, not once at the end — nine firings for one worker is
+normal — and a re-render with nothing new in the transcript is byte-identical.
+When the transcript *has* grown, the note really is different and the ingest
+really is needed, so it still runs.
+
+Two costs this does not solve, both bounded by the nightly reconcile:
+
+- N workers stopping at once still means N detached ingest processes, each
+  loading its own copy of the model. The enqueue batches within one hook
+  invocation, not across concurrent ones.
+- A capture that runs past its deadline skips the enqueue (rule 1), and if the
+  *next* capture then re-renders the same bytes there is nothing new to enqueue,
+  so that note waits for the nightly run. The hook has no memory across
+  processes, so it cannot know the store never saw it. This is the same fallback
+  every other enqueue refusal relies on — a missing `uv`, a missing project, the
+  kill switch — and the log says which one happened.
 
 Three properties make that safe to do on session exit:
 
@@ -306,39 +336,20 @@ deleted one would fail quietly every night.
 The child is spawned with `HARNESS_INGEST_ON_CAPTURE=0` in its own environment,
 so a hook firing inside the ingest process can never start a second one.
 
-### Wiring it to the hook
+### Where the hook calls it
 
-`session-capture.mjs` changes in exactly two places — an import and one call
-placed immediately after the note is written successfully:
-
-```js
-import { enqueueIngest } from './lib/enqueue-ingest.mjs';
-```
-
-```js
-  enqueueIngest({ notePath: outcome.notePath, vaultRoot: outcome.vaultRoot, log });
-```
-
-They go in the `SEAM` block W-H1 marked for exactly this, after the
-`if (!outcome.written)` early return and before the final `log(...)`. The call
-satisfies the seam's three conditions: it does not await, it cannot throw, and
-it leaves `log(...)` as the last statement in `main()`.
-
-[session-capture-enqueue.md](./session-capture-enqueue.md) has the exact
-placement and why it is written down rather than applied on this branch. The
-import is relative to the hook file, so it resolves both in this repo
-(`hooks/lib/enqueue-ingest.mjs`) and at the deployed path
-(`~/.claude/hooks/lib/enqueue-ingest.mjs`).
+`session-capture.mjs` imports `enqueueIngest` and calls it once, in `main()`,
+immediately after the note is written successfully and before the final
+`log(...)` line. The call does not await and cannot throw, and it sits behind
+`if (Date.now() < DEADLINE_AT)` like every other optional step — a session
+already over budget logs `ingest-enqueue skipped: over budget` and leaves the
+note to the nightly reconcile. `hook-process.test.mjs` counts the call sites
+rather than merely finding one, so a second call added anywhere fails the test.
 
 ### Deploying
 
-`node hooks/install.mjs` (W-H1's installer) copies the whole `hooks/` tree to
-`~/.claude/hooks/`, this library included. To place just this file:
-
-```bash
-mkdir -p "C:/Users/estac/.claude/hooks/lib"
-cp hooks/lib/enqueue-ingest.mjs "C:/Users/estac/.claude/hooks/lib/enqueue-ingest.mjs"
-```
+`node hooks/install.mjs` copies this library with the rest of the hook tree to
+`~/.claude/hooks/lib/`; there is no separate step.
 
 ### Reading the logs
 
@@ -347,7 +358,21 @@ tail -20 ~/.claude/hooks/session-capture.log      # the hook: note written, enqu
 tail -40 ~/.claude/hooks/ingest-on-capture.log    # the detached run: what it embedded
 ```
 
-`session-capture.log` records one `ingest-enqueue started for <note>` line per
-session, or the reason it did not. `ingest-on-capture.log` holds the ingest
-run's own report — the document count, the chunks written, and any failure. It
-rotates once to `.1` past 256 KB.
+`session-capture.log` records one line per session:
+
+```
+ingest-enqueue spawn requested for projects/bb2dash/sessions/<id>.md (pid=48120)
+```
+
+**"requested", not "started"** — and the wording is the point. All this process
+can know is that the spawn was accepted: a child that fails to start reports it
+through an asynchronous `error` event, and the hook calls `process.exit(0)`
+before the next tick. The one failure it *can* see for itself is a spawn that
+comes back without a `pid`, which is how libuv reports a synchronous
+`CreateProcess` failure; that is logged as `spawn returned no pid`. Everything
+else — including whether the ingest got anywhere — is in the run log. Otherwise
+the line names the reason there was no spawn: the kill switch, a missing `uv` or
+project, a note outside the vault, the deadline, or `no note changed on disk`.
+
+`ingest-on-capture.log` holds the ingest run's own report — the document count,
+the chunks written, and any failure. It rotates once to `.1` past 256 KB.

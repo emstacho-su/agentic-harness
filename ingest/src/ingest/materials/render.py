@@ -107,6 +107,8 @@ def _skip_reason(row: dict[str, Any]) -> str | None:
         return f"text_status is {status}"
     if not row["bb_file_text"]:
         return "no text units"
+    if not (row.get("course_id") or "").strip():
+        return "no course id yet (bb_files.course_id is filled by the classifier)"
     try:
         collection_for_course(row["course_id"])
     except SourceError as exc:

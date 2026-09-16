@@ -49,8 +49,13 @@ import {
 /**
  * Capture one finished session.
  *
+ * `touchedPaths` lists every note this call actually changed on disk, which is
+ * not always just `notePath`: a resume also rewrites the note it supersedes.
+ * It is what gets handed to the ingest, so a note that was rewritten byte for
+ * byte is deliberately absent from it.
+ *
  * @returns {{written: boolean, action: string, skip: string, notePath: string,
- *            vaultRoot: string, detail: string}}
+ *            touchedPaths: string[], vaultRoot: string, detail: string}}
  */
 export function capture({
   input,
@@ -60,7 +65,7 @@ export function capture({
   deadlineAt = startedAtMs + BUDGET_MS,
   runGit = runGitSync,
 }) {
-  const skip = (reason) => ({ written: false, action: 'skip', skip: reason, notePath: '', vaultRoot, detail: '' });
+  const skip = (reason) => ({ written: false, action: 'skip', skip: reason, notePath: '', touchedPaths: [], vaultRoot, detail: '' });
 
   const transcriptPath = resolveTranscript({
     declaredPath: input.transcriptPath,
@@ -169,12 +174,12 @@ function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
   if (current.error) {
     // An unreadable note is a note somebody may have hand-edited into a shape
     // this parser does not know. Refusing to write is the only safe answer.
-    return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, vaultRoot, detail: '' };
+    return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
   }
 
   const plan = planWrite(current.fields, next);
   if (plan.action === ACTION_NOOP) {
-    return { written: false, action: ACTION_NOOP, skip: plan.reason, notePath: targetPath, vaultRoot, detail: '' };
+    return { written: false, action: ACTION_NOOP, skip: plan.reason, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
   }
 
   if (plan.action === ACTION_RESUME) {
@@ -187,7 +192,7 @@ function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
   const merged = { ...context, previousBody: current.body };
   const result = persist(targetPath, renderNote(fields, renderBody(merged, fields)));
   if (!result.ok) {
-    return { written: false, action: 'skip', skip: `write failed (${result.error})`, notePath: targetPath, vaultRoot, detail: '' };
+    return { written: false, action: 'skip', skip: `write failed (${result.error})`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
   }
 
   return {
@@ -195,8 +200,13 @@ function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
     action: plan.action === ACTION_CREATE ? ACTION_CREATE : ACTION_MERGE,
     skip: '',
     notePath: targetPath,
+    // Empty when the re-render came out byte-identical: the note on disk is
+    // already what the store holds, so an ingest would only re-confirm a hash.
+    touchedPaths: result.changed ? [targetPath] : [],
     vaultRoot,
-    detail: `${area}/${collection}/sessions/${path.basename(targetPath)}`,
+    detail:
+      `${area}/${collection}/sessions/${path.basename(targetPath)}` +
+      (result.changed ? '' : ' (identical on disk)'),
   };
 }
 
@@ -207,7 +217,7 @@ function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
  */
 function writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, previous, plan, previousPath, index }) {
   if (index === 0) {
-    return { written: false, action: 'skip', skip: 'resume chain is implausibly long', notePath: '', vaultRoot, detail: '' };
+    return { written: false, action: 'skip', skip: 'resume chain is implausibly long', notePath: '', touchedPaths: [], vaultRoot, detail: '' };
   }
 
   const fields = { ...plan.fields, id: noteId(context.sessionId, index) };
@@ -216,7 +226,7 @@ function writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, pr
 
   const written = persist(targetPath, renderNote(fields, renderBody(resumedContext, fields)));
   if (!written.ok) {
-    return { written: false, action: 'skip', skip: `write failed (${written.error})`, notePath: targetPath, vaultRoot, detail: '' };
+    return { written: false, action: 'skip', skip: `write failed (${written.error})`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
   }
 
   // Only after the successor exists: a crash between the two leaves a complete
@@ -228,6 +238,13 @@ function writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, pr
     action: ACTION_RESUME,
     skip: '',
     notePath: targetPath,
+    // Both notes changed, and both have to be re-ingested: the predecessor's
+    // `status: superseded` is a frontmatter-only edit, which is exactly the
+    // change the store used to miss.
+    touchedPaths: [
+      ...(written.changed ? [targetPath] : []),
+      ...(flipped.ok && flipped.changed ? [previousPath] : []),
+    ],
     vaultRoot,
     detail:
       `${area}/${collection}/sessions/${path.basename(targetPath)} ` +

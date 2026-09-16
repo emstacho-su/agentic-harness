@@ -2,7 +2,7 @@
 
 > **Status: live.** `ingest/` has loaded the full claude-mem export and the
 > vault into `harness-memory`: 1,324 documents and 2,360 chunks across 27
-> collections as of 2026-09-15. 354 tests, run with `uv run pytest`.
+> collections as of 2026-09-15. 413 tests, run with `uv run pytest`.
 
 Ingestion turns source artifacts into rows the retrieval function can rank. It
 runs as a batch job, not a service — you point it at a source and it reconciles
@@ -13,7 +13,7 @@ time from the session-capture hook, and nightly from Task Scheduler.
 cd C:/Users/estac/agentic-harness/ingest
 uv run ingest --source claude-mem --path C:/Users/estac/.claude-archive/2026-09-09/claude-mem-export   # one-time import
 uv run ingest --source obsidian   --path "C:/Users/estac/OneDrive - Syracuse University/vault"      # re-run any time; unchanged notes cost nothing
-uv run ingest --source obsidian   --path "<vault>" --only projects/bb2dash/sessions/<id>.md         # one note, what the hook runs
+uv run ingest --source obsidian   --path "<vault>" --only projects/bb2dash/sessions/<id>.md         # named notes, what the hook runs (repeatable)
 uv run ingest sweep-concluded     --path "<vault>" --dry-run                                        # conclude stale sessions
 uv run ingest --health                                                                              # is the nightly reconcile still running?
 ```
@@ -32,8 +32,11 @@ flowchart TD
     E -->|"no"| F["INSERT rag.documents"]
     E -->|"yes"| G{"stored content_hash<br/>equals new hash?"}
 
-    G -->|"yes — unchanged"| H["SKIP<br/>no chunking<br/>no embedding<br/>no writes"]
+    G -->|"yes — body unchanged"| P{"stored title, collection,<br/>agent, metadata all equal?"}
     G -->|"no — changed"| I["UPDATE rag.documents<br/>trigger bumps updated_at"]
+
+    P -->|"yes"| H["SKIP<br/>no chunking<br/>no embedding<br/>no writes"]
+    P -->|"no — body identical"| Q["UPDATE title, collection,<br/>agent, metadata<br/>chunks untouched, no embedding"]
 
     F --> J["Chunk the body"]
     I --> K["DELETE existing chunks<br/>for this document_id"]
@@ -59,11 +62,66 @@ early as possible whether the expensive step is needed at all.
 time and indexed. On every run:
 
 1. Look up the document by `(source, external_id)` — the unique constraint that
-   makes this a single index probe.
-2. If the stored hash equals the freshly computed hash, **stop**. The chunks in
-   the database are already correct, because they were derived from exactly these
-   bytes. Nothing is re-chunked, nothing is re-embedded, no rows are written.
+   makes this a single index probe. The probe also returns the stored `title`
+   and `metadata`.
+2. If the stored hash equals the freshly computed hash, the chunks in the
+   database are already correct, because they were derived from exactly these
+   bytes. Nothing is re-chunked and nothing is re-embedded. What still gets
+   compared is the frontmatter — see below.
 3. Otherwise re-chunk and re-embed.
+
+### Frontmatter-only changes
+
+The hash is over the **body**, and several things change a note's frontmatter
+and nothing else: a resume flipping `status` to `superseded`, a `child_sessions`
+link added when a subagent stops after its parent, and `sweep-concluded --apply`
+writing `status` and `concluded_at`. All of them used to land behind the
+unchanged short-circuit, so `rag.documents.metadata` stayed as it was until the
+body happened to change — which for a concluded session is never.
+
+So when the body hash matches, every column the upsert writes apart from the
+body and its hash — `title`, `collection`, `agent`, `metadata` — is compared
+with the freshly parsed value (`metadata` as canonical JSON with sorted keys,
+because `jsonb` does not preserve the loader's order). If any differ, the
+document takes the **metadata-only path**: one
+
+```sql
+UPDATE rag.documents
+SET title = %s, collection = %s, agent = %s, metadata = %s::jsonb
+WHERE id = %s
+```
+
+`collection` is in there for a reason. A note with a stable frontmatter `id:`
+that moves from `projects/foo/` to `projects/bar/` keeps its body, so this is
+the only statement that would ever correct it — and `filter_collection` matches
+with `=`, so a stale collection is invisible: the note quietly stops coming back
+for its new project and keeps coming back for its old one.
+
+and nothing else. No chunk is deleted, no chunk is inserted, and the embedder is
+never called — the vectors were derived from a body that did not change, so
+recomputing them would produce the same numbers. The run reports it as its own
+action:
+
+```
+--- ingest complete ---
+    2  metadata-updated
+   14  unchanged
+  chunks written: 0
+  refreshed title/metadata on 2 document(s) whose body was unchanged: no re-chunking, no embedding
+```
+
+`--dry-run` reports the same documents as `would-update-metadata` and writes
+nothing. `--force` skips the comparison entirely and takes the full re-embed
+path, as it does for every other document.
+
+Widening `content_hash` to cover frontmatter would be the other way to catch
+this, and would re-embed all 1,324 documents in the store the first time it ran,
+for no change in what any of them mean.
+
+One cost worth knowing: `metadata._ingest` carries the file's `modified_at` and
+`bytes`, so rewriting a note with identical frontmatter still counts as a
+metadata change. That is one UPDATE — no model work — and it keeps the stored
+metadata honest about the file on disk.
 
 Why this matters in practice: an Obsidian vault re-scan touches every note, but a
 typical editing session changes two or three of them. Without the hash check,
@@ -108,18 +166,30 @@ keepalives, and the re-run picked up exactly where the hashes said it should.
 
 ---
 
-## Single-note runs: `--only`
+## Named-note runs: `--only`
 
 ```bash
 uv run ingest --source obsidian --path "<vault>" --only projects/bb2dash/sessions/<id>.md
+
+# repeatable: every note the capture hook touched, in one process
+uv run ingest --source obsidian --path "<vault>" \
+    --only projects/bb2dash/sessions/<id>.md \
+    --only projects/bb2dash/sessions/<id>--<agent>.md
 ```
 
 A full vault walk reads every note to find the two that changed. That is cheap
 enough nightly and far too slow to hang off the end of a session, so `--only`
-runs the *same* pipeline over exactly one note. The path may be absolute or
-vault-relative; a relative one resolves against the vault, never against the
+runs the *same* pipeline over just the notes it names. The path may be absolute
+or vault-relative; a relative one resolves against the vault, never against the
 process's working directory, because the caller is a background process started
 from wherever the session happened to be.
+
+**The flag is repeatable, and one run means one process.** A `SessionEnd` often
+writes more than one note — a resume rewrites the note it supersedes, a
+`SubagentStop` rewrites its parent's `child_sessions` — and each ingest process
+loads the 130 MB embedding model, so three notes in three processes would pay
+that three times. The same path named twice is loaded once; two notes claiming
+the same frontmatter `id:` are refused exactly as in a full walk.
 
 Four things are refused rather than tolerated, because nobody is watching this
 run's stdout:
@@ -129,10 +199,14 @@ run's stdout:
 | A note that is not inside `--path` | The vault boundary is the whole security model of the flag. `..` and symlinks are resolved before the check. |
 | A missing file | A typo'd path that "succeeded" having done nothing is the worst possible outcome for a background job. |
 | A path the full walk skips (`templates/`, `.obsidian/`) | It would create a row the next `--prune` sweep immediately deletes. |
-| `--only` together with `--prune` | The orphan sweep deletes everything the run did not produce. After a one-note run, that is the entire vault. |
+| `--only` together with `--prune` | The orphan sweep deletes everything the run did not produce. After a named-note run, that is the entire vault. |
 
 `ingest: false` and an empty body are **not** errors. They come back as skips
 with the same wording a full walk would use, and the run exits 0.
+
+One bad path fails the whole run rather than ingesting the rest quietly. The
+enqueue in the hook already drops a path it cannot justify before spawning, so a
+bad one reaching here is a defect worth seeing in the log.
 
 Re-running `--only` on a note that has not changed performs **zero embeddings**:
 it is one hash, one indexed lookup by `(source, external_id)`, and a decision to
@@ -142,8 +216,9 @@ costs a model load and no inference. That is the difference between a second and
 a minute, which is why this is fine behind a detached spawn and would not be
 fine inside the hook.
 
-A `--only` run never refreshes the health timestamp. It reconciled one note, not
-the vault, and health means "the nightly reconcile is still happening".
+A `--only` run never refreshes the health timestamp. It reconciled the notes it
+was given, not the vault, and health means "the nightly reconcile is still
+happening".
 
 ---
 
@@ -277,7 +352,8 @@ idempotent and prevents two notes ever sharing an `id:`.
 The body is one `## Slide N` / `## Page N` / `## Document` section per text
 unit, in unit order, with speaker-note `[notes]` markers left verbatim. Files
 that are superseded, not extracted (`text_status ≠ extracted`), have no text
-units, or carry a course id the folder rule cannot map are reported as skips —
+units, have no course id yet (the classifier fills `course_id` in after
+capture), or carry a course id the folder rule cannot map are reported as skips —
 one odd row never aborts the export. `--course` must be an exact bb2dash id and
 must match at least one file; an empty match is an error, not a quiet no-op.
 Writes are idempotent: a note is rewritten only when its content differs, and
@@ -287,8 +363,8 @@ Why `ingest: false` is mandatory here: bb2dash embeds with **gte-small** and
 harness-memory with **bge-small-en-v1.5**. Both are 384-dim, so embedding the
 same text into both would raise no error — it would just rank confidently
 wrong. Materials are *read* in the vault and *searched* through the `bb2dash`
-MCP server. The exporter refuses any `SUPABASE_URL` whose host is not the
-bb2dash project and reads the bb2dash `.env` directly instead of loading it
+MCP server. The exporter refuses any `SUPABASE_URL` that is not `https://` or whose host is
+not the bb2dash project and reads the bb2dash `.env` directly instead of loading it
 into the process environment, so the harness `.env` can never be picked up by
 mistake. It only ever reads from bb2dash.
 
@@ -407,11 +483,12 @@ A resume that arrives after the note concluded starts a new `<id>-r2.md` naming
 what it continues in `resumed_from` and `supersedes`, and flips the earlier note
 to `superseded`. Nothing is deleted and no id ever changes meaning.
 
-One consequence worth knowing: `content_hash` is computed over the **body**, so
-a change confined to frontmatter would update the note on disk and nothing in
-the store. The fields that matter for retrieval are therefore mirrored into the
-note's `## Session facts` table — a note whose status flips is a new body, and
-the next run notices.
+`content_hash` is computed over the **body**, so a change confined to
+frontmatter does not change the hash. The pipeline compares the stored `title`
+and `metadata` against the parsed ones in that case and issues a metadata-only
+UPDATE — see [Frontmatter-only changes](#frontmatter-only-changes). The fields
+that matter for retrieval are *also* mirrored into the note's `## Session facts`
+table, so they are searchable as text as well as filterable as metadata.
 
 ### Tags
 
@@ -452,7 +529,8 @@ SessionEnd
   └─ session-capture.mjs writes vault/projects/<c>/sessions/<id>.md
        └─ enqueueIngest()                                   9-16 ms
             └─ detached: uv --directory <project> run ingest
-                          --source obsidian --path <vault> --only <note>
+                          --source obsidian --path <vault>
+                          --only <note> [--only <note> ...]
                  └─ stdout + stderr -> ~/.claude/hooks/ingest-on-capture.log
 ```
 
@@ -460,14 +538,41 @@ The child is spawned `detached` and `unref()`ed, with its output going to a file
 rather than a pipe — an unread pipe buffer would tie the parent's lifetime back
 to the child and undo the whole point. The note path is passed as one element of
 an argument array with `shell: false`, never interpolated into a command string.
-`uv` is resolved to an absolute path (or the enqueue refuses), and the project
-is passed with `uv --directory` rather than a spawn `cwd`, because Windows
-resolves a bare command name against the child's working directory before
-`PATH`. The module cannot throw; every refusal returns a reason and writes it to
-`session-capture.log`.
+`uv` is resolved to an absolute path *that exists* (or the enqueue refuses), and
+the project is passed with `uv --directory` rather than a spawn `cwd`, because
+Windows resolves a bare command name against the child's working directory
+before `PATH`. The module cannot throw; every refusal returns a reason and
+writes it to `session-capture.log`. Like every other optional step it is behind
+the hook's deadline check: a session already over budget logs
+`ingest-enqueue skipped: over budget` and leaves the note to the nightly run.
+
+**Every note the capture touched goes to one child.** A capture rarely changes
+one file: a resume rewrites the note it supersedes (`status: superseded`) and a
+`SubagentStop` rewrites its parent's `child_sessions`, both frontmatter-only
+edits that nothing else would carry into the store. The capture returns
+`touchedPaths`, and `--only` is repeatable, so they are embedded by one process
+rather than one process per note — each one loads the 130 MB model.
+
+**A note that re-rendered byte-identically is not enqueued at all.** The write
+is skipped, `touchedPaths` comes back empty and the log says
+`no note changed on disk`. This matters because `SubagentStop` fires at every
+stop point of a multi-turn worker rather than once at the end — nine firings for
+one worker is ordinary — and without the check each one paid for a full ingest
+process to re-confirm a hash. When the worker's transcript *has* grown the note
+genuinely differs and the ingest still runs.
+
+What this does not solve: N workers stopping at the same moment still means N
+detached processes, each loading its own copy of the model. The batching is
+within one hook invocation, not across concurrent ones.
+
+The log line says `spawn requested`, not `started`, because that is all the hook
+can know: a child that fails to start reports it through an asynchronous `error`
+event and the hook calls `process.exit(0)` before the next tick. The one
+synchronous failure it can see is a spawn that returns no `pid`, which is logged
+as such.
 
 ```
-2026-09-15T14:38:02.114Z ingest-enqueue started for projects/agentic-harness/sessions/2026-09-10-92056c02.md
+2026-09-15T14:38:02.114Z ingest-enqueue spawn requested for projects/agentic-harness/sessions/2026-09-10-92056c02.md (pid=48120)
 ```
 
 | Variable | Default | Purpose |
@@ -487,8 +592,7 @@ reboot cost 2.8 s while Windows validated `uv.exe`, which is charged to the
 caller — so the first session ended after a reboot can exit noticeably slower.
 Turning the kill switch off leaves the nightly reconcile to pick the note up.
 
-Full detail, including the two-line change to `session-capture.mjs`, is in
-[../hooks/README.md](../hooks/README.md).
+Full detail is in [../hooks/README.md](../hooks/README.md).
 
 ---
 

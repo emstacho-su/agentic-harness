@@ -51,8 +51,14 @@ import { extractPrompts, extractTools, createAccumulator, readEntries } from './
 /**
  * Capture one finished subagent.
  *
+ * `touchedPaths` lists every note this call actually changed on disk: the
+ * worker's own note, and the parent note when this run added the link to it.
+ * A note that re-rendered byte-identically is absent from it — `SubagentStop`
+ * fires at every stop point of a multi-turn worker, and re-ingesting an
+ * unchanged note costs a whole process and a 130 MB model load to learn nothing.
+ *
  * @returns {{written: boolean, action: string, skip: string, notePath: string,
- *            vaultRoot: string, detail: string}}
+ *            touchedPaths: string[], vaultRoot: string, detail: string}}
  */
 export function captureSubagent({
   input,
@@ -62,7 +68,7 @@ export function captureSubagent({
   deadlineAt = startedAtMs + BUDGET_MS,
   runGit = runGitSync,
 }) {
-  const skip = (reason) => ({ written: false, action: 'skip', skip: reason, notePath: '', vaultRoot, detail: '' });
+  const skip = (reason) => ({ written: false, action: 'skip', skip: reason, notePath: '', touchedPaths: [], vaultRoot, detail: '' });
 
   const agentId = normalizeAgentId(input.agentId);
   if (!agentId) return skip('no agent_id');
@@ -154,7 +160,7 @@ export function captureSubagent({
 
   const current = readNote(targetPath);
   if (current.error) {
-    return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, vaultRoot, detail: '' };
+    return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
   }
 
   // The same merge rule as a session note: lists grow, scalars only improve,
@@ -164,7 +170,7 @@ export function captureSubagent({
   const merged = { ...context, previousBody: current.body };
   const result = persist(targetPath, renderNote(fields, renderBody(merged, fields)));
   if (!result.ok) {
-    return { written: false, action: 'skip', skip: `write failed (${result.error})`, notePath: targetPath, vaultRoot, detail: '' };
+    return { written: false, action: 'skip', skip: `write failed (${result.error})`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
   }
 
   const linked = linkIntoParent({ sessionsDir, sessionId: input.sessionId, childId: fields.id });
@@ -174,10 +180,17 @@ export function captureSubagent({
     action: current.fields ? 'merge' : 'create',
     skip: '',
     notePath: targetPath,
+    // The parent note counts too when this run added the link: `child_sessions`
+    // is frontmatter, so nothing else would ever carry it to the store.
+    touchedPaths: [
+      ...(result.changed ? [targetPath] : []),
+      ...(linked.notePath ? [linked.notePath] : []),
+    ],
     vaultRoot,
     detail:
       `${facts.area}/${facts.collection}/sessions/${path.basename(targetPath)} ` +
-      `agent_type=${agentType || 'unknown'} parent=${linked}`,
+      `agent_type=${agentType || 'unknown'} parent=${linked.status}` +
+      (result.changed ? '' : ' (identical on disk)'),
   };
 }
 
@@ -189,21 +202,30 @@ export function captureSubagent({
  * spawned it — and that is fine: the parent's own `SessionEnd` back-fills the
  * list from the `subagents/` directory. This covers the other order, where the
  * parent note already exists because the session was captured earlier.
+ *
+ * @returns {{status: string, notePath: string}} `notePath` is set only when this
+ *          call actually changed the parent note, so the caller knows whether it
+ *          has to be re-ingested.
  */
 function linkIntoParent({ sessionsDir, sessionId, childId }) {
+  const untouched = (status) => ({ status, notePath: '' });
+
   const parentPath = path.join(sessionsDir, noteFilename(sessionId));
   const parent = readNote(parentPath);
-  if (!parent.fields || parent.error) return parent.error ? 'unreadable' : 'not yet written';
+  if (!parent.fields || parent.error) {
+    return untouched(parent.error ? 'unreadable' : 'not yet written');
+  }
 
   const existing = Array.isArray(parent.fields.child_sessions) ? parent.fields.child_sessions : [];
-  if (existing.includes(childId)) return 'already linked';
+  if (existing.includes(childId)) return untouched('already linked');
 
   const fields = {
     ...parent.fields,
     child_sessions: uniqueCapped([...existing, childId], MAX_CHILD_SESSIONS),
   };
   const written = persist(parentPath, renderNote(fields, parent.body));
-  return written.ok ? 'linked' : 'link failed';
+  if (!written.ok) return untouched('link failed');
+  return { status: 'linked', notePath: written.changed ? parentPath : '' };
 }
 
 /**

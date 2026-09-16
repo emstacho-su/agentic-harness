@@ -35,14 +35,35 @@ export function readNote(notePath) {
   return { fields: parsed.fields, body: parsed.body.replace(/^\n+/, ''), error: '' };
 }
 
-/** Write a note, creating its directory. Never throws. */
+/**
+ * Write a note, creating its directory. Never throws.
+ *
+ * A write whose text is byte-identical to what is already on disk is skipped
+ * and reported as `changed: false`. `SubagentStop` fires every time a worker
+ * stops, which for a multi-turn worker is many times per session, and each
+ * capture re-renders the same note; a rewrite that changes nothing still costs
+ * a detached ingest process that loads a 130 MB embedding model to conclude the
+ * hash is unchanged. One small read is much cheaper than that.
+ *
+ * @returns {{ok: boolean, changed: boolean, error: string}}
+ */
 export function persist(notePath, text) {
   try {
+    if (isIdentical(notePath, text)) return { ok: true, changed: false, error: '' };
     fs.mkdirSync(path.dirname(notePath), { recursive: true });
     fs.writeFileSync(notePath, text, 'utf8');
-    return { ok: true, error: '' };
+    return { ok: true, changed: true, error: '' };
   } catch (err) {
-    return { ok: false, error: err?.code || err?.message || 'unknown' };
+    return { ok: false, changed: false, error: err?.code || err?.message || 'unknown' };
+  }
+}
+
+/** Is that exact text already the file's contents? An absent file is not. */
+function isIdentical(notePath, text) {
+  try {
+    return fs.readFileSync(notePath, 'utf8') === text;
+  } catch {
+    return false;
   }
 }
 

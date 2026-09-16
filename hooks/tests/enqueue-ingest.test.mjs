@@ -23,6 +23,8 @@ import {
   resolveProjectDir,
   resolveRunLog,
   resolveUv,
+  ingestEntry,
+  WINDOWLESS_ENTRY,
 } from '../lib/enqueue-ingest.mjs';
 
 let workspace;
@@ -30,13 +32,26 @@ let vault;
 let note;
 let projectDir;
 let runLog;
+let uvBin;
 let lines;
 
-function recordingSpawn() {
+/** The name a real `uv` has on this platform. */
+const UV_EXECUTABLE = process.platform === 'win32' ? 'uv.exe' : 'uv';
+
+/**
+ * A stand-in for ChildProcess. `pid` is part of it because the enqueue reads
+ * `pid` to tell a spawn that was accepted from one that failed synchronously,
+ * and a fake without it would hide exactly that check.
+ */
+function recordingSpawn(overrides = {}) {
+  // `'pid' in overrides`, not a default parameter: a default would turn an
+  // explicit `pid: undefined` — the shape this is here to model — back into a
+  // number, and the test would pass without exercising anything.
+  const pid = 'pid' in overrides ? overrides.pid : 4242;
   const calls = [];
   const spawn = (command, args, options) => {
     calls.push({ command, args, options });
-    return { unref() { this.unreffed = true; }, on() { return this; }, unreffed: false };
+    return { pid, unref() { this.unreffed = true; }, on() { return this; }, unreffed: false };
   };
   spawn.calls = calls;
   return spawn;
@@ -45,7 +60,7 @@ function recordingSpawn() {
 function baseEnv(overrides = {}) {
   return {
     [ENV_PROJECT_DIR]: projectDir,
-    [ENV_UV_BIN]: 'C:/tools/uv.exe',
+    [ENV_UV_BIN]: uvBin,
     [ENV_RUN_LOG]: runLog,
     ...overrides,
   };
@@ -55,7 +70,7 @@ function call(overrides = {}) {
   const spawn = overrides.spawn ?? recordingSpawn();
   const result = enqueueIngest({
     vaultRoot: vault,
-    notePath: note,
+    notePaths: [note],
     log: (line) => lines.push(line),
     env: baseEnv(overrides.env),
     spawn,
@@ -71,8 +86,14 @@ beforeEach(() => {
   runLog = path.join(workspace, 'logs', 'ingest-on-capture.log');
   note = path.join(vault, 'projects', 'bb2dash', 'sessions', 'abc.md');
 
+  uvBin = path.join(workspace, 'bin', UV_EXECUTABLE);
+
   fs.mkdirSync(path.dirname(note), { recursive: true });
   fs.mkdirSync(projectDir, { recursive: true });
+  fs.mkdirSync(path.dirname(uvBin), { recursive: true });
+  // A real file: HARNESS_UV_BIN is checked for existence like every other
+  // candidate, so a made-up path is refused rather than spawned.
+  fs.writeFileSync(uvBin, '', 'utf8');
   fs.writeFileSync(note, '---\ntype: session\n---\n\nbody\n', 'utf8');
   lines = [];
 });
@@ -92,12 +113,12 @@ describe('enqueueIngest — the command it builds', () => {
     assert.equal(spawn.calls.length, 1);
 
     const { command, args } = spawn.calls[0];
-    assert.equal(command, path.resolve('C:/tools/uv.exe'));
+    assert.equal(command, path.resolve(uvBin));
     assert.deepEqual(args, [
       '--directory',
       path.resolve(projectDir),
       'run',
-      'ingest',
+      ...ingestEntry(process.platform),
       '--source',
       'obsidian',
       '--path',
@@ -137,7 +158,7 @@ describe('enqueueIngest — the command it builds', () => {
     const spawn = recordingSpawn();
     const result = enqueueIngest({
       vaultRoot: vault,
-      notePath: nasty,
+      notePaths: [nasty],
       log: (line) => lines.push(line),
       env: baseEnv(),
       spawn,
@@ -166,6 +187,18 @@ describe('enqueueIngest — the command it builds', () => {
 });
 
 describe('enqueueIngest — detachment', () => {
+  it('uses the windowless interpreter on Windows and the project script elsewhere', () => {
+    assert.deepEqual(ingestEntry('win32'), [...WINDOWLESS_ENTRY]);
+    assert.deepEqual(ingestEntry('linux'), ['ingest']);
+    assert.deepEqual(ingestEntry('darwin'), ['ingest']);
+
+    const { spawn } = call({ args: { platform: 'win32' } });
+    const argv = spawn.calls[0].args;
+    assert.ok(argv.includes('pythonw'), 'a detached console child would open a visible window');
+    assert.ok(!argv.includes('ingest'), 'the console launcher must not be used on Windows');
+    assert.equal(argv.indexOf('--only'), argv.length - 2, 'the note stays the last argument');
+  });
+
   it('detaches, hides the window and unrefs the child', () => {
     const { spawn } = call();
     const { options } = spawn.calls[0];
@@ -226,7 +259,7 @@ describe('enqueueIngest — input validation at the boundary', () => {
     const spawn = recordingSpawn();
     const result = enqueueIngest({
       vaultRoot: vault,
-      notePath: outside,
+      notePaths: [outside],
       log: (line) => lines.push(line),
       env: baseEnv(),
       spawn,
@@ -241,7 +274,7 @@ describe('enqueueIngest — input validation at the boundary', () => {
     const spawn = recordingSpawn();
     const result = enqueueIngest({
       vaultRoot: vault,
-      notePath: path.join(vault, '..', '..', 'escape.md'),
+      notePaths: [path.join(vault, '..', '..', 'escape.md')],
       log: (line) => lines.push(line),
       env: baseEnv(),
       spawn,
@@ -258,7 +291,7 @@ describe('enqueueIngest — input validation at the boundary', () => {
     const spawn = recordingSpawn();
     const result = enqueueIngest({
       vaultRoot: vault,
-      notePath: json,
+      notePaths: [json],
       log: (line) => lines.push(line),
       env: baseEnv(),
       spawn,
@@ -270,15 +303,17 @@ describe('enqueueIngest — input validation at the boundary', () => {
 
   for (const [label, args] of [
     ['an empty vault root', { vaultRoot: '   ' }],
-    ['an empty note path', { notePath: '' }],
-    ['a non-string note path', { notePath: 42 }],
-    ['a null note path', { notePath: null }],
+    ['an empty note path', { notePaths: [''] }],
+    ['a non-string note path', { notePaths: [42] }],
+    ['a null note path', { notePaths: [null] }],
+    ['a note path that is not an array', { notePaths: 'one/note.md' }],
+    ['no note paths at all', { notePaths: undefined }],
   ]) {
     it(`refuses ${label} without throwing`, () => {
       const spawn = recordingSpawn();
       const result = enqueueIngest({
         vaultRoot: vault,
-        notePath: note,
+        notePaths: [note],
         log: (line) => lines.push(line),
         env: baseEnv(),
         spawn,
@@ -303,6 +338,112 @@ describe('enqueueIngest — input validation at the boundary', () => {
     const result = enqueueIngest();
     assert.equal(result.enqueued, false);
   });
+
+  it('an empty list is nothing to do, not a bad argument', () => {
+    // The capture ran and found the note on disk already byte-identical to what
+    // it would have written. Nothing changed, so there is nothing to ingest.
+    const { result, spawn } = call({ args: { notePaths: [] } });
+
+    assert.equal(result.enqueued, false);
+    assert.equal(result.reason, Reason.NOTHING_TO_DO);
+    assert.equal(spawn.calls.length, 0);
+    assert.ok(lines.some((line) => line.includes('no note changed on disk')));
+  });
+});
+
+describe('enqueueIngest — more than one note in one process', () => {
+  /** A second note beside the first, as a resume or a SubagentStop produces. */
+  function secondNote(name = 'def.md') {
+    const target = path.join(path.dirname(note), name);
+    fs.writeFileSync(target, 'body', 'utf8');
+    return target;
+  }
+
+  it('passes every note as its own --only, in one spawn', () => {
+    const other = secondNote();
+    const { result, spawn } = call({ args: { notePaths: [note, other] } });
+
+    assert.equal(result.enqueued, true);
+    assert.equal(spawn.calls.length, 1, 'one process, so the model loads once');
+    assert.deepEqual(spawn.calls[0].args.slice(-4), [
+      '--only',
+      path.resolve(note),
+      '--only',
+      path.resolve(other),
+    ]);
+  });
+
+  it('names every note in the one log line', () => {
+    const other = secondNote();
+    call({ args: { notePaths: [note, other] } });
+
+    assert.equal(lines.length, 1);
+    assert.ok(lines[0].includes('sessions/abc.md'), lines[0]);
+    assert.ok(lines[0].includes('sessions/def.md'), lines[0]);
+  });
+
+  it('ingests a note named twice only once', () => {
+    const { spawn } = call({ args: { notePaths: [note, note] } });
+
+    const only = spawn.calls[0].args.filter((value) => value === '--only');
+    assert.equal(only.length, 1);
+  });
+
+  it('drops one unusable path without costing the others their ingest', () => {
+    const outside = path.join(workspace, 'elsewhere.md');
+    fs.writeFileSync(outside, 'body', 'utf8');
+
+    const { result, spawn } = call({ args: { notePaths: [outside, note] } });
+
+    assert.equal(result.enqueued, true);
+    assert.deepEqual(spawn.calls[0].args.slice(-2), ['--only', path.resolve(note)]);
+    assert.ok(lines.some((line) => line.includes('outside')), lines.join('\n'));
+  });
+
+  it('says on the success line that something was dropped', () => {
+    // Otherwise a partial enqueue reads exactly like a complete one, and the
+    // refusal sits on an earlier line with nothing tying the two together.
+    const outside = path.join(workspace, 'elsewhere.md');
+    fs.writeFileSync(outside, 'body', 'utf8');
+
+    const { result } = call({ args: { notePaths: [outside, note] } });
+
+    assert.equal(result.dropped, 1);
+    const requested = lines.find((line) => line.includes('spawn requested'));
+    assert.match(requested, /1 dropped \(see above\)/);
+  });
+
+  it('dedupes by the injected platform, not the host it happens to run on', () => {
+    // The module takes `platform` for exactly this reason; reading the global
+    // here meant a win32-pinned call kept a case-sensitive key and would pass
+    // two --only flags for one file.
+    const upper = path.join(path.dirname(note), 'ABC.md');
+    const { spawn } = call({ args: { notePaths: [note, upper], platform: 'win32' } });
+
+    const only = spawn.calls[0].args.filter((value) => value === '--only');
+    assert.equal(only.length, 1, 'win32 treats the two spellings as one file');
+
+    lines.length = 0;
+    const posix = call({ args: { notePaths: [note, upper], platform: 'linux' } });
+    assert.equal(
+      posix.spawn.calls[0].args.filter((value) => value === '--only').length,
+      2,
+      'a case-sensitive filesystem has two files here',
+    );
+  });
+
+  it('refuses with the first reason when no path survives', () => {
+    const outside = path.join(workspace, 'elsewhere.md');
+    const json = path.join(vault, 'data.json');
+    fs.writeFileSync(outside, 'body', 'utf8');
+    fs.writeFileSync(json, '{}', 'utf8');
+
+    const { result, spawn } = call({ args: { notePaths: [outside, json] } });
+
+    assert.equal(result.enqueued, false);
+    assert.equal(result.reason, Reason.OUTSIDE_VAULT);
+    assert.equal(spawn.calls.length, 0);
+  });
 });
 
 describe('enqueueIngest — failure is logged, never thrown', () => {
@@ -313,7 +454,7 @@ describe('enqueueIngest — failure is logged, never thrown', () => {
 
     const result = enqueueIngest({
       vaultRoot: vault,
-      notePath: note,
+      notePaths: [note],
       log: (line) => lines.push(line),
       env: baseEnv(),
       spawn,
@@ -327,7 +468,7 @@ describe('enqueueIngest — failure is logged, never thrown', () => {
   it('releases the run-log descriptor when the spawn throws', () => {
     enqueueIngest({
       vaultRoot: vault,
-      notePath: note,
+      notePaths: [note],
       log: (line) => lines.push(line),
       env: baseEnv(),
       spawn: () => {
@@ -346,7 +487,7 @@ describe('enqueueIngest — failure is logged, never thrown', () => {
   it('survives a logger that throws', () => {
     const result = enqueueIngest({
       vaultRoot: vault,
-      notePath: note,
+      notePaths: [note],
       log: () => {
         throw new Error('log is read-only');
       },
@@ -367,11 +508,35 @@ describe('enqueueIngest — failure is logged, never thrown', () => {
     assert.equal(spawn.calls[0].options.stdio, 'ignore');
   });
 
-  it('logs one line when it does enqueue', () => {
+  it('logs one line when it does enqueue, and claims only that it asked', () => {
+    // "started" was a claim this process cannot make: a child that fails to
+    // start reports it through an asynchronous 'error' event, and the hook
+    // calls process.exit(0) before the next tick ever runs.
     call();
     assert.equal(lines.length, 1);
-    assert.ok(lines[0].startsWith('ingest-enqueue started for'));
+    assert.ok(lines[0].startsWith('ingest-enqueue spawn requested for'), lines[0]);
     assert.ok(lines[0].includes('projects/bb2dash/sessions/abc.md'));
+    assert.match(lines[0], /\(pid=\d+\)$/);
+  });
+
+  it('reports a spawn that came back without a pid', () => {
+    // libuv leaves pid undefined when the process could not be created at all.
+    const { result } = call({ spawn: recordingSpawn({ pid: undefined }) });
+
+    assert.equal(result.enqueued, false);
+    assert.equal(result.reason, Reason.SPAWN_FAILED);
+    assert.ok(lines.some((line) => line.includes('no pid')), lines.join('\n'));
+    assert.ok(!lines.some((line) => line.includes('spawn requested')));
+  });
+
+  it('refuses before spawning when the configured uv is gone', () => {
+    const { result, spawn } = call({
+      env: { [ENV_UV_BIN]: path.join(workspace, 'gone', UV_EXECUTABLE) },
+    });
+
+    assert.equal(result.enqueued, false);
+    assert.equal(result.reason, Reason.NO_UV);
+    assert.equal(spawn.calls.length, 0);
   });
 });
 
@@ -435,7 +600,16 @@ describe('enqueueIngest — resolution without hardcoded paths', () => {
     assert.equal(resolved, null);
   });
 
-  it('honours an explicit uv path', () => {
-    assert.equal(resolveUv({ [ENV_UV_BIN]: 'D:/uv/uv.exe' }), path.resolve('D:/uv/uv.exe'));
+  it('honours an explicit uv path that exists', () => {
+    assert.equal(resolveUv({ [ENV_UV_BIN]: uvBin }), path.resolve(uvBin));
+  });
+
+  it('refuses an explicit uv path that does not exist', () => {
+    // Returned unchecked, a stale override produced a log line claiming an
+    // ingest had started for a spawn that could only ever fail.
+    assert.equal(
+      resolveUv({ [ENV_UV_BIN]: path.join(workspace, 'gone', UV_EXECUTABLE) }),
+      null,
+    );
   });
 });

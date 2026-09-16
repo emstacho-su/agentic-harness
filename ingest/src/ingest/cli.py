@@ -4,6 +4,7 @@
     uv run ingest --source claude-mem --path C:/Users/you/.claude-archive/.../claude-mem-export
     uv run ingest --source obsidian   --path C:/Users/you/vault --dry-run
     uv run ingest --source obsidian   --path C:/Users/you/vault --only projects/x/sessions/y.md
+    uv run ingest --source obsidian   --path C:/Users/you/vault --only a.md --only b.md
     uv run ingest sweep-concluded     --path C:/Users/you/vault [--apply]
     uv run ingest --health
 
@@ -23,7 +24,7 @@ from .config import CHUNKING, EMBEDDING, SOURCE_CLAUDE_MEM, SOURCE_OBSIDIAN, loa
 from .embedding import FastEmbedEmbedder
 from .envfile import load_env_file
 from .errors import IngestError
-from .loaders import LoadedSource, load_claude_mem, load_vault, load_vault_note
+from .loaders import LoadedSource, load_claude_mem, load_vault, load_vault_notes
 from .pipeline import Action, IngestPipeline, IngestStats
 from .prune import PruneResult, prune_orphans
 from .runstate import DEFAULT_MAX_AGE_HOURS, health, state_file
@@ -66,11 +67,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--only",
+        action="append",
         default=None,
         metavar="NOTE",
-        help="obsidian only: ingest exactly this one note instead of walking the "
-        "vault. Absolute or vault-relative; it must be inside --path and must be "
-        "a note a full run would also visit. This is what the SessionEnd hook runs.",
+        help="obsidian only: ingest exactly these notes instead of walking the "
+        "vault. Absolute or vault-relative; each must be inside --path and must "
+        "be a note a full run would also visit. Repeat the flag for more than "
+        "one note; they are ingested by one process, so the embedding model is "
+        "loaded once. This is what the SessionEnd hook runs.",
     )
     parser.add_argument(
         "--no-summaries",
@@ -167,7 +171,10 @@ def _refuse_bad_combination(args: argparse.Namespace) -> str | None:
     if args.prune:
         # The orphan sweep deletes every document the run did not produce. After
         # a one-note run that is the entire vault.
-        return "--only and --prune contradict each other: a single-note run is not a full pass"
+        return (
+            "--only and --prune contradict each other: naming the notes to "
+            "ingest is not a full pass"
+        )
     return None
 
 
@@ -219,7 +226,7 @@ def _run(args: argparse.Namespace) -> int:
 def _load(args: argparse.Namespace, path: Path) -> LoadedSource:
     if args.source == SOURCE_OBSIDIAN:
         if args.only:
-            return load_vault_note(path, args.only)
+            return load_vault_notes(path, args.only)
         return load_vault(path)
     return load_claude_mem(
         path,
@@ -338,6 +345,18 @@ def _report_stats(stats: IngestStats, *, dry_run: bool) -> None:
         print(f"  chunks that would be written: {stats.chunks_planned}")
     else:
         print(f"  chunks written: {stats.chunks_written}")
+
+    # Say what "metadata-updated" means where it is counted, rather than leaving
+    # an unexplained action name in the nightly log.
+    refreshed = stats.count(
+        Action.PLANNED_METADATA if dry_run else Action.METADATA_UPDATED
+    )
+    if refreshed:
+        verb = "would refresh" if dry_run else "refreshed"
+        print(
+            f"  {verb} title/metadata on {refreshed} document(s) whose body was "
+            "unchanged: no re-chunking, no embedding"
+        )
 
     _report_failures(stats)
 

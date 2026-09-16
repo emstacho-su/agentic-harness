@@ -48,6 +48,20 @@ def dumps(value: Any) -> str:
     return json.dumps(json_safe(value), ensure_ascii=False)
 
 
+def canonical(value: Any) -> str:
+    """Stable text for *comparing* two metadata objects.
+
+    Keys are sorted and the separators fixed, so ``{"a": 1, "b": 2}`` and
+    ``{"b": 2, "a": 1}`` compare equal. jsonb does not preserve key order, so a
+    comparison that depended on it would report a difference on every run and
+    rewrite rows that are already correct. This is never what is stored — see
+    :func:`dumps` for that.
+    """
+    return json.dumps(
+        json_safe(value), sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
+
+
 def parse_json_text_column(
     raw: Any, *, field: str, external_id: str, default: Any = None
 ) -> Any:

@@ -197,12 +197,94 @@ def test_unrecognised_course_id_is_a_skip_not_an_abort():
 # --------------------------------------------------------------------------
 
 
+def test_null_course_id_is_a_skip_not_an_abort():
+    # bb_files.course_id is nullable: the classifier fills it in later. One
+    # unclassified file must not abort the export of every other file.
+    rows = [row(id=1), row(id=2, course_id=None), row(id=3, course_id="")]
+    planned = plan_notes(rows)
+    assert [n.file_id for n in planned.notes] == [1]
+    reasons = {s.external_id: s.reason for s in planned.skipped}
+    assert "no course id" in reasons["bb2dash-file-2"]
+    assert "no course id" in reasons["bb2dash-file-3"]
+
+
+def test_validate_row_accepts_a_null_course_id_but_not_a_non_string():
+    assert validate_row(row(course_id=None))["course_id"] is None
+    with pytest.raises(SourceError):
+        validate_row(row(course_id=323))
+
+
+def test_only_https_to_the_bb2dash_project_is_accepted():
+    # A plain-http URL would send the service-role key in cleartext.
+    with pytest.raises(ConfigError, match="https"):
+        assert_bb2dash_url(f"http://{BB2DASH_PROJECT_REF}.supabase.co")
+    with pytest.raises(ConfigError, match="https"):
+        assert_bb2dash_url(f"{BB2DASH_PROJECT_REF}.supabase.co")
+
+
 def test_only_the_bb2dash_project_url_is_accepted():
     assert_bb2dash_url(f"https://{BB2DASH_PROJECT_REF}.supabase.co")
     with pytest.raises(ConfigError):
         assert_bb2dash_url("https://hqkytnyiiuxovnnyixye.supabase.co")  # harness-memory
     with pytest.raises(ConfigError):
         assert_bb2dash_url("")
+
+
+CANONICAL_ROOT = f"https://{BB2DASH_PROJECT_REF}.supabase.co"
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        CANONICAL_ROOT,
+        f"{CANONICAL_ROOT}/",
+        f"{CANONICAL_ROOT}///",
+        f"  {CANONICAL_ROOT}  ",
+        f"{CANONICAL_ROOT}/rest/v1",              # a path suffix would be interpolated
+        f"{CANONICAL_ROOT}/rest/v1/bb_files",
+        f"{CANONICAL_ROOT}:8443",                 # a non-default port
+        f"{CANONICAL_ROOT}:8443/rest/v1",
+        f"{CANONICAL_ROOT}?apikey=leaked",
+        f"{CANONICAL_ROOT}#fragment",
+        f"https://{BB2DASH_PROJECT_REF.upper()}.supabase.co",  # hosts are case-insensitive
+    ],
+)
+def test_the_request_root_is_built_from_the_pinned_constants(supplied):
+    """Whatever shape the env URL has, the root is the pinned project root.
+
+    Returning the caller's string let a path suffix or a port through, and the
+    exporter then built ``<root>/rest/v1/bb_files`` on top of it.
+    """
+    assert assert_bb2dash_url(supplied) == CANONICAL_ROOT
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        f"{CANONICAL_ROOT}:99999",   # out of range
+        f"{CANONICAL_ROOT}:abc",     # not a number
+    ],
+)
+def test_an_unparseable_port_is_a_typed_error_not_a_traceback(supplied):
+    """SplitResult.port parses lazily and raises ValueError, which the CLI's
+    handler does not catch — export-materials would die with a raw traceback
+    instead of the ConfigError this function exists to raise."""
+    assert assert_bb2dash_url(supplied) == CANONICAL_ROOT
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        "https://evil.example.com",
+        f"https://{BB2DASH_PROJECT_REF}.supabase.co.evil.example.com",
+        f"https://evil.example.com/{BB2DASH_PROJECT_REF}.supabase.co",
+        f"https://user:pass@evil.example.com/{BB2DASH_PROJECT_REF}.supabase.co",
+        f"https://{BB2DASH_PROJECT_REF}.supabase.co.",   # trailing-dot FQDN
+    ],
+)
+def test_a_host_that_is_not_the_bb2dash_project_is_refused(supplied):
+    with pytest.raises(ConfigError, match="bb2dash project"):
+        assert_bb2dash_url(supplied)
 
 
 def test_validate_row_rejects_missing_fields():

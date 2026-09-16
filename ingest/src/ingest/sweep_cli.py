@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from datetime import datetime
 
 from .errors import IngestError
 from .sweep import Action, DEFAULT_STALE_AFTER_HOURS, SweepResult, sweep_concluded
@@ -58,7 +59,9 @@ def build_sweep_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_sweep(argv: list[str]) -> int:
+def run_sweep(argv: list[str], *, now: datetime | None = None) -> int:
+    """Run the subcommand. ``now`` is injectable for tests, exactly as on
+    :func:`sweep_concluded`; the CLI always passes the real clock."""
     parser = build_sweep_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -76,7 +79,10 @@ def run_sweep(argv: list[str]) -> int:
 
     try:
         result = sweep_concluded(
-            args.path, stale_after_hours=args.stale_after_hours, apply=args.apply
+            args.path,
+            now=now,
+            stale_after_hours=args.stale_after_hours,
+            apply=args.apply,
         )
     except IngestError as exc:
         print(f"error: {exc}", file=sys.stderr)
