@@ -29,7 +29,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from ..config import DEFAULT_AGENT, SOURCE_OBSIDIAN
 from ..errors import SourceError
@@ -139,30 +139,74 @@ def load_vault(vault_path: str | Path) -> LoadedSource:
 
 
 def load_vault_note(vault_path: str | Path, note_path: str | Path) -> LoadedSource:
-    """Load exactly one note, the way a full walk would load it.
+    """Load exactly one note, the way a full walk would load it."""
+    return load_vault_notes(vault_path, [note_path])
+
+
+def load_vault_notes(
+    vault_path: str | Path, note_paths: Sequence[str | Path]
+) -> LoadedSource:
+    """Load the named notes, the way a full walk would load them.
 
     This is what ``ingest --only`` runs, and its caller is the ``SessionEnd``
     hook's detached background process. Nobody watches its stdout, so every
     reason a note cannot be ingested is raised rather than shrugged off: a typo
-    in the path must fail in the log, not look like a successful empty run.
+    in the path must fail in the log, not look like a successful empty run. One
+    bad path therefore fails the whole run rather than ingesting the rest
+    quietly — the caller validated these paths before spawning, so a bad one is
+    a defect, not an ordinary condition.
 
-    The note must resolve *inside* the vault and must be a file the full walk
+    Each note must resolve *inside* the vault and must be a file the full walk
     would also visit. Ingesting an excluded path (``templates/``, ``.obsidian/``)
     would create a row that the next ``--prune`` sweep deletes again.
 
     A deliberate skip — ``ingest: false``, an empty body — is not an error. It
-    comes back as a :class:`SkippedRecord` with no documents, exactly as in a
-    full walk.
+    comes back as a :class:`SkippedRecord`, exactly as in a full walk.
+
+    More than one note in one call is the normal case, not an optimisation: a
+    ``SessionEnd`` that resumes also rewrites the note it supersedes, and a
+    ``SubagentStop`` rewrites its parent. Loading them together means one
+    process and one load of the embedding model instead of one per note.
     """
     root = vault_root(vault_path)
-    note, relative = _resolve_note(root, note_path)
+    requested = list(note_paths or ())
+    if not requested:
+        raise SourceError("--only needs at least one markdown note")
 
-    loaded = _load_note(note, relative)
-    notes = (f"vault root: {root.as_posix()}", f"single note: {relative}")
-    if isinstance(loaded, SkippedRecord):
-        log.debug("Skipping %s: %s", relative, loaded.reason)
-        return LoadedSource((), (loaded,), notes)
-    return LoadedSource((loaded,), (), notes)
+    documents: list[SourceDocument] = []
+    skipped: list[SkippedRecord] = []
+    notes: list[str] = [f"vault root: {root.as_posix()}"]
+    seen: set[str] = set()
+    claimed_by: dict[str, str] = {}
+
+    for note_path in requested:
+        note, relative = _resolve_note(root, note_path)
+        if relative in seen:
+            # The hook can name the same note twice — a subagent whose parent is
+            # also its own note, say. Loading it twice would embed it twice.
+            continue
+        seen.add(relative)
+        notes.append(f"only: {relative}")
+
+        loaded = _load_note(note, relative)
+        if isinstance(loaded, SkippedRecord):
+            log.debug("Skipping %s: %s", relative, loaded.reason)
+            skipped.append(loaded)
+            continue
+
+        owner = claimed_by.get(loaded.external_id)
+        if owner is not None:
+            # Same rule as the full walk: two notes claiming one id would
+            # overwrite each other through the (source, external_id) upsert key.
+            reason = f"duplicate external_id '{loaded.external_id}', already used by {owner}"
+            log.warning("Skipping %s: %s", relative, reason)
+            skipped.append(SkippedRecord(relative, reason))
+            continue
+
+        claimed_by[loaded.external_id] = relative
+        documents.append(loaded)
+
+    return LoadedSource(tuple(documents), tuple(skipped), tuple(notes))
 
 
 def _resolve_note(root: Path, note_path: str | Path) -> tuple[Path, str]:

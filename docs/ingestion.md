@@ -154,18 +154,28 @@ keepalives, and the re-run picked up exactly where the hashes said it should.
 
 ---
 
-## Single-note runs: `--only`
+## Named-note runs: `--only`
 
 ```bash
 uv run ingest --source obsidian --path "<vault>" --only projects/bb2dash/sessions/<id>.md
+
+# repeatable: every note the capture hook touched, in one process
+uv run ingest --source obsidian --path "<vault>"     --only projects/bb2dash/sessions/<id>.md     --only projects/bb2dash/sessions/<id>--<agent>.md
 ```
 
 A full vault walk reads every note to find the two that changed. That is cheap
 enough nightly and far too slow to hang off the end of a session, so `--only`
-runs the *same* pipeline over exactly one note. The path may be absolute or
-vault-relative; a relative one resolves against the vault, never against the
+runs the *same* pipeline over just the notes it names. The path may be absolute
+or vault-relative; a relative one resolves against the vault, never against the
 process's working directory, because the caller is a background process started
 from wherever the session happened to be.
+
+**The flag is repeatable, and one run means one process.** A `SessionEnd` often
+writes more than one note — a resume rewrites the note it supersedes, a
+`SubagentStop` rewrites its parent's `child_sessions` — and each ingest process
+loads the 130 MB embedding model, so three notes in three processes would pay
+that three times. The same path named twice is loaded once; two notes claiming
+the same frontmatter `id:` are refused exactly as in a full walk.
 
 Four things are refused rather than tolerated, because nobody is watching this
 run's stdout:
@@ -175,10 +185,14 @@ run's stdout:
 | A note that is not inside `--path` | The vault boundary is the whole security model of the flag. `..` and symlinks are resolved before the check. |
 | A missing file | A typo'd path that "succeeded" having done nothing is the worst possible outcome for a background job. |
 | A path the full walk skips (`templates/`, `.obsidian/`) | It would create a row the next `--prune` sweep immediately deletes. |
-| `--only` together with `--prune` | The orphan sweep deletes everything the run did not produce. After a one-note run, that is the entire vault. |
+| `--only` together with `--prune` | The orphan sweep deletes everything the run did not produce. After a named-note run, that is the entire vault. |
 
 `ingest: false` and an empty body are **not** errors. They come back as skips
 with the same wording a full walk would use, and the run exits 0.
+
+One bad path fails the whole run rather than ingesting the rest quietly. The
+enqueue in the hook already drops a path it cannot justify before spawning, so a
+bad one reaching here is a defect worth seeing in the log.
 
 Re-running `--only` on a note that has not changed performs **zero embeddings**:
 it is one hash, one indexed lookup by `(source, external_id)`, and a decision to
@@ -188,8 +202,9 @@ costs a model load and no inference. That is the difference between a second and
 a minute, which is why this is fine behind a detached spawn and would not be
 fine inside the hook.
 
-A `--only` run never refreshes the health timestamp. It reconciled one note, not
-the vault, and health means "the nightly reconcile is still happening".
+A `--only` run never refreshes the health timestamp. It reconciled the notes it
+was given, not the vault, and health means "the nightly reconcile is still
+happening".
 
 ---
 

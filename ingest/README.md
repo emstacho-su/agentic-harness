@@ -85,6 +85,9 @@ uv run ingest --source claude-mem --path C:/Users/estac/.claude-archive/2026-09-
 # Plan without touching anything
 uv run ingest --source obsidian --path C:/Users/estac/vault --dry-run
 
+# Just the notes one SessionEnd wrote (what the capture hook runs), one process
+uv run ingest --source obsidian --path "C:/Users/estac/OneDrive - Syracuse University/vault"     --only projects/bb2dash/sessions/<id>.md     --only projects/bb2dash/sessions/<id>--<agent>.md
+
 # bb2dash class materials -> vault notes (ingest: false; read-only against bb2dash)
 uv run export-materials --env-file C:/Users/estac/projects/bb2dash/.env \
     --vault "C:/Users/estac/OneDrive - Syracuse University/vault" [--dry-run] [--course IST.323]
@@ -95,6 +98,7 @@ uv run export-materials --env-file C:/Users/estac/projects/bb2dash/.env \
 | `--dry-run` | Report new/changed/unchanged and the chunk count. No embedding, no writes. |
 | `--force` | Re-chunk and re-embed even when the hash is unchanged. Use after a model or chunk-config change. |
 | `--limit N` | Process at most N documents. Useful for a first smoke test. |
+| `--only NOTE` | obsidian only: ingest exactly the notes named instead of walking the vault. Repeatable. See below. |
 | `--no-summaries` | claude-mem only: skip `session_summaries.json`. |
 | `--no-prompts` | claude-mem only: skip `user_prompts.json`. |
 | `--prune` | **Destructive.** Orphan sweep — see below. Off by default. |
@@ -150,6 +154,27 @@ and `0` are accepted; a list, mapping or empty string is refused as a typo.
 Opting out a note that was *already* embedded leaves its rows in place — run
 `--prune` to remove them. Class materials exported from bb2dash carry this flag
 — see `export-materials` below.
+
+### Named notes: `--only`
+
+`--only` ingests exactly the notes it names, through the same loader and the
+same pipeline a full walk uses. It is **repeatable**, and every note named in
+one invocation is ingested by one process — which matters because each process
+loads the 130 MB embedding model, so one run with three `--only` flags costs one
+model load and three would cost three. A `SessionEnd` regularly touches more
+than one note: a resume rewrites the note it supersedes, and a `SubagentStop`
+rewrites its parent's `child_sessions`.
+
+The same path named twice is loaded once. Two notes claiming the same
+frontmatter `id:` are refused exactly as in a full walk.
+
+Every other refusal is raised rather than shrugged off, because the caller is a
+detached background process nobody is watching: a note outside `--path`, a
+missing file, a non-markdown file, a path the walk excludes (`templates/`,
+`.obsidian/`), and `--only` together with `--prune`. One bad path fails the
+whole run rather than half-ingesting the rest. `ingest: false` and an empty body
+stay skips, not errors, and the run exits 0. A `--only` run never refreshes the
+health timestamp — it reconciled the notes it was given, not the vault.
 
 ### `export-materials` (bb2dash → vault, not a loader)
 

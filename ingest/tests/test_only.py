@@ -15,7 +15,7 @@ import pytest
 
 from ingest.cli import main
 from ingest.errors import SourceError
-from ingest.loaders import load_vault_note
+from ingest.loaders import load_vault_note, load_vault_notes
 from ingest.pipeline import Action, IngestPipeline
 
 CLEAN_VARS = ("DATABASE_URL", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE", "SUPABASE_SERVICE_KEY")
@@ -260,13 +260,113 @@ def test_only_does_not_record_a_full_run_success(clean_env, vault_path, tmp_path
 def test_only_path_is_reported_in_the_load_notes(clean_env, vault_path, capsys):
     main(["--source", "obsidian", "--path", str(vault_path), "--only", "notes/rag-design.md",
           "--dry-run", "--env-file", str(clean_env)])
-    assert "single note: notes/rag-design.md" in capsys.readouterr().out
+    assert "only: notes/rag-design.md" in capsys.readouterr().out
 
 
 def test_only_is_absent_from_a_normal_run(clean_env, vault_path, capsys):
     main(["--source", "obsidian", "--path", str(vault_path), "--dry-run",
           "--env-file", str(clean_env)])
-    assert "single note:" not in capsys.readouterr().out
+    assert "only:" not in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# more than one note in one run
+# --------------------------------------------------------------------------
+#
+# A SessionEnd rarely writes one note. A resume rewrites the note it supersedes,
+# and a SubagentStop rewrites its parent's child_sessions. Every note the hook
+# touched has to reach the store, and starting one ingest process per note would
+# load the embedding model once per note.
+
+
+def test_several_notes_load_in_one_pass(vault_path):
+    loaded = load_vault_notes(vault_path, ["notes/rag-design.md", "notes/stable-id.md"])
+
+    assert [d.external_id for d in loaded.documents] == [
+        "notes/rag-design.md",
+        "018f3c2a-6b41-7d90-9c11-2f5a7e8d4b03",
+    ]
+
+
+def test_the_same_note_named_twice_is_loaded_once(vault_path):
+    loaded = load_vault_notes(
+        vault_path,
+        ["notes/rag-design.md", "./notes/rag-design.md", "notes/../notes/rag-design.md"],
+    )
+
+    assert len(loaded.documents) == 1
+
+
+def test_each_requested_note_is_named_in_the_load_notes(vault_path):
+    loaded = load_vault_notes(vault_path, ["notes/rag-design.md", "notes/stable-id.md"])
+
+    assert "only: notes/rag-design.md" in loaded.notes
+    assert "only: notes/stable-id.md" in loaded.notes
+
+
+def test_one_bad_path_among_several_fails_the_run_rather_than_half_ingesting(vault_path):
+    with pytest.raises(SourceError, match="does not exist"):
+        load_vault_notes(vault_path, ["notes/rag-design.md", "notes/gone.md"])
+
+
+def test_an_opt_out_among_several_is_a_skip_and_the_rest_still_load(vault_path):
+    loaded = load_vault_notes(vault_path, ["notes/rag-design.md", "notes/opted-out.md"])
+
+    assert len(loaded.documents) == 1
+    assert loaded.skipped[0].reason == "frontmatter ingest: false"
+
+
+def test_an_empty_selection_is_refused(vault_path):
+    with pytest.raises(SourceError, match="at least one"):
+        load_vault_notes(vault_path, [])
+
+
+def test_the_singular_helper_is_the_same_thing_with_one_note(vault_path):
+    one = load_vault_note(vault_path, "notes/rag-design.md")
+    many = load_vault_notes(vault_path, ["notes/rag-design.md"])
+
+    assert one == many
+
+
+def test_the_cli_accepts_only_more_than_once(clean_env, vault_path, capsys):
+    code = main(
+        ["--source", "obsidian", "--path", str(vault_path),
+         "--only", "notes/rag-design.md",
+         "--only", "notes/stable-id.md",
+         "--dry-run", "--env-file", str(clean_env)]
+    )
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "Loaded 2 documents." in out
+    assert "only: notes/rag-design.md" in out
+    assert "only: notes/stable-id.md" in out
+
+
+def test_repeated_only_still_refuses_prune(clean_env, vault_path, capsys):
+    code = main(
+        ["--source", "obsidian", "--path", str(vault_path),
+         "--only", "notes/rag-design.md", "--only", "notes/stable-id.md",
+         "--prune", "--dry-run", "--env-file", str(clean_env)]
+    )
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "--only" in err and "--prune" in err
+
+
+def test_repeated_only_does_not_record_a_full_run_success(
+    clean_env, vault_path, tmp_path, monkeypatch
+):
+    from ingest import runstate
+
+    state = tmp_path / "state.json"
+    monkeypatch.setenv(runstate.ENV_STATE_FILE, str(state))
+
+    main(["--source", "obsidian", "--path", str(vault_path),
+          "--only", "notes/rag-design.md", "--only", "notes/stable-id.md",
+          "--dry-run", "--env-file", str(clean_env)])
+
+    assert not state.exists()
 
 
 def test_vault_relative_path_wins_over_a_same_named_cwd_file(vault_path, tmp_path, monkeypatch):
