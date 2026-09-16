@@ -23,6 +23,8 @@ import {
   resolveProjectDir,
   resolveRunLog,
   resolveUv,
+  ingestEntry,
+  WINDOWLESS_ENTRY,
 } from '../lib/enqueue-ingest.mjs';
 
 let workspace;
@@ -97,7 +99,7 @@ describe('enqueueIngest — the command it builds', () => {
       '--directory',
       path.resolve(projectDir),
       'run',
-      'ingest',
+      ...ingestEntry(process.platform),
       '--source',
       'obsidian',
       '--path',
@@ -166,6 +168,18 @@ describe('enqueueIngest — the command it builds', () => {
 });
 
 describe('enqueueIngest — detachment', () => {
+  it('uses the windowless interpreter on Windows and the project script elsewhere', () => {
+    assert.deepEqual(ingestEntry('win32'), [...WINDOWLESS_ENTRY]);
+    assert.deepEqual(ingestEntry('linux'), ['ingest']);
+    assert.deepEqual(ingestEntry('darwin'), ['ingest']);
+
+    const { spawn } = call({ args: { platform: 'win32' } });
+    const argv = spawn.calls[0].args;
+    assert.ok(argv.includes('pythonw'), 'a detached console child would open a visible window');
+    assert.ok(!argv.includes('ingest'), 'the console launcher must not be used on Windows');
+    assert.equal(argv.indexOf('--only'), argv.length - 2, 'the note stays the last argument');
+  });
+
   it('detaches, hides the window and unrefs the child', () => {
     const { spawn } = call();
     const { options } = spawn.calls[0];

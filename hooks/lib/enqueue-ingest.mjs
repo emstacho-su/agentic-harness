@@ -44,6 +44,27 @@ export const DEFAULT_PROJECT_DIR = path.join(os.homedir(), 'agentic-harness', 'i
 export const DEFAULT_RUN_LOG = path.join(os.homedir(), '.claude', 'hooks', 'ingest-on-capture.log');
 
 const MARKDOWN_SUFFIXES = ['.md', '.markdown', '.mdx'];
+
+/**
+ * How the child reaches `ingest.cli.main`.
+ *
+ * On POSIX the project script `ingest` is fine. On Windows it is not: this
+ * process is spawned DETACHED, so it owns no console, and the console-subsystem
+ * `python.exe` that `uv run ingest` starts therefore gets a brand-new, visible
+ * console window on every session end. `pythonw.exe` is the same interpreter
+ * built for the GUI subsystem; it never allocates a console, and its output is
+ * still captured because stdio is redirected to the run log. Verified on this
+ * machine: the `python` chain owns a conhost.exe, the `pythonw` chain owns none.
+ */
+export const WINDOWLESS_ENTRY = Object.freeze([
+  'pythonw',
+  '-c',
+  'from ingest.cli import main; raise SystemExit(main())',
+]);
+
+export function ingestEntry(platform) {
+  return platform === 'win32' ? [...WINDOWLESS_ENTRY] : ['ingest'];
+}
 const RUN_LOG_MAX_BYTES = 256 * 1024;
 const DISABLED_VALUES = new Set(['0', 'false', 'off', 'no']);
 
@@ -71,7 +92,12 @@ export const Reason = {
  * @returns {{enqueued: boolean, reason: string, command?: string[], runLog?: string}}
  */
 export function enqueueIngest(options) {
-  const { log = () => {}, env = process.env, spawn = nodeSpawn } = options ?? {};
+  const {
+    log = () => {},
+    env = process.env,
+    spawn = nodeSpawn,
+    platform = process.platform,
+  } = options ?? {};
 
   try {
     return run(options ?? {}, { log, env, spawn });
@@ -132,7 +158,7 @@ function run({ vaultRoot, notePath }, { log, env, spawn }) {
     '--directory',
     projectDir,
     'run',
-    'ingest',
+    ...ingestEntry(platform),
     '--source',
     'obsidian',
     '--path',
