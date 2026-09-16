@@ -26,6 +26,7 @@ import path from 'node:path';
 import { analyseTranscript } from './analyse.mjs';
 import {
   BUDGET_MS,
+  CAPTURED_BY_HOOK,
   MAX_CHILD_SESSIONS,
   MAX_LABEL_CHARS,
   RESERVE_MS,
@@ -46,7 +47,7 @@ import {
 import { persist, readNote, vaultAvailable } from './notes-io.mjs';
 import { redact } from './redact.mjs';
 import { isoDate, uniqueCapped } from './text.mjs';
-import { extractPrompts, extractTools, createAccumulator, readEntries } from './transcript.mjs';
+import { extractOrigin, extractPrompts, extractTools, createAccumulator, readEntries } from './transcript.mjs';
 
 /**
  * Capture one finished subagent.
@@ -67,6 +68,7 @@ export function captureSubagent({
   startedAtMs = Date.now(),
   deadlineAt = startedAtMs + BUDGET_MS,
   runGit = runGitSync,
+  capturedBy = CAPTURED_BY_HOOK,
 }) {
   const skip = (reason) => ({ written: false, action: 'skip', skip: reason, notePath: '', touchedPaths: [], vaultRoot, detail: '' });
 
@@ -138,6 +140,8 @@ export function captureSubagent({
     parentSession: input.sessionId,
     childSessions: [],
     agentType,
+    origin: extractOrigin(entries),
+    capturedBy,
     commits: facts.commits,
     prs: facts.prs,
     memoryFiles: facts.paths.memoryFiles,

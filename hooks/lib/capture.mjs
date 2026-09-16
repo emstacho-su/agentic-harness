@@ -17,6 +17,7 @@ import path from 'node:path';
 import { analyseTranscript } from './analyse.mjs';
 import {
   BUDGET_MS,
+  CAPTURED_BY_HOOK,
   MAIN_TRANSCRIPT_MAX_BYTES,
   MAX_CHILD_SESSIONS,
   RESERVE_MS,
@@ -37,6 +38,7 @@ import { buildFields, childNoteId, noteFilename, noteId, renderBody, renderNote 
 import { persist, readNote, resolveChainHead, vaultAvailable } from './notes-io.mjs';
 import { isoDate, uniqueCapped } from './text.mjs';
 import {
+  extractOrigin,
   extractPrompts,
   extractSubagentTools,
   extractTools,
@@ -64,6 +66,7 @@ export function capture({
   startedAtMs = Date.now(),
   deadlineAt = startedAtMs + BUDGET_MS,
   runGit = runGitSync,
+  capturedBy = CAPTURED_BY_HOOK,
 }) {
   const skip = (reason) => ({ written: false, action: 'skip', skip: reason, notePath: '', touchedPaths: [], vaultRoot, detail: '' });
 
@@ -139,6 +142,8 @@ export function capture({
       MAX_CHILD_SESSIONS,
     ),
     agentType: '',
+    origin: extractOrigin(entries),
+    capturedBy,
     commits: facts.commits,
     prs: facts.prs,
     memoryFiles: facts.paths.memoryFiles,

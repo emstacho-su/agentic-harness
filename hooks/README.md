@@ -45,6 +45,7 @@ string or an empty list**, never absent and never guessed.
 | Context | `phase`, `tags`, `parent_session`, `child_sessions` |
 | Work | `memory_files`, `plan_file`, `docs_touched`, `artifacts`, `files_modified` |
 | Volume | `duration_minutes`, `prompt_count`, `command_count`, `tools_used` |
+| Provenance | `origin` (the transcript's `entrypoint`: `cli`, `claude-desktop`, `sdk-py`, `sdk-cli`, or empty), `captured_by` (`hook`, `sweep` or `migration`) |
 
 `id` is `session-<session_id>`, which is the `external_id` ingest keys on. It
 never changes, so a note that moves does not strand its row.
@@ -351,6 +352,12 @@ rather than merely finding one, so a second call added anywhere fails the test.
 `node hooks/install.mjs` copies this library with the rest of the hook tree to
 `~/.claude/hooks/lib/`; there is no separate step.
 
+**Reinstall after any schema change.** The sweep runs from the checkout while
+the hook runs from the deployed copy, so a new frontmatter field or a
+`GENERATOR_VERSION` bump that is not installed leaves two schemas writing the
+same vault. `node hooks/install.mjs` is part of landing such a change, and the
+installer says `all N verified byte-identical` when the two agree.
+
 ### Reading the logs
 
 ```bash
@@ -376,3 +383,70 @@ project, a note outside the vault, the deadline, or `no note changed on disk`.
 
 `ingest-on-capture.log` holds the ingest run's own report — the document count,
 the chunks written, and any failure. It rotates once to `.1` past 256 KB.
+
+---
+
+## The nightly transcript sweep
+
+`SessionEnd` fires only for a session that exits cleanly under the user's
+settings. The audit on 2026-09-16 found that of 124 sizeable transcripts on this
+machine, 13 had a note. The rest were:
+
+| What | Why the hook never ran |
+| --- | --- |
+| SDK-spawned review workers (`entrypoint: sdk-py` / `sdk-cli`) | started by `/code-review`, `/security-review` and workflow runs; they do not reach the user hook |
+| desktop-app sessions from before 2026-09-09 | the hook did not exist yet |
+| sessions killed with their terminal | no clean exit, no `SessionEnd` |
+| cloud sessions pulled down with `claude --teleport` | the transcript arrives after the fact |
+
+The sweep closes all four at once by feeding every un-noted transcript through
+the **same** `capture()` and `captureSubagent()` the hook uses:
+
+```bash
+node hooks/sweep-transcripts.mjs --dry-run                 # list the backlog, write nothing
+node hooks/sweep-transcripts.mjs --limit 5 --ingest        # first real run, then read the notes
+node hooks/sweep-transcripts.mjs                           # the whole backlog
+node hooks/sweep-transcripts.mjs --session <id> --ingest   # one teleported session, by hand
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--min-idle-hours` | 6 | a transcript modified more recently is a live session and is left to its own `SessionEnd` |
+| `--limit` | none | cap on sessions captured this run; the rest wait for the next night |
+| `--session <id>` | | only this id; repeatable |
+| `--exclude <text>` | `claude-mem/observer-sessions` | skip a cwd containing this; repeatable, always in addition to the built-in list |
+| `--dry-run` | | list candidates, write nothing |
+| `--ingest` | | one detached `ingest --only` over every note touched (the nightly run omits it: a full ingest follows) |
+
+Notes written this way carry `captured_by: sweep`; the hook's carry `hook`. Both
+carry `origin`, the `entrypoint` the transcript declares, so an SDK worker's
+note is distinguishable from a human session in search. Neither field is ever
+inferred: a transcript with no `entrypoint` gets `origin: ''`, and an SDK
+worker's `parent_session` stays empty because nothing in its transcript names
+one.
+
+Behaviour worth knowing:
+
+- **A swept session is `concluded`.** If it is resumed the next morning, its
+  real `SessionEnd` produces a `-r2` note through the ordinary resume chain.
+  That is the designed path, not a bug.
+- **Worker notes come with the parent.** `<id>/subagents/agent-*.jsonl` beside
+  a swept transcript each become a `<id>--<agent>.md` note with
+  `parent_session` set, and the parent's `child_sessions` lists them.
+- **Nothing throws.** A garbage transcript is a logged skip and the next
+  candidate runs. Exit code 1 only if a candidate raised, which the tests hold
+  at never.
+- **It is not deployed to `~/.claude/hooks`.** It runs from the main checkout,
+  like the ingest project, and the nightly script is told where with `-HooksDir`.
+
+`scripts/nightly-ingest.ps1` runs it as step 0, before the conclude sweep and
+the full ingest, so a note written tonight is embedded tonight:
+
+```powershell
+./scripts/nightly-ingest.ps1 -TranscriptSweep DryRun -SweepMode DryRun   # prove the wiring
+./scripts/nightly-ingest.ps1 -TranscriptSweep Skip                       # the old two-step run
+```
+
+Its log is `~/.claude/hooks/transcript-sweep.log` (override with
+`HARNESS_TRANSCRIPT_SWEEP_LOG`), one line per session and per worker, with the
+summary the CLI prints at the end.

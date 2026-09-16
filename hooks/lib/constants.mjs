@@ -6,7 +6,7 @@
  */
 
 /** Written into `generator:`; bumped whenever the note's shape changes. */
-export const GENERATOR_VERSION = '2.0.0';
+export const GENERATOR_VERSION = '2.1.0';
 
 /** Written into `schema_version:`. Lets a reader tell "old note" from "unknown". */
 export const SCHEMA_VERSION = 2;
@@ -17,6 +17,33 @@ export const SCHEMA_VERSION = 2;
  * exit is a capture nobody keeps. Optional work checks the deadline first.
  */
 export const BUDGET_MS = 1200;
+
+/**
+ * Budget for the nightly transcript sweep, per session. It runs offline, so
+ * it can afford the full read the hook has to truncate; it is still bounded
+ * because one pathological transcript must not stall the whole night.
+ */
+export const SWEEP_BUDGET_MS = 30_000;
+
+/** The sweep is offline, so `git log` may take its time; still bounded per call. */
+export const SWEEP_GIT_TIMEOUT_MS = 5_000;
+
+/**
+ * Notes per detached ingest when the sweep is run by hand with `--ingest`.
+ * Windows caps a command line at 32 KiB; ~80 vault-relative note paths keep
+ * one spawn well under it, and one model load per 80 notes is cheap enough.
+ */
+export const SWEEP_INGEST_BATCH = 80;
+
+/** Transcripts modified more recently than this are live sessions: not swept. */
+export const DEFAULT_SWEEP_IDLE_HOURS = 6;
+
+/**
+ * Working directories the sweep never captures, matched as a path substring.
+ * claude-mem's observer sessions were that retired tool's own SDK workers
+ * summarising *other* sessions: derivative, and not the user's work.
+ */
+export const SWEEP_EXCLUDED_CWD_SEGMENTS = Object.freeze(['claude-mem/observer-sessions']);
 
 /** Optional work stops this long before the deadline, leaving room to write. */
 export const RESERVE_MS = 350;
@@ -113,3 +140,18 @@ export const DISABLE_VALUES = new Set(['0', 'off', 'false', 'no']);
  * this in the worker's environment and the note records who spawned it.
  */
 export const PARENT_SESSION_ENV_VAR = 'HARNESS_PARENT_SESSION';
+
+/**
+ * `captured_by:` — which entry point wrote the note. The hook runs at session
+ * exit; the sweep runs nightly over transcripts the hook never saw.
+ */
+export const CAPTURED_BY_HOOK = 'hook';
+export const CAPTURED_BY_SWEEP = 'sweep';
+export const CAPTURED_BY_MIGRATION = 'migration';
+
+/**
+ * `origin:` — the `entrypoint` Claude Code stamps on every transcript record
+ * (`cli`, `claude-desktop`, `sdk-py`, `sdk-cli`). Empty when the transcript
+ * carries none; never guessed. The allow-list keeps it a label, not a payload.
+ */
+export const ORIGIN_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;

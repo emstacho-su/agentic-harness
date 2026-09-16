@@ -191,7 +191,7 @@ test('a migrated note gains schema v2 and loses its scratchpad paths', () => {
     assert.deepEqual(fields.docs_touched, ['docs/architecture.md', 'docs/retrieval.md']);
     assert.ok(fields.files_modified.every((file) => !file.includes('scratchpad')));
     assert.ok(fields.tags.length > 0 && fields.tags.length <= 5);
-    assert.match(fields.generator, /2\.0\.0 \(migrated\)/);
+    assert.match(fields.generator, /2\.1\.0 \(migrated\)/);
     assert.deepEqual(emptied, ['parent_session', 'child_sessions', 'artifacts']);
   } finally {
     sandbox.cleanup();

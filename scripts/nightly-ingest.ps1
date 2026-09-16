@@ -3,12 +3,15 @@
     The nightly reconcile: conclude stale sessions, then re-ingest the vault.
 
 .DESCRIPTION
-    Two steps, in this order and for this reason:
+    Three steps, in this order and for this reason:
 
+      0. transcript sweep — hooks/sweep-transcripts.mjs writes a note for every
+         idle transcript under ~/.claude/projects that has none: SDK workers,
+         sessions killed with their terminal, teleported cloud sessions.
       1. sweep-concluded  — sets status: concluded and concluded_at on session
          notes still 'active' more than 24 h after their ended_at (R-27.2).
       2. ingest           — a full walk of the vault, which picks up the notes
-         the sweep just edited along with anything the per-note hook missed.
+         the sweeps just wrote along with anything the per-note hook missed.
 
     Running the sweep first is what makes the status change visible to search in
     the same night. The other way round, every concluded note would wait a day.
@@ -49,7 +52,15 @@ param(
     [string] $SweepMode = 'Apply',
     [ValidateRange(1, 8760)]
     [int] $StaleAfterHours = 24,
-    [string] $EnvFile = ''
+    [string] $EnvFile = '',
+    # Step 0: the transcript sweep (hooks/sweep-transcripts.mjs), which writes a
+    # note for every idle transcript the SessionEnd hook never saw.
+    [string] $HooksDir = "C:/Users/$env:USERNAME/agentic-harness/hooks",
+    [string] $NodePath = '',
+    [ValidateSet('Apply', 'DryRun', 'Skip')]
+    [string] $TranscriptSweep = 'Apply',
+    [ValidateRange(0, 8760)]
+    [int] $TranscriptIdleHours = 6
 )
 
 $ErrorActionPreference = 'Stop'
@@ -98,6 +109,44 @@ function Resolve-Uv {
     if ($onPath) { return $onPath.Source }
 
     throw 'uv was not found. Pass -UvPath, or install it so uv.exe is on PATH.'
+}
+
+function Resolve-Node {
+    param([string] $Explicit)
+
+    if ($Explicit) {
+        if (-not (Test-Path $Explicit)) { throw "node not found at $Explicit" }
+        return $Explicit
+    }
+
+    $standard = 'C:/Program Files/nodejs/node.exe'
+    if (Test-Path $standard) { return $standard }
+
+    $onPath = Get-Command node -ErrorAction SilentlyContinue
+    if ($onPath) { return $onPath.Source }
+
+    throw 'node was not found. Pass -NodePath, or install it so node.exe is on PATH.'
+}
+
+function Invoke-TranscriptSweep {
+    param([string] $Node, [string] $Script, [string[]] $SweepArgs, [string] $Label)
+
+    Write-Log "$Label : node sweep-transcripts.mjs $($SweepArgs -join ' ')"
+
+    # Same stderr handling as Invoke-Ingest: merge both streams into the log
+    # without a NativeCommandError turning the first line into a fatal one.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $Node $Script @SweepArgs 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+
+    foreach ($line in $output) { Write-Log "$Label | $line" }
+    Write-Log "$Label : exit $code"
+    return [int] $code
 }
 
 function Invoke-Ingest {
@@ -156,6 +205,31 @@ Write-Log "project: $ProjectDir"
 $envArgs = @()
 if ($EnvFile) { $envArgs = @('--env-file', $EnvFile) }
 
+# Step 0: transcripts the hook never saw become notes now, so the ingest below
+# embeds them tonight. Runs from the checkout, like the ingest project does.
+$transcriptCode = 0
+if ($TranscriptSweep -eq 'Skip') {
+    Write-Log 'transcripts: skipped by -TranscriptSweep Skip'
+} else {
+    $sweepScript = Join-Path $HooksDir 'sweep-transcripts.mjs'
+    if (-not (Test-Path $sweepScript)) {
+        Write-Log "transcripts: no sweep script at $sweepScript; continuing to the ingest"
+        $transcriptCode = 2
+    } else {
+        try {
+            $node = Resolve-Node -Explicit $NodePath
+            Write-Log "node: $node"
+            $transcriptArgs = @('--vault', $VaultPath, '--min-idle-hours', "$TranscriptIdleHours")
+            if ($TranscriptSweep -eq 'DryRun') { $transcriptArgs += '--dry-run' }
+            $transcriptCode = Invoke-TranscriptSweep -Node $node -Script $sweepScript -SweepArgs $transcriptArgs -Label 'transcripts'
+        } catch {
+            Write-Log "transcripts: $($_.Exception.Message); continuing to the ingest"
+            $transcriptCode = 2
+        }
+    }
+}
+if ($transcriptCode -ne 0) { Write-Log "transcript sweep failed with $transcriptCode; continuing to the ingest" }
+
 $sweepCode = 0
 if ($SweepMode -eq 'Skip') {
     Write-Log 'sweep: skipped by -SweepMode Skip'
@@ -172,7 +246,7 @@ if ($sweepCode -ne 0) { Write-Log "sweep failed with $sweepCode; continuing to t
 $ingestArgs = @('--source', 'obsidian', '--path', $VaultPath) + $envArgs
 $ingestCode = Invoke-Ingest -Uv $uv -Project $ProjectDir -IngestArgs $ingestArgs -Label 'ingest'
 
-Write-Log "=== nightly reconcile finished (sweep $sweepCode, ingest $ingestCode) ==="
+Write-Log "=== nightly reconcile finished (transcripts $transcriptCode, sweep $sweepCode, ingest $ingestCode) ==="
 
 # Task Scheduler shows this as the last result, so it has to mean "the reconcile
 # worked". Only the ingest decides that.

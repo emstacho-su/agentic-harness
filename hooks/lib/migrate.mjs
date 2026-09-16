@@ -25,6 +25,7 @@
 import path from 'node:path';
 
 import {
+  CAPTURED_BY_MIGRATION,
   AREA_CLASSES,
   AREA_PROJECTS,
   COLLECTION_FROM_FOLDER,
@@ -205,6 +206,10 @@ export function migrateNote({ note, plan, backfill, repoFor }) {
     prompt_count: Number(old.prompt_count ?? 0),
     command_count: Number(old.command_count ?? 0),
     agent: String(old.agent ?? 'claude-code'),
+    // A migrated note came from the v1 hook, but which surface produced the
+    // session is not recorded anywhere the migration reads: left empty.
+    origin: '',
+    captured_by: CAPTURED_BY_MIGRATION,
     generator: `session-capture.mjs ${GENERATOR_VERSION} (migrated)`,
     tools_used: old.tools_used && typeof old.tools_used === 'object' ? old.tools_used : {},
   };

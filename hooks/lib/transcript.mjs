@@ -19,6 +19,7 @@ import {
   MAX_LABEL_CHARS,
   SHELL_TOOLS,
   SUBAGENT_BUDGET_BYTES,
+  ORIGIN_PATTERN,
 } from './constants.mjs';
 import { redact } from './redact.mjs';
 import { isLocalPath, toPosix } from './text.mjs';
@@ -368,4 +369,24 @@ export function parentSessionFromPath(transcriptPath) {
   const posix = toPosix(transcriptPath);
   const match = posix.match(/\/([0-9a-fA-F-]{8,})\/subagents\/[^/]+\.jsonl$/);
   return match ? match[1] : '';
+}
+
+// ------------------------------------------------------------------ origin
+
+/**
+ * Which surface produced the transcript: the `entrypoint` Claude Code stamps
+ * on its records (`cli`, `claude-desktop`, `sdk-py`, `sdk-cli`).
+ *
+ * The first record carrying one wins; a transcript with none yields `''`.
+ * Nothing is inferred from the cwd or the prompt shape — a note that says
+ * where a session came from must be reporting, not guessing.
+ */
+export function extractOrigin(entries) {
+  for (const entry of entries) {
+    const value = entry?.entrypoint;
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim().toLowerCase();
+    if (ORIGIN_PATTERN.test(trimmed)) return trimmed;
+  }
+  return '';
 }

@@ -68,6 +68,8 @@ export const FIELD_SPEC = Object.freeze([
   ['command_count', PLAIN],
   ['agent', PLAIN],
   ['agent_type', QUOTED],
+  ['origin', QUOTED],
+  ['captured_by', QUOTED],
   ['generator', QUOTED],
   ['tools_used', MAP],
 ]);

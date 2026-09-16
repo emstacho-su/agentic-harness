@@ -50,7 +50,9 @@ prompt_count: 1
 command_count: 1
 agent: claude-code
 agent_type: ''
-generator: 'session-capture.mjs 2.0.0'
+origin: ''
+captured_by: 'hook'
+generator: 'session-capture.mjs 2.1.0'
 tools_used:
   Edit: 3
   Agent: 2

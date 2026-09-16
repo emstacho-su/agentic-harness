@@ -617,15 +617,24 @@ resolve at 03:00. `-StartWhenAvailable` is the setting that matters on a laptop:
 the machine is usually asleep at 03:00, and without it a missed run is simply
 lost.
 
-The script does two things, in this order:
+The script does three things, in this order:
 
+0. **`node hooks/sweep-transcripts.mjs --min-idle-hours 6`** — the transcript
+   sweep. Every transcript under `~/.claude/projects/` that has no note in the
+   vault and has been idle six hours goes through the hook's own capture code
+   and comes out as a note with `captured_by: sweep`. This is what catches the
+   sessions `SessionEnd` never fires for: SDK-spawned review workers, sessions
+   killed with their terminal, desktop sessions from before the hook, and cloud
+   sessions pulled down with `claude --teleport`. See
+   [../hooks/README.md](../hooks/README.md#the-nightly-transcript-sweep).
 1. **`ingest sweep-concluded --apply`** — see below.
 2. **`ingest --source obsidian --path <vault>`** — a full walk, which picks up
-   the notes the sweep just edited in the same night.
+   the notes both sweeps just wrote or edited in the same night.
 
-A failing sweep does not abort the ingest: a stale status is a smaller problem
-than a stale index. The task's exit code is the ingest's, so Task Scheduler's
-"last result" means what it looks like it means.
+A failing sweep of either kind does not abort the ingest: a missing note or a
+stale status is a smaller problem than a stale index. The task's exit code is
+the ingest's, so Task Scheduler's "last result" means what it looks like it
+means.
 
 ### The 24 h conclude sweep
 

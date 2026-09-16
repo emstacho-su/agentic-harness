@@ -10,6 +10,7 @@
  */
 
 import {
+  CAPTURED_BY_HOOK,
   GENERATOR_VERSION,
   MAX_COMMANDS_LISTED,
   MAX_FILES_LISTED,
@@ -109,6 +110,8 @@ export function buildFields(ctx) {
     command_count: ctx.commandCount,
     agent: 'claude-code',
     agent_type: ctx.agentType ?? '',
+    origin: ctx.origin ?? '',
+    captured_by: ctx.capturedBy ?? CAPTURED_BY_HOOK,
     generator: `session-capture.mjs ${GENERATOR_VERSION}`,
     tools_used: Object.fromEntries(ctx.toolCounts),
   };

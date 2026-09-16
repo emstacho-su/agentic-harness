@@ -74,11 +74,33 @@ function matchClassFolder(cwd, vaultRoot) {
   return '';
 }
 
+/**
+ * A folder named `<project>-wt-<anything>` is one of `<project>`'s worktrees,
+ * **when `<project>` already owns a vault folder**. Rule 2 normally settles a
+ * worktree through its `.git` file, but a worktree deleted before its session
+ * was captured (the nightly sweep sees these) has nothing on disk to read, and
+ * this is the naming convention every worktree on this machine follows. Keyed
+ * on the vault like the class rule, so a name that merely looks like one is
+ * still filed under itself.
+ */
+const WORKTREE_SUFFIX = /^(.+?)-wt-.+$/;
+
+function ownedVaultFolder(vaultRoot, slug) {
+  if (!slug) return '';
+  // The worktree's project first: a stray `projects/<project>-wt-x/` folder
+  // (one an earlier capture created before this rule existed) must not keep
+  // winning over the project it belongs to.
+  const worktree = WORKTREE_SUFFIX.exec(slug);
+  if (worktree && AREAS.some((area) => vaultFolderExists(vaultRoot, area, worktree[1]))) return worktree[1];
+  if (AREAS.some((area) => vaultFolderExists(vaultRoot, area, slug))) return slug;
+  return '';
+}
+
 function fromFolder(cwd, vaultRoot) {
   let current = toPosix(cwd);
   for (let depth = 0; depth < MAX_WALK_UP && current; depth += 1) {
-    const slug = slugify(path.basename(current));
-    if (slug && AREAS.some((area) => vaultFolderExists(vaultRoot, area, slug))) return slug;
+    const owned = ownedVaultFolder(vaultRoot, slugify(path.basename(current)));
+    if (owned) return owned;
     const parent = toPosix(path.dirname(current));
     if (!parent || parent === current) break;
     current = parent;

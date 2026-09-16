@@ -138,3 +138,36 @@ test('the folder fallback prefers an ancestor that already owns a vault folder',
     sandbox.cleanup();
   }
 });
+
+test('a deleted worktree named <project>-wt-* files under <project>, only when the vault owns <project>', () => {
+  const sandbox = createSandbox();
+  try {
+    // No checkout on disk, so rule 2 has nothing to read: the nightly sweep sees
+    // exactly this for a worktree removed before its session was captured.
+    const gone = path.join(sandbox.root, 'projects', 'bb2dash-wt-sl-fixes');
+    const owned = deriveCollection({ cwd: gone, vaultRoot: sandbox.vaultRoot, repo: resolveRepo(gone) });
+    assert.equal(owned.collection, 'bb2dash');
+    assert.equal(owned.collectionSource, 'folder');
+
+    // Looks like a worktree name, but nothing in the vault owns `nothing`: it
+    // files under itself rather than inventing a project.
+    const orphan = path.join(sandbox.root, 'projects', 'nothing-wt-x');
+    const unowned = deriveCollection({ cwd: orphan, vaultRoot: sandbox.vaultRoot, repo: resolveRepo(orphan) });
+    assert.equal(unowned.collection, 'nothing-wt-x');
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('a stray <project>-wt-* vault folder does not beat the project it belongs to', () => {
+  const sandbox = createSandbox();
+  try {
+    // An earlier capture, before the worktree rule existed, created this folder.
+    fs.mkdirSync(path.join(sandbox.vaultRoot, 'projects', 'bb2dash-wt-sl-fixes'), { recursive: true });
+    const gone = path.join(sandbox.root, 'projects', 'bb2dash-wt-sl-fixes');
+    const result = deriveCollection({ cwd: gone, vaultRoot: sandbox.vaultRoot, repo: resolveRepo(gone) });
+    assert.equal(result.collection, 'bb2dash', 'the owned project wins over the stray worktree folder');
+  } finally {
+    sandbox.cleanup();
+  }
+});
