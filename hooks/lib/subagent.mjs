@@ -1,0 +1,265 @@
+/**
+ * Capturing a finished subagent: one note per agent, linked to its parent.
+ *
+ * A worker launched with the Agent tool does real work — it edits files, runs
+ * commands, opens PRs — but it shares its parent's `session_id` and never fires
+ * `SessionEnd`, so until now none of that had a note of its own. `SubagentStop`
+ * is the event that closes the gap.
+ *
+ * Two things make the linkage work in both directions, whichever order the
+ * events arrive in:
+ *
+ *   - the child note records `parent_session` = the parent's `session_id`, and
+ *     the id it is filed under is derived from that pair, so it is stable;
+ *   - the parent's `child_sessions` is merged here if the parent note already
+ *     exists, and back-filled from the `subagents/` directory when the parent's
+ *     own `SessionEnd` runs. A child that stops before its parent is listed by
+ *     the back-fill; a child that stops after is listed by this merge.
+ *
+ * Everything else — collection, branch, tags, redaction, the deadline, exit 0 —
+ * is the session rules applied unchanged.
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+
+import { analyseTranscript } from './analyse.mjs';
+import {
+  BUDGET_MS,
+  MAX_CHILD_SESSIONS,
+  MAX_LABEL_CHARS,
+  RESERVE_MS,
+  SUBAGENT_BUDGET_BYTES,
+  STATUS_CONCLUDED,
+} from './constants.mjs';
+import { runGitSync } from './git-log.mjs';
+import { mergeFields } from './merge.mjs';
+import {
+  buildFields,
+  childNoteFilename,
+  childNoteId,
+  noteFilename,
+  normalizeAgentId,
+  renderBody,
+  renderNote,
+} from './note.mjs';
+import { persist, readNote, vaultAvailable } from './notes-io.mjs';
+import { redact } from './redact.mjs';
+import { isoDate, uniqueCapped } from './text.mjs';
+import { extractPrompts, extractTools, createAccumulator, readEntries } from './transcript.mjs';
+
+/**
+ * Capture one finished subagent.
+ *
+ * @returns {{written: boolean, action: string, skip: string, notePath: string,
+ *            vaultRoot: string, detail: string}}
+ */
+export function captureSubagent({
+  input,
+  vaultRoot,
+  projectsRoot,
+  startedAtMs = Date.now(),
+  deadlineAt = startedAtMs + BUDGET_MS,
+  runGit = runGitSync,
+}) {
+  const skip = (reason) => ({ written: false, action: 'skip', skip: reason, notePath: '', vaultRoot, detail: '' });
+
+  const agentId = normalizeAgentId(input.agentId);
+  if (!agentId) return skip('no agent_id');
+
+  const transcriptPath = resolveAgentTranscript({ input, agentId, projectsRoot });
+  if (!transcriptPath) return skip(`no subagent transcript for ${agentId}`);
+
+  const entries = readEntries(transcriptPath, SUBAGENT_BUDGET_BYTES, deadlineAt - RESERVE_MS);
+  if (entries.length === 0) return skip('subagent transcript unreadable or empty');
+
+  if (!vaultAvailable(vaultRoot)) return skip(`vault root unavailable (${vaultRoot})`);
+
+  const accumulator = createAccumulator();
+  extractTools(entries, accumulator);
+
+  const meta = readAgentMeta(transcriptPath);
+  const prompts = agentPrompts(entries, meta);
+
+  // A worker that only ran tools still did the work, and its task prompt lives
+  // in the parent's Agent call rather than in its own transcript. So the bar is
+  // "did anything happen", not "was there a prompt" — but an empty transcript
+  // is still not a note.
+  if (prompts.length === 0 && accumulator.toolCounts.size === 0) {
+    return skip('subagent did nothing (no prompt, no tool use)');
+  }
+
+  const facts = analyseTranscript({
+    entries,
+    prompts,
+    cwd: input.cwd,
+    vaultRoot,
+    deadlineAt,
+    runGit,
+    into: accumulator,
+  });
+
+  const agentType = redact(String(input.agentType || meta.agentType || '')).slice(0, MAX_LABEL_CHARS);
+
+  const date = isoDate(facts.timing.endedAt) || isoDate(new Date().toISOString());
+
+  const context = {
+    sessionId: input.sessionId,
+    noteId: childNoteId(input.sessionId, agentId),
+    title: `Subagent ${agentType || agentId} ${date} — ${facts.collection}`,
+    collection: facts.collection,
+    collectionSource: facts.collectionSource,
+    date,
+    cwd: facts.cwd,
+    cwdsSeen: facts.cwdsSeen,
+    // A subagent does not "end a session"; it stops. The frozen enum has no
+    // term for that, and `other` is the documented catch-all.
+    endReason: 'other',
+    startedAt: facts.timing.startedAt,
+    endedAt: facts.timing.endedAt,
+    durationMs: facts.timing.durationMs,
+    // A stopped subagent is finished by definition: nothing resumes one.
+    status: STATUS_CONCLUDED,
+    concludedAt: facts.timing.endedAt,
+    repo: facts.repo.repoFullName,
+    branch: facts.branch,
+    worktree: facts.repo.worktree,
+    reposTouched: facts.paths.reposTouched,
+    phase: facts.phase,
+    tags: facts.tags,
+    supersedes: [],
+    resumedFrom: '',
+    parentSession: input.sessionId,
+    childSessions: [],
+    agentType,
+    commits: facts.commits,
+    prs: facts.prs,
+    memoryFiles: facts.paths.memoryFiles,
+    planFile: facts.paths.planFile,
+    docsTouched: facts.paths.docsTouched,
+    artifacts: facts.artifacts,
+    files: facts.paths.files,
+    prompts,
+    commands: accumulator.commands,
+    commandCount: accumulator.commandCount,
+    agents: accumulator.agents,
+    skills: [...accumulator.skills],
+    toolCounts: facts.toolCounts,
+    subagentFilesRead: 0,
+    transcriptPath,
+  };
+
+  const sessionsDir = path.join(vaultRoot, facts.area, facts.collection, 'sessions');
+  const targetPath = path.join(sessionsDir, childNoteFilename(input.sessionId, agentId));
+
+  const current = readNote(targetPath);
+  if (current.error) {
+    return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, vaultRoot, detail: '' };
+  }
+
+  // The same merge rule as a session note: lists grow, scalars only improve,
+  // and a tag added by hand survives. A subagent's note is rewritten if the
+  // same agent id stops twice.
+  const fields = current.fields ? mergeFields(current.fields, buildFields(context)) : buildFields(context);
+  const merged = { ...context, previousBody: current.body };
+  const result = persist(targetPath, renderNote(fields, renderBody(merged, fields)));
+  if (!result.ok) {
+    return { written: false, action: 'skip', skip: `write failed (${result.error})`, notePath: targetPath, vaultRoot, detail: '' };
+  }
+
+  const linked = linkIntoParent({ sessionsDir, sessionId: input.sessionId, childId: fields.id });
+
+  return {
+    written: true,
+    action: current.fields ? 'merge' : 'create',
+    skip: '',
+    notePath: targetPath,
+    vaultRoot,
+    detail:
+      `${facts.area}/${facts.collection}/sessions/${path.basename(targetPath)} ` +
+      `agent_type=${agentType || 'unknown'} parent=${linked}`,
+  };
+}
+
+/**
+ * Add this child to the parent note's `child_sessions`, if the parent note is
+ * already there.
+ *
+ * It usually is not — a worker normally stops long before the session that
+ * spawned it — and that is fine: the parent's own `SessionEnd` back-fills the
+ * list from the `subagents/` directory. This covers the other order, where the
+ * parent note already exists because the session was captured earlier.
+ */
+function linkIntoParent({ sessionsDir, sessionId, childId }) {
+  const parentPath = path.join(sessionsDir, noteFilename(sessionId));
+  const parent = readNote(parentPath);
+  if (!parent.fields || parent.error) return parent.error ? 'unreadable' : 'not yet written';
+
+  const existing = Array.isArray(parent.fields.child_sessions) ? parent.fields.child_sessions : [];
+  if (existing.includes(childId)) return 'already linked';
+
+  const fields = {
+    ...parent.fields,
+    child_sessions: uniqueCapped([...existing, childId], MAX_CHILD_SESSIONS),
+  };
+  const written = persist(parentPath, renderNote(fields, parent.body));
+  return written.ok ? 'linked' : 'link failed';
+}
+
+/**
+ * Where the agent's transcript is.
+ *
+ * The payload's `agent_transcript_path` is trusted when it exists; otherwise it
+ * is reconstructed from the session transcript's own directory, which is where
+ * Claude Code writes it: `<session-id>/subagents/agent-<agent-id>.jsonl`.
+ */
+function resolveAgentTranscript({ input, agentId, projectsRoot }) {
+  if (input.agentTranscriptPath && fs.existsSync(input.agentTranscriptPath)) return input.agentTranscriptPath;
+
+  const candidates = [];
+  if (input.transcriptPath) {
+    candidates.push(path.join(path.dirname(input.transcriptPath), input.sessionId, 'subagents'));
+  }
+  if (projectsRoot && input.cwd) {
+    candidates.push(path.join(projectsRoot, sanitize(input.cwd), input.sessionId, 'subagents'));
+  }
+
+  for (const dir of candidates) {
+    const file = path.join(dir, `agent-${agentId}.jsonl`);
+    if (fs.existsSync(file)) return file;
+  }
+  return '';
+}
+
+/** Claude Code's own scheme for a project directory name. */
+function sanitize(cwd) {
+  return String(cwd).replace(/\\/g, '/').replace(/[^a-zA-Z0-9]+/g, '-');
+}
+
+/** `agent-<id>.meta.json` beside the transcript: the agent type and its task. */
+function readAgentMeta(transcriptPath) {
+  const metaPath = transcriptPath.replace(/\.jsonl$/, '.meta.json');
+  try {
+    const parsed = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * What the worker was asked to do.
+ *
+ * Its own transcript opens with the task prompt as a sidechain turn, which
+ * `extractPrompts` finds. When it does not — some workers are handed their task
+ * entirely through the parent's `Agent` tool input — the `description` from the
+ * meta file beside the transcript is the same text, and is used instead.
+ */
+function agentPrompts(entries, meta) {
+  const found = extractPrompts(entries);
+  if (found.length) return found;
+
+  const description = redact(String(meta.description ?? '')).trim();
+  if (!description) return [];
+  return [{ text: description, timestamp: '', cwd: '' }];
+}

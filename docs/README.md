@@ -9,10 +9,12 @@ Read in this order if you are new to the project.
 | [ingestion.md](./ingestion.md) | The ingestion pipeline: parse → chunk → embed → upsert, how `content_hash` skips unchanged documents, the vault layout, and the SessionEnd capture hook that feeds it |
 | [embeddings.md](./embeddings.md) | Text → tokenizer → `bge-small-en-v1.5` → 384-dim vector → HNSW, why 384 dimensions and cosine distance, the Node/Python parity check, and what changing the model would cost |
 | [retrieval.md](./retrieval.md) | Hybrid vector + full-text search fused with Reciprocal Rank Fusion, the 0.70 relevance floor, the per-document cap, and the full `rag.search()` contract |
+| [tags.md](./tags.md) | The controlled tag vocabulary for session notes: what raises each term, the five-tag cap, and the weekly `unclassified` review |
 
 Database specifics — project ref, connection gotchas, migration mirror, access
 model — are in [../db/README.md](../db/README.md). Component-level READMEs live
-in [../ingest/](../ingest/README.md) and [../mcp-server/](../mcp-server/README.md).
+in [../hooks/](../hooks/README.md), [../ingest/](../ingest/README.md) and
+[../mcp-server/](../mcp-server/README.md).
 
 Diagrams are mermaid in fenced blocks and render natively on GitHub.
 

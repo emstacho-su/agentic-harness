@@ -204,9 +204,9 @@ OneDrive.
 vault/
   projects/
     agentic-harness/     index.md  sessions/  notes/  decisions/
+    bb2dash/             sessions/
     ev-trainer/          index.md  sessions/  notes/  decisions/
     quant-edge-tracker/  index.md  sessions/  notes/  decisions/
-    bb2dash-retrieval/   index.md  sessions/
     misc/                index.md  sessions/  notes/  decisions/
   classes/
     ist323/  ist352/  ist466/  ist471/  ecn304/  geo103/     (Fall 2026)
@@ -222,6 +222,12 @@ The second path segment (`agentic-harness`, `ist335`) becomes
 `filter_collection` matches with `=`, so keep new folders lowercase-hyphenated.
 Class folders are the lowercase form of the bb2dash course ids (`IST.323` →
 `ist323`; both `GEO.103.*` sections → `geo103`).
+
+A project folder is a **repository**, not a checkout. `bb2dash-wt-sl` was a
+worktree of `emstacho-su/bb2dash` and `bb2dash-retrieval` an earlier checkout of
+the same repository; both had grown their own folder, splitting one project's
+history three ways. They are gone, and the session-capture hook now resolves the
+collection from the git remote so they cannot come back.
 
 Every project and class folder carries an `index.md` whose frontmatter has a
 UUID `id:`, a `title:` and the `collection:`, so a rename never strands a row.
@@ -313,28 +319,123 @@ default**. Otherwise a partial or interrupted run would silently mass-delete.
 ## Session capture: the hook that feeds the vault
 
 This is the capability claude-mem used to provide and nothing else replaced. A
-Claude Code `SessionEnd` hook (`~/.claude/hooks/session-capture.mjs`, registered
-in `~/.claude/settings.json`) runs when a session ends:
+Claude Code `SessionEnd` hook runs when a session ends and turns its transcript
+into one note. The source lives in [`hooks/`](../hooks/README.md); `node
+hooks/install.mjs` deploys a byte-identical copy to `~/.claude/hooks/`, which is
+the path `~/.claude/settings.json` registers.
 
-1. Reads the session's JSONL transcript from `~/.claude/projects/<sanitised-cwd>/`.
-2. Derives the collection from the session's working directory — the cwd
-   basename, matched against existing vault folders, falling back to `misc`
-   rather than dropping the session.
-3. Writes `vault/<projects|classes>/<collection>/sessions/<date>-<slug>.md` with
-   frontmatter carrying `id`, `collection`, `session_id`, timestamps, prompt and
-   command counts, and the files touched.
+1. Reads the session's JSONL transcript from `~/.claude/projects/<sanitised-cwd>/`,
+   plus its subagent transcripts, within a byte and time budget.
+2. Resolves the collection: a class folder under `vault/classes/`, else the git
+   remote of the cwd — through a worktree to its main repository — else the
+   folder name, flagged `collection_source: folder`.
+3. Writes **one note per session**,
+   `vault/<projects|classes>/<collection>/sessions/<session_id>.md`, named by the
+   full session id and rewritten on every `SessionEnd`.
 4. Copies only user prompts and tool *inputs*, both run through redaction (env
    assignments, connection-string passwords, JWTs, vendor key formats). Raw tool
-   output is never copied.
+   output is never copied, with two narrow exceptions that keep one capture group
+   each: a pull request number from `gh pr` output and an artifact URL.
 
-Design rules, in priority order: never block session exit (the hook has a
-1.2 s internal deadline inside SessionEnd's ~1.5 s budget); never fail loudly
-(every path exits 0); never write a credential; never write an empty note.
+Design rules, in priority order: never block session exit (a 1.2 s internal
+deadline inside SessionEnd's ~1.5 s budget, with the elapsed milliseconds logged
+every run); never fail loudly (every path exits 0); never write a credential;
+never write an empty note.
 
 **Verified firing for real on 2026-09-09**, not just under a hand-fed payload:
 the log recorded a 121 ms write on session end, the note appeared in
 `projects/agentic-harness/sessions/`, and the next ingest run embedded it as the
 store's first `source='obsidian'` document.
+
+### Frontmatter: schema v2
+
+`schema_version: 2`. Every field below is present on every note. A field that
+could not be derived is an **empty string or an empty list** — never absent and
+never guessed, so "unknown" and "not applicable" stay distinguishable and each
+field keeps one type for metadata filtering.
+
+| Field | Value |
+| --- | --- |
+| `id` | `session-<session_id>` — the `external_id` ingest keys on, stable for the note's life |
+| `collection`, `collection_source` | the repository slug, and whether it came from `git` or a `folder` |
+| `status` | `active` → `concluded` → `superseded`; ratchets one way |
+| `concluded_at` | set when the session ends for a reason other than a resume |
+| `supersedes`, `resumed_from` | the resume chain, holding note ids |
+| `repo`, `branch`, `worktree`, `repos_touched` | git identity; `repos_touched` is how a cross-repo session stays one note |
+| `commits`, `prs` | commits in the session's window; PR numbers as **integers** |
+| `phase`, `tags` | `phase-<n>` and the controlled vocabulary in [tags.md](./tags.md) |
+| `parent_session`, `child_sessions` | the spawning session, and the agent transcripts this one spawned |
+| `memory_files`, `plan_file`, `docs_touched`, `artifacts` | lifted out of the touched-file list |
+| `files_modified` | repo-relative, with scratchpad, transcript and `node_modules` paths dropped |
+| `prompt_count`, `command_count`, `duration_minutes`, `tools_used` | volume |
+
+The v1 fields (`title`, `type`, `session_id`, `date`, `started_at`, `ended_at`,
+`cwd`, `cwds_seen`, `end_reason`, `agent`, `generator`) are unchanged.
+
+### Subagent capture
+
+A `SubagentStop` hook, the same entry point, writes one note per worker at
+`sessions/<session_id>--<agent_id>.md` with `parent_session` set to the session
+that spawned it and `agent_type` recording what kind of worker it was. The
+parent's `child_sessions` holds the child note ids, so a search follows the link
+in either direction: back from a worker by `parent_session`, forward from a
+session by `child_sessions`.
+
+The list is complete whichever order the events arrive in. A worker usually
+stops long before its parent, and the parent's `SessionEnd` back-fills
+`child_sessions` from the `subagents/` directory; a worker that stops after the
+parent was captured merges itself into the existing note.
+
+### One note per session, and what "merge" means
+
+The filename is the full `session_id`, never the date: a resumed session changes
+its date, and a date-keyed filename would strand the row already in the store.
+
+Stack edits these notes by hand, so a rewrite is a **merge**:
+
+- lists grow — a tag, commit or PR in the note stays in the note;
+- scalars only improve — a derived value replaces an empty one, never the
+  reverse;
+- `status` never regresses, and a stale `SessionEnd` replayed over a concluded
+  note writes nothing at all;
+- a note whose frontmatter will not parse is left alone rather than overwritten;
+- anything written **below the generated marker line** at the end of the body is
+  kept verbatim, so a paragraph of context typed into a note survives every
+  later capture.
+
+A resume that arrives after the note concluded starts a new `<id>-r2.md` naming
+what it continues in `resumed_from` and `supersedes`, and flips the earlier note
+to `superseded`. Nothing is deleted and no id ever changes meaning.
+
+One consequence worth knowing: `content_hash` is computed over the **body**, so
+a change confined to frontmatter would update the note on disk and nothing in
+the store. The fields that matter for retrieval are therefore mirrored into the
+note's `## Session facts` table — a note whose status flips is a new body, and
+the next run notices.
+
+### Tags
+
+[`docs/tags.md`](./tags.md) is the controlled vocabulary, mirrored into the
+vault's `templates/` folder. At most five hook-applied tags; tags added by hand
+are uncapped and never removed. A session the classifier cannot place gets
+exactly `tags: [unclassified]` and appears in the weekly review list:
+
+```bash
+node hooks/untagged-sessions.mjs --vault "C:/Users/estac/OneDrive - Syracuse University/vault"
+```
+
+### The one-time migration
+
+Notes written by hook 1.0.0 were filed by folder, named `<date>-<id8>.md` and
+carried no git context. `node hooks/migrate-sessions.mjs` moved all seven to
+`<session_id>.md` in the collection their recorded `cwd` resolves to, rewrote
+them as schema v2, and back-filled `branch`, `commits`, `prs` and `phase` from
+`git log` over each session's window plus `gh pr list --state all`. Fields that
+could not be derived were left empty.
+
+`bb2dash-retrieval` and `bb2dash-wt-sl` were emptied and removed. Neither
+checkout exists on disk any more, so an explicit table in `hooks/lib/migrate.mjs`
+maps them to `bb2dash`; nothing is inferred from a folder name.
 
 ### Ingest on capture
 

@@ -1,0 +1,166 @@
+/**
+ * Turning a transcript into the facts a note is made of.
+ *
+ * Shared by the two things that write notes: a finished session
+ * (`capture.mjs`) and a finished subagent (`subagent.mjs`). Both answer the same
+ * questions — which repository, which branch, which files, which tags, which
+ * commits — from the same evidence, so they ask them in one place rather than
+ * two that drift.
+ *
+ * Order of business, and why: every cheap and certain thing happens first
+ * (tools, paths, collection), the one subprocess happens last and only if the
+ * clock allows. A note missing its `commits:` is worth having; a note that
+ * never got written because `git log` was slow is not.
+ */
+
+import {
+  MAX_ARTIFACTS,
+  MAX_CWDS_SEEN,
+  MAX_DOCS_TOUCHED,
+  MAX_FILES_LISTED,
+  MAX_MEMORY_FILES,
+  MAX_PRS,
+  MAX_REPOS_TOUCHED,
+  RESERVE_MS,
+} from './constants.mjs';
+import { deriveCollection } from './collection.mjs';
+import { collectCommits, runGitSync } from './git-log.mjs';
+import { classifyPaths, makeRepoResolver } from './paths.mjs';
+import { resolveRepo } from './repo.mjs';
+import { classify } from './tags.mjs';
+import { toPosix, uniqueCapped } from './text.mjs';
+import { createAccumulator, extractTools, scanToolResults } from './transcript.mjs';
+
+/**
+ * Analyse one transcript.
+ *
+ * @param {object} args
+ * @param {object[]} args.entries    parsed JSONL entries
+ * @param {object[]} args.prompts    from `extractPrompts`
+ * @param {string} args.cwd          the working directory the hook reported
+ * @param {string} args.vaultRoot
+ * @param {number} args.deadlineAt
+ * @param {function} [args.runGit]
+ * @param {object} [args.into]       an accumulator to add to, when a caller has
+ *                                   already folded subagent transcripts into one
+ * @returns everything a note context needs, except the session's own identity.
+ */
+export function analyseTranscript({
+  entries,
+  prompts,
+  cwd,
+  vaultRoot,
+  deadlineAt,
+  runGit = runGitSync,
+  into = null,
+}) {
+  const accumulator = into ?? createAccumulator();
+  if (!into) extractTools(entries, accumulator);
+  scanToolResults(entries, accumulator);
+
+  const timing = deriveTiming(entries);
+  const cwdsSeen = uniqueCapped(entries.map((entry) => toPosix(entry.cwd)).filter(Boolean), MAX_CWDS_SEEN);
+  const effectiveCwd = cwd || cwdsSeen[cwdsSeen.length - 1] || '';
+
+  const repo = resolveRepo(effectiveCwd);
+  const { area, collection, collectionSource } = deriveCollection({ cwd: effectiveCwd, vaultRoot, repo });
+  const branch = repo.branch || lastBranchSeen(accumulator) || '';
+
+  const paths = classifyPaths(sortedFiles(accumulator), {
+    repoFor: makeRepoResolver(),
+    maxFiles: MAX_FILES_LISTED,
+    maxDocs: MAX_DOCS_TOUCHED,
+    maxMemory: MAX_MEMORY_FILES,
+    maxRepos: MAX_REPOS_TOUCHED,
+  });
+
+  const { tags, phase } = classify({
+    files: paths.files,
+    docsTouched: paths.docsTouched,
+    commandTexts: accumulator.commandTexts,
+    promptTexts: prompts.map((prompt) => prompt.text),
+    skills: [...accumulator.skills],
+    toolNames: [...accumulator.toolCounts.keys()],
+    branch,
+  });
+
+  const git = deriveCommits({ repo, timing, runGit, deadlineAt });
+
+  return {
+    accumulator,
+    timing,
+    cwdsSeen,
+    cwd: effectiveCwd,
+    repo,
+    area,
+    collection,
+    collectionSource,
+    branch,
+    paths,
+    tags,
+    phase,
+    commits: git.shas,
+    prs: uniqueCapped([...accumulator.prNumbers, ...git.prs], MAX_PRS),
+    artifacts: uniqueCapped(accumulator.artifacts, MAX_ARTIFACTS),
+    toolCounts: sortedToolCounts(accumulator),
+  };
+}
+
+/**
+ * When the session started and ended.
+ *
+ * Ordered by parsed instant rather than by string. Every timestamp Claude Code
+ * writes today is `YYYY-MM-DDTHH:MM:SS.sssZ`, for which a lexical sort happens
+ * to be chronological — but comparing the numbers costs the same and does not
+ * depend on that staying true. The duration is clamped, because a negative one
+ * is nonsense that `Number.isFinite` would happily pass into the frontmatter.
+ */
+export function deriveTiming(entries) {
+  let startedAt = '';
+  let endedAt = '';
+  let earliest = Number.POSITIVE_INFINITY;
+  let latest = Number.NEGATIVE_INFINITY;
+
+  for (const entry of entries) {
+    const stamp = entry?.timestamp;
+    if (typeof stamp !== 'string' || !stamp) continue;
+    const at = Date.parse(stamp);
+    if (!Number.isFinite(at)) continue;
+    if (at < earliest) {
+      earliest = at;
+      startedAt = stamp;
+    }
+    if (at > latest) {
+      latest = at;
+      endedAt = stamp;
+    }
+  }
+
+  const durationMs = startedAt && endedAt ? Math.max(0, latest - earliest) : Number.NaN;
+  return { startedAt, endedAt, durationMs };
+}
+
+function deriveCommits({ repo, timing, runGit, deadlineAt }) {
+  if (!repo.mainRoot || !timing.startedAt) return { shas: [], prs: [] };
+  if (Date.now() > deadlineAt - RESERVE_MS) return { shas: [], prs: [] };
+  const result = collectCommits({
+    repoRoot: repo.mainRoot,
+    since: timing.startedAt,
+    until: timing.endedAt,
+    runGit,
+  });
+  return { shas: result.shas, prs: result.prs };
+}
+
+function sortedFiles(accumulator) {
+  return [...accumulator.files.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+function sortedToolCounts(accumulator) {
+  return [...accumulator.toolCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+function lastBranchSeen(accumulator) {
+  const branches = [...accumulator.branches];
+  return branches.length ? branches[branches.length - 1] : '';
+}
