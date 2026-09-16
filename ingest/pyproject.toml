@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 ingest = "ingest.cli:main"
+export-materials = "ingest.materials.cli:main"
 
 [dependency-groups]
 dev = [

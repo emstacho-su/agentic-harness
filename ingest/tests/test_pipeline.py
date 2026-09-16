@@ -19,14 +19,22 @@ BODY = (
 )
 
 
-def document(external_id: str = "notes/a.md", body: str = BODY) -> SourceDocument:
+def document(
+    external_id: str = "notes/a.md",
+    body: str = BODY,
+    *,
+    title: str | None = "Ingest Notes",
+    collection: str | None = "bb2dash",
+    metadata: dict | None = None,
+) -> SourceDocument:
     return SourceDocument(
         source="obsidian",
         external_id=external_id,
         body=body,
-        title="Ingest Notes",
+        title=title,
         agent="claude-code",
-        metadata={"tags": ["rag"]},
+        collection=collection,
+        metadata={"tags": ["rag"]} if metadata is None else metadata,
     )
 
 
@@ -122,6 +130,153 @@ def test_same_external_id_across_sources_are_separate_documents(fake_store, fake
     )
     pipeline(fake_store, fake_embedder).run([a, b])
     assert len(fake_store.documents) == 2
+
+
+# --------------------------------------------------------------------------
+# frontmatter-only changes: the metadata update path
+# --------------------------------------------------------------------------
+#
+# content_hash is over the BODY. A resume flipping status to superseded, a
+# child_sessions link, or `sweep-concluded --apply` setting status/concluded_at
+# all change frontmatter and nothing else — and used to hit the UNCHANGED
+# short-circuit, leaving rag.documents.metadata stale until the body happened to
+# change. The hash function is deliberately unchanged: touching it would re-embed
+# every document in the store.
+
+
+def test_same_body_and_same_metadata_is_unchanged_and_writes_nothing(
+    fake_store, fake_embedder
+):
+    docs = [document()]
+    pipeline(fake_store, fake_embedder).run(docs)
+    embeds_after_first = len(fake_embedder.calls)
+
+    stats = pipeline(fake_store, fake_embedder).run(docs)
+
+    assert stats.count(Action.UNCHANGED) == 1
+    assert len(fake_embedder.calls) == embeds_after_first
+    assert fake_store.metadata_writes == 0
+
+
+def test_a_frontmatter_only_change_updates_metadata_without_re_embedding(
+    fake_store, fake_embedder
+):
+    pipeline(fake_store, fake_embedder).run([document()])
+    embeds_after_first = len(fake_embedder.calls)
+    writes_after_first = fake_store.write_calls
+
+    flipped = document(metadata={"tags": ["rag"], "status": "superseded"})
+    stats = pipeline(fake_store, fake_embedder).run([flipped])
+
+    assert stats.count(Action.METADATA_UPDATED) == 1
+    assert stats.chunks_written == 0
+    assert len(fake_embedder.calls) == embeds_after_first, "re-embedded a body that did not change"
+    assert fake_store.write_calls == writes_after_first, "re-wrote chunks for a frontmatter edit"
+    assert fake_store.metadata_writes == 1
+    state = fake_store.documents[("obsidian", "notes/a.md")]
+    assert state.metadata["status"] == "superseded"
+
+
+def test_a_title_only_change_is_also_a_metadata_update(fake_store, fake_embedder):
+    pipeline(fake_store, fake_embedder).run([document()])
+    stats = pipeline(fake_store, fake_embedder).run([document(title="Renamed")])
+
+    assert stats.count(Action.METADATA_UPDATED) == 1
+    assert fake_store.documents[("obsidian", "notes/a.md")].title == "Renamed"
+    assert len(fake_embedder.calls) == 1
+
+
+def test_metadata_comparison_ignores_key_order(fake_store, fake_embedder):
+    pipeline(fake_store, fake_embedder).run(
+        [document(metadata={"a": 1, "b": {"x": True, "y": [1, 2]}})]
+    )
+    stats = pipeline(fake_store, fake_embedder).run(
+        [document(metadata={"b": {"y": [1, 2], "x": True}, "a": 1})]
+    )
+
+    assert stats.count(Action.UNCHANGED) == 1
+    assert fake_store.metadata_writes == 0
+
+
+def test_a_changed_body_still_takes_the_full_re_embed_path(fake_store, fake_embedder):
+    pipeline(fake_store, fake_embedder).run([document()])
+    edited = document(
+        body=BODY + "\n\nA new paragraph.\n",
+        metadata={"tags": ["rag"], "status": "concluded"},
+    )
+    stats = pipeline(fake_store, fake_embedder).run([edited])
+
+    assert stats.count(Action.UPDATED) == 1
+    assert stats.chunks_written > 0
+    assert len(fake_embedder.calls) == 2
+    assert fake_store.metadata_writes == 0, "the full write already carries the metadata"
+
+
+def test_force_re_embeds_rather_than_only_refreshing_metadata(fake_store, fake_embedder):
+    pipeline(fake_store, fake_embedder).run([document()])
+    stats = pipeline(fake_store, fake_embedder, force=True).run(
+        [document(metadata={"tags": ["rag"], "status": "concluded"})]
+    )
+
+    assert stats.count(Action.UPDATED) == 1
+    assert fake_store.metadata_writes == 0
+
+
+def test_a_moved_note_gets_its_collection_corrected(fake_store, fake_embedder):
+    """A note with a stable id that moves folders keeps its body.
+
+    The collection is what `filter_collection` matches on, so leaving it stale
+    is invisible: the note simply stops coming back for its new project and
+    keeps coming back for its old one.
+    """
+    pipeline(fake_store, fake_embedder).run([document(collection="foo")])
+    stats = pipeline(fake_store, fake_embedder).run([document(collection="bar")])
+
+    assert stats.count(Action.METADATA_UPDATED) == 1
+    assert fake_store.documents[("obsidian", "notes/a.md")].collection == "bar"
+    assert len(fake_embedder.calls) == 1, "a move must not re-embed"
+
+
+def test_metadata_that_cannot_be_compared_is_refreshed_rather_than_failed(
+    fake_store, fake_embedder
+):
+    """canonical() can refuse a stored value; that must not fail the document.
+
+    This path used to be a guaranteed no-op. A document that raised here would
+    be counted FAILED on every run, and a run with failures never refreshes the
+    health timestamp — so `ingest --health` would report STALE for good over a
+    document nothing is trying to change.
+    """
+    from dataclasses import replace
+
+    pipeline(fake_store, fake_embedder).run([document()])
+    key = ("obsidian", "notes/a.md")
+    deep: dict = {}
+    cursor = deep
+    for _ in range(40):
+        cursor["n"] = {}
+        cursor = cursor["n"]
+    fake_store.documents[key] = replace(fake_store.documents[key], metadata=deep)
+
+    stats = pipeline(fake_store, fake_embedder).run([document()])
+
+    assert stats.count(Action.FAILED) == 0
+    assert stats.count(Action.METADATA_UPDATED) == 1
+    assert fake_store.documents[key].metadata == {"tags": ["rag"]}
+
+
+def test_dry_run_reports_a_frontmatter_only_change_without_writing(
+    fake_store, fake_embedder
+):
+    pipeline(fake_store, fake_embedder).run([document()])
+    stats = pipeline(fake_store, None, dry_run=True).run(
+        [document(metadata={"tags": ["rag"], "status": "concluded"})]
+    )
+
+    assert stats.count(Action.PLANNED_METADATA) == 1
+    assert fake_store.metadata_writes == 0
+    # Exactly the one call the first, non-dry run made: the dry run added none.
+    assert len(fake_embedder.calls) == 1
 
 
 # --------------------------------------------------------------------------

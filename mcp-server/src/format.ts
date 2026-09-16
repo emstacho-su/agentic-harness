@@ -13,6 +13,7 @@
  */
 
 import type { CollectionCount, DocumentRow, SearchRow } from './db/types.js';
+import { describeFilterMetadata, type MetadataFilter } from './tools/filter-metadata.js';
 
 /** Chunks are ~1-2k chars; cap defensively so one row cannot flood a context. */
 const MAX_CHUNK_CHARS = 4_000;
@@ -60,13 +61,24 @@ export interface SearchContext {
   collection: string | null;
   matchCount: number;
   minSimilarity: number | null;
+  /** Frontmatter contains-match, or null. See tools/filter-metadata.ts. */
+  filterMetadata?: MetadataFilter;
+  /** False means `status: superseded` documents were excluded. */
+  includeSuperseded?: boolean;
 }
 
 function describeScope(context: SearchContext): string {
   const parts: string[] = [];
   if (context.source) parts.push(`source "${context.source}"`);
   if (context.collection) parts.push(`collection "${context.collection}"`);
+  parts.push(...describeFilterMetadata(context.filterMetadata ?? null));
+  if (context.includeSuperseded === true) parts.push('superseded notes included');
   return parts.length > 0 ? parts.join(', ') : 'all sources and collections';
+}
+
+/** True when anything at all narrowed the search. */
+function isFiltered(context: SearchContext): boolean {
+  return Boolean(context.source || context.collection || context.filterMetadata);
 }
 
 /**
@@ -90,6 +102,19 @@ export function formatEmptyResults(
       : `No chunk cleared the ${floor} cosine similarity floor, and no chunk matched the query terms literally. On this corpus that normally means the store genuinely holds nothing on this topic — it is a real answer, not a failure.`,
   ];
 
+  if (context.filterMetadata) {
+    lines.push(
+      '',
+      'The frontmatter filters (repo, phase, tags) are matched exactly and are ANDed: a document must carry every key, and every listed tag, to qualify. Only captured session notes carry them, so any of them also excludes vault notes and migrated memory.',
+    );
+  }
+
+  if (context.includeSuperseded === false) {
+    lines.push(
+      'Superseded notes were excluded. Pass include_superseded: true to search the earlier halves of resumed sessions too.',
+    );
+  }
+
   if (context.collection) {
     lines.push('', `Collection names are matched exactly and are case-sensitive.`);
     if (collections.length > 0) {
@@ -108,7 +133,7 @@ export function formatEmptyResults(
   lines.push(
     '',
     'If you expected a hit, try in this order:',
-    context.collection || context.source
+    isFiltered(context)
       ? '- Drop the filters and search everything.'
       : '- Rephrase with fewer, more central terms.',
     floor === null

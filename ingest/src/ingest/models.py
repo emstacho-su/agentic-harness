@@ -52,10 +52,26 @@ class Chunk:
 
 @dataclass(frozen=True)
 class DocumentState:
-    """What the store already knows about a ``(source, external_id)`` pair."""
+    """What the store already knows about a ``(source, external_id)`` pair.
+
+    Everything the upsert writes *except* the body and its hash is carried here,
+    so the pipeline can tell a document whose frontmatter changed from one that
+    did not change at all. The hash is over the body only, so without these a
+    status flip, a new ``child_sessions`` link or a note moved to another folder
+    would hit the unchanged short-circuit and never reach the database.
+
+    No field has a default, deliberately. A store that returned only
+    ``(document_id, content_hash)`` would make every document look as though its
+    title and metadata had been emptied, and the pipeline would rewrite all of
+    them on every run — silently and expensively. Missing them is a TypeError.
+    """
 
     document_id: int
     content_hash: str
+    title: str | None
+    collection: str | None
+    agent: str | None
+    metadata: dict[str, Any]
 
 
 @dataclass(frozen=True)

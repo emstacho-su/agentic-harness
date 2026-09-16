@@ -57,11 +57,13 @@ from rag.search(
   filter_collection => $5::text,
   rrf_k             => $6::int,
   max_per_document  => $7::int,
-  min_similarity    => $8::double precision
+  min_similarity    => $8::double precision,
+  filter_metadata   => $9::jsonb,
+  include_superseded => $10::boolean
 )
 ```
 
-This is not stylistic. The signature has already changed twice; when
+This is not stylistic. The signature has already changed three times; when
 `filter_collection` was inserted at position 5, the previous positional call put an `int`
 where a `text` was expected, no overload matched, and Postgres reported it as
 **42883 "function does not exist"** — which reads like a missing migration and sends you
@@ -202,6 +204,34 @@ progress bar is explicitly disabled).
 | `source` | `"obsidian"` \| `"claude-mem"` \| `"hermes"` | no | all | Narrows to one producer. |
 | `collection` | string | no | all | Narrows to one project or class. **Exact and case-sensitive.** |
 | `min_similarity` | number, 0–1 | no | `0.70` | Cosine floor on the semantic arm. Lower it to widen the net. |
+| `repo` | string, 1–256 chars | no | all | Session notes only: the git remote's `owner/name`, e.g. `emstacho-su/bb2dash`. Exact. |
+| `phase` | string, 1–64 chars | no | all | Session notes only: the project phase, e.g. `phase-7`. Exact. |
+| `tags` | string[], 1–10 entries | no | all | Documents must carry **all** of these tags. |
+| `include_superseded` | boolean | no | `false` | Include the earlier half of a resumed session (`status: superseded`). |
+
+`repo`, `phase` and `tags` become one jsonb object that `rag.search` contains-matches
+against `documents.metadata`, which holds each session note's frontmatter verbatim:
+
+```json
+{ "repo": "emstacho-su/bb2dash", "phase": "phase-7", "tags": ["review"] }
+```
+
+Three things follow from that being a containment match:
+
+- **Everything is ANDed.** Every key must be present and every listed tag must be in the
+  note's `tags` array. Two or three filters is usually the most that still matches.
+- **Only session notes carry these keys**, so any of them also excludes vault notes and
+  migrated claude-mem memory.
+- **Types are frozen.** `repo` and `phase` are strings, `tags` is an array of strings.
+  `{"prs": [6]}` against a note that stored `{"prs": ["6"]}` matches nothing and raises
+  nothing — which is exactly why these are three named, validated inputs rather than a
+  free-form jsonb parameter an agent could hallucinate a key into.
+
+`include_superseded` defaults to **false** here and `true` in the SQL function. A resumed
+session leaves its earlier note ingested and searchable, marked `superseded`; nothing is
+deleted, but the default answer to "what happened in that session" is the note that
+carried on. The SQL default stays permissive so no other caller changed behaviour when
+the parameter was added; the policy lives at this boundary.
 
 `collection` is an open string rather than an enum because 17 exist today and vault
 ingestion will add more. Live values, most populated first: `estac` (513),
@@ -349,17 +379,23 @@ mcp-server/
 ## Tests
 
 ```powershell
-npm test                 # 117 tests
+npm test                 # 155 tests
 npm run test:coverage
 npm run typecheck        # includes the test sources
 ```
 
 The suite mocks the database and the embedder, so it needs no credentials and no network.
 It covers input validation, result formatting, source and collection filtering, the
-similarity/RRF labelling, sub-floor lexical hits, the empty-result path, the
+frontmatter filters (`repo` / `phase` / `tags`) and their containment semantics, the
+`include_superseded` default — two calls differing only in that flag return different
+counts — the similarity/RRF labelling, sub-floor lexical hits, the empty-result path, the
 dimension-mismatch guard, the bb2dash guard, named-argument binding, Postgres error
 mapping, pgvector literal encoding, and a full protocol round-trip over the SDK's in-memory
 transport.
+
+The fake `rag.search` in `test/helpers.ts` implements the subset of Postgres `jsonb @>`
+the metadata tests need — scalars by equality, arrays by containment — so those tests
+assert real filtering rather than just argument plumbing.
 
 Current coverage: 90% statements, 85% branches, 90% functions.
 

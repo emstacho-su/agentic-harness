@@ -2,10 +2,11 @@
 
 All retrieval goes through one database function, `rag.search()`. It runs two
 independent searches over the same chunks, merges their results into a single
-ordering, caps how many chunks one document may contribute, and refuses to
-surface semantic neighbours that are not actually close.
+ordering, narrows by source, collection and frontmatter, caps how many chunks one
+document may contribute, and refuses to surface semantic neighbours that are not
+actually close.
 
-> **Status.** Live on `harness-memory` over 1,306 documents and 2,289 chunks.
+> **Status.** Live on `harness-memory` over 1,324 documents and 2,360 chunks.
 > The similarity numbers below were measured on that corpus, not invented.
 
 ---
@@ -37,7 +38,7 @@ class.
 
 ```mermaid
 flowchart TD
-    Q["rag.search(query_embedding, query_text, match_count,<br/>filter_source, filter_collection, rrf_k,<br/>max_per_document, min_similarity)"]
+    Q["rag.search(query_embedding, query_text, match_count,<br/>filter_source, filter_collection, rrf_k,<br/>max_per_document, min_similarity,<br/>filter_metadata, include_superseded)"]
 
     Q --> G{"both query args null?"}
     G -->|"yes"| X["RAISE — a silent empty result<br/>would be indistinguishable from no match"]
@@ -64,7 +65,7 @@ flowchart TD
     C --> O["ORDER BY fused_score DESC<br/>LIMIT match_count"]
     O --> R["chunk_id, doc_id, doc_source, doc_collection, doc_external,<br/>doc_title, chunk_content, doc_metadata,<br/>fused_score, vector_similarity"]
 
-    FS["filter_source<br/>filter_collection"] -.->|"applied inside both arms"| A1
+    FS["filter_source<br/>filter_collection<br/>filter_metadata<br/>include_superseded"] -.->|"applied inside both arms"| A1
     FS -.->|"applied inside both arms"| A2
 ```
 
@@ -79,7 +80,8 @@ Points worth noticing in that diagram:
 - **Filters are pushed into each arm**, not applied after fusion. Filtering
   afterwards would let irrelevant sources consume candidate slots and return
   fewer than `match_count` rows. `filter_collection` matches with `=` — exact,
-  case-sensitive.
+  case-sensitive. `filter_metadata` and the superseded exclusion sit in the same
+  place, for the same reason.
 - **Each arm over-fetches.** `greatest(match_count * 10, 100)` retrieves ten
   times the requested rows, floor 100. Fusion needs a pool deep enough to find
   agreement, and the per-document cap needs room to bite: if each arm returned
@@ -233,6 +235,106 @@ Three rules follow from how it is wired:
 
 ---
 
+## Filtering on frontmatter
+
+`filter_collection` answers "which project", and nothing else. Once the session
+hook started writing relational context into each note's frontmatter — the repo,
+the branch, the phase, the tags, the resume chain — the store could answer much
+more specific questions than the function could express.
+
+`filter_metadata` is one `jsonb` parameter that covers all of them:
+
+```sql
+select * from rag.search(
+  query_text      => 'matched-passage snippets',
+  filter_metadata => '{"repo": "emstacho-su/bb2dash", "phase": "phase-7"}'::jsonb
+);
+```
+
+It is a **containment** match, `documents.metadata @> filter_metadata`, and that
+single operator gives three behaviours at once:
+
+| Filter | Matches |
+| --- | --- |
+| `{"repo": "emstacho-su/bb2dash"}` | scalar equality on one key |
+| `{"repo": "…", "phase": "phase-7"}` | both keys — the keys are ANDed |
+| `{"tags": ["review"]}` | notes whose `tags` array **contains** `review` |
+| `{"tags": ["review", "db"]}` | notes containing **both** tags |
+
+`documents.metadata` holds each note's YAML frontmatter verbatim, so the filter
+keys are the frontmatter keys. Nothing had to be extracted into columns, and a
+new frontmatter field becomes filterable the moment ingestion stores it.
+
+### Why it is not free-form jsonb on the MCP tool
+
+A containment match against a key the corpus does not have returns zero rows and
+raises nothing. To a model reading the result that is indistinguishable from "the
+store holds nothing on this topic" — so a single hallucinated key silently turns
+a good search into a dead end. The MCP `search_context` tool therefore exposes
+three named, described, validated inputs (`repo`, `phase`, `tags`) and builds the
+object itself. `rag.search` still takes the general parameter; the narrowing
+happens one layer up, where the caller is a language model.
+
+For the same reason the value **types** are frozen rather than inferred:
+`{"prs": [6]}` against a note that stored `{"prs": ["6"]}` matches nothing, with
+no error anywhere. One type per field is a contract between the hook that writes
+the frontmatter and the tool that filters on it.
+
+### The index it needs
+
+```sql
+create index documents_metadata_idx on rag.documents using gin (metadata jsonb_path_ops);
+```
+
+`jsonb_path_ops` indexes only the `@>` operator and is two to three times smaller
+than the default `jsonb_ops`, which also supports `?`, `?&` and `?|`. `@>` is the
+only jsonb operator `rag.search` uses, so the larger class would cost index size
+and write amplification for operators nothing calls.
+
+The index has to be *used*, not merely present: a post-ANN filter is exactly the
+failure this design is avoiding. `EXPLAIN` on either arm shows it driving the
+plan:
+
+```
+Nested Loop
+  ->  Bitmap Heap Scan on documents d (actual rows=2)
+        Recheck Cond: (metadata @> '{"repo": "emstacho-su/bb2dash", "phase": "phase-9"}'::jsonb)
+        Filter: (COALESCE((metadata ->> 'status'), '') <> 'superseded')
+        ->  Bitmap Index Scan on documents_metadata_idx (actual rows=2)
+              Index Cond: (metadata @> '{"repo": "emstacho-su/bb2dash", "phase": "phase-9"}'::jsonb)
+  ->  Index Scan using chunks_document_idx on chunks c
+```
+
+The documents scan is the **driving** node and the chunk scan is nested inside
+it, which is the shape that proves the filter ran first. If the two were the
+other way round the filter would be running after the chunk scan, results would
+quietly fall short of `match_count`, and nothing would look broken.
+
+---
+
+## Superseded notes
+
+A session that is resumed writes a second note that carries on from the first.
+The first is not deleted and not un-ingested — it is marked `status: superseded`
+and stays searchable, because the resume chain is itself something you may want
+to search. It simply should not be the default answer to "what happened in that
+session".
+
+`include_superseded` handles that:
+
+- **In SQL it defaults to `true`.** Adding a parameter must not change what an
+  existing caller gets, and every caller written before this migration passes
+  nothing.
+- **In the MCP tool it defaults to `false`.** That is where the policy belongs:
+  the caller there is a model reconstructing what happened, and it wants the note
+  that carried on.
+
+The predicate is `coalesce(metadata ->> 'status', '') <> 'superseded'`, so a
+document with no `status` at all — every vault note, all the migrated memory —
+is kept. Only an explicit `superseded` is dropped.
+
+---
+
 ## The per-document cap
 
 Long documents produce many chunks, and many of them match the same query.
@@ -263,18 +365,20 @@ is to get the right material into that set, not to rank it perfectly.
 
 ## The contract
 
-As applied by `db/migrations/20260909190458_rag_search_relevance_floor.sql`:
+As applied by `db/migrations/20260915144257_rag_search_filter_metadata.sql`:
 
 ```sql
 rag.search(
-  query_embedding   extensions.vector(384) default null,
-  query_text        text                   default null,
-  match_count       int                    default 10,
-  filter_source     text                   default null,
-  filter_collection text                   default null,   -- project or class
-  rrf_k             int                    default 60,
-  max_per_document  int                    default 3,      -- null disables
-  min_similarity    double precision       default 0.70    -- null disables
+  query_embedding    extensions.vector(384) default null,
+  query_text         text                   default null,
+  match_count        int                    default 10,
+  filter_source      text                   default null,
+  filter_collection  text                   default null,   -- project or class
+  rrf_k              int                    default 60,
+  max_per_document   int                    default 3,      -- null disables
+  min_similarity     double precision       default 0.70,   -- null disables
+  filter_metadata    jsonb                  default null,   -- contains-match on frontmatter
+  include_superseded boolean                default true    -- false drops status: superseded
 )
 returns table (
   chunk_id          bigint,
@@ -290,9 +394,9 @@ returns table (
 )
 ```
 
-**Bind arguments by name.** This signature has changed three times — gaining
+**Bind arguments by name.** This signature has changed four times — gaining
 `filter_collection`, `max_per_document`, then `min_similarity` and
-`vector_similarity`. When `filter_collection` was inserted at position five, the
+`vector_similarity`, then `filter_metadata` and `include_superseded`. When `filter_collection` was inserted at position five, the
 MCP server's positional call put an `int` where a `text` was expected, no
 overload matched, and Postgres reported **42883 "function does not exist"** —
 which reads like a missing migration and sends you debugging the wrong thing.

@@ -59,8 +59,8 @@ flowchart LR
     subgraph project["Supabase project harness-memory — Postgres 17, pgvector 0.8.2"]
         subgraph ragschema["schema rag"]
             fn["rag.search()<br/>hybrid vector + FTS, RRF<br/>0.70 cosine floor"]
-            docs[("rag.documents<br/>1,306 rows, 18 collections")]
-            chunks[("rag.chunks<br/>2,289 rows<br/>embedding vector 384<br/>tsv tsvector")]
+            docs[("rag.documents<br/>1,319 rows, 27 collections")]
+            chunks[("rag.chunks<br/>2,312 rows<br/>embedding vector 384<br/>tsv tsvector")]
         end
     end
 
@@ -140,7 +140,7 @@ Constraints and indexes that carry real weight:
 | --- | --- |
 | `unique (source, external_id)` on documents | Makes re-ingestion idempotent. The same vault note always lands on the same row. |
 | `unique (document_id, chunk_index)` on chunks | Chunk N of document D is one row, so re-chunking overwrites rather than duplicates. |
-| `content_hash` + btree index | Lets ingestion skip a document whose bytes have not changed. See [ingestion.md](./ingestion.md). |
+| `content_hash` + btree index | Lets ingestion skip a document whose body bytes have not changed; a frontmatter-only edit still refreshes `title` and `metadata` without re-embedding. See [ingestion.md](./ingestion.md). |
 | btree on `collection` | The project/class filter is an index probe, not a scan. |
 | HNSW on `embedding`, `vector_cosine_ops` | Approximate nearest-neighbour search. See [embeddings.md](./embeddings.md). |
 | GIN on `tsv` | Full-text search. `tsv` is a stored generated column, so it can never fall out of sync with `content`. |
@@ -361,7 +361,7 @@ On secrets:
 | Harness rebuild | `~/.claude/` | Done — 71→12 skills, 58→0 agents, 60→0 commands, 1 hook |
 | claude-mem export | `~/.claude-archive/2026-09-09/` | Done — 4 JSON files, snapshot verified |
 | `rag` schema + `rag.search()` | `db/migrations/` | Applied to `harness-memory`, 3 migrations, verified |
-| Ingestion pipeline | `ingest/` | Live — 1,305 claude-mem documents + vault notes; 214 tests |
+| Ingestion pipeline | `ingest/` | Live — 1,305 claude-mem documents + 14 vault notes; 261 tests |
 | Retrieval MCP server | `mcp-server/` | Live — registered with Claude Code as `rag`; 117 tests |
 | Obsidian vault | `OneDrive - Syracuse University/vault/` | Live — `projects/`, `classes/`, `daily/` |
 | Session capture hook | `~/.claude/hooks/session-capture.mjs` | Live — observed firing unprompted on 2026-09-09, note ingested |

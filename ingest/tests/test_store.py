@@ -90,7 +90,7 @@ VECTORS = ([0.1] * 384, [0.2] * 384)
 
 
 def test_state_lookup_uses_the_upsert_key():
-    conn = FakeConnection(next_row=(12, "abc123"))
+    conn = FakeConnection(next_row=(12, "abc123", "A", "bb2dash", "claude-code", {"tags": ["rag"]}))
     state = PostgresStore(conn).get_document_state("obsidian", "notes/a.md")
 
     assert state is not None
@@ -98,6 +98,126 @@ def test_state_lookup_uses_the_upsert_key():
     sql, params = conn.log[0][1], conn.log[0][2]
     assert "source = %s AND external_id = %s" in sql
     assert params == ("obsidian", "notes/a.md")
+
+
+def test_state_lookup_returns_every_column_the_upsert_writes_but_the_body():
+    """The pipeline needs these to spot an edit the body hash cannot see.
+
+    `collection` especially: a note with a stable frontmatter id that moves
+    between folders keeps its body, and a stale collection is invisible because
+    `filter_collection` just stops matching it.
+    """
+    conn = FakeConnection(
+        next_row=(12, "abc123", "A title", "bb2dash", "claude-code", {"status": "concluded"})
+    )
+    state = PostgresStore(conn).get_document_state("obsidian", "notes/a.md")
+
+    assert state.title == "A title"
+    assert state.collection == "bb2dash"
+    assert state.agent == "claude-code"
+    assert state.metadata == {"status": "concluded"}
+    sql = conn.log[0][1]
+    for column in ("title", "collection", "agent", "metadata"):
+        assert column in sql
+
+
+@pytest.mark.parametrize(
+    "stored, expected",
+    [
+        ({"a": 1}, {"a": 1}),
+        ('{"a": 1}', {"a": 1}),      # a connection without the json loader
+        (None, {}),
+        ("not json at all", {}),
+        ([1, 2], {}),                # a JSON array is not metadata
+    ],
+)
+def test_metadata_column_shapes_all_come_back_as_a_dict(stored, expected):
+    conn = FakeConnection(next_row=(12, "abc123", None, None, None, stored))
+    state = PostgresStore(conn).get_document_state("obsidian", "notes/a.md")
+
+    assert state.metadata == expected
+    assert state.title is None
+    assert state.collection is None
+
+
+MOVED = SourceDocument(
+    source="obsidian",
+    external_id="session-1",
+    body="Body text.",
+    title="A title",
+    agent="claude-code",
+    collection="bb2dash",
+    metadata={"status": "superseded"},
+)
+
+
+def test_metadata_update_touches_no_chunk_and_commits_once():
+    conn = FakeConnection()
+    conn.rowcount = 1
+    PostgresStore(conn).update_document_metadata(12, MOVED)
+
+    statements = conn.statements()
+    assert len(statements) == 1
+    assert statements[0].startswith("UPDATE rag.documents")
+    assert "%s::jsonb" in statements[0]
+    assert "rag.chunks" not in statements[0]
+    assert conn.commits == 1
+    assert conn.rollbacks == 0
+
+
+def test_metadata_update_rewrites_the_collection_a_moved_note_landed_in():
+    """The upsert rewrites `collection`; this statement has to as well.
+
+    A note with a stable frontmatter id that moves from projects/foo to
+    projects/bar keeps its body, so this is the only write that would ever
+    correct its collection — and `filter_collection` matches with `=`, so a
+    stale one silently stops returning the note.
+    """
+    conn = FakeConnection()
+    conn.rowcount = 1
+    PostgresStore(conn).update_document_metadata(12, MOVED)
+
+    sql, params = conn.log[0][1], conn.log[0][2]
+    assert "collection = %s" in sql
+    assert "agent = %s" in sql
+    assert params[0] == "A title"
+    assert params[1] == "bb2dash"
+    assert params[2] == "claude-code"
+    assert json.loads(params[3]) == {"status": "superseded"}
+    assert params[4] == 12
+
+
+def test_a_metadata_update_that_matched_no_row_is_an_error_not_a_success():
+    """A concurrent --prune can delete the row between the lookup and the write.
+
+    An UPDATE matching nothing commits happily, and the run would otherwise
+    report a document refreshed that no longer exists.
+    """
+    conn = FakeConnection()
+    conn.rowcount = 0
+    with pytest.raises(StoreError, match="no document with id 12"):
+        PostgresStore(conn).update_document_metadata(12, MOVED)
+    assert conn.rollbacks >= 1
+
+
+def test_a_failed_metadata_update_rolls_back_and_raises_a_typed_error():
+    conn = FakeConnection(raise_on="UPDATE rag.documents")
+    with pytest.raises(StoreError, match="Metadata update"):
+        PostgresStore(conn).update_document_metadata(12, MOVED)
+    assert conn.rollbacks >= 1
+    assert conn.commits == 0
+
+
+def test_metadata_update_refuses_a_non_integer_document_id():
+    conn = FakeConnection()
+    with pytest.raises(StoreError, match="document_id"):
+        PostgresStore(conn).update_document_metadata("12", MOVED)
+    assert conn.statements() == []
+
+
+def test_null_store_refuses_a_metadata_update():
+    with pytest.raises(StoreError):
+        NullStore().update_document_metadata(1, MOVED)
 
 
 def test_missing_document_returns_none():

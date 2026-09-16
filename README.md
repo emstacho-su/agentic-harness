@@ -38,7 +38,7 @@ flowchart LR
     mcp --> search["rag.search()<br/>vector + full-text, RRF<br/>0.70 cosine floor"]
 
     ing ==>|"DATABASE_URL"| db
-    search --> db[("harness-memory<br/>Supabase Postgres 17<br/>pgvector 0.8.2, schema rag<br/>1,306 docs / 2,289 chunks")]
+    search --> db[("harness-memory<br/>Supabase Postgres 17<br/>pgvector 0.8.2, schema rag<br/>1,319 docs / 2,312 chunks")]
 
     classDef unbuilt stroke-dasharray: 5 5
     class hermes unbuilt
@@ -58,8 +58,11 @@ Dashed = designed, not built. Everything else is live.
   Rank Fusion, caps chunks per document, and applies a cosine relevance floor so
   an off-topic question returns nothing instead of its nearest junk.
 - **Capture** — a `SessionEnd` hook writes each finished session to
-  `vault/<projects|classes>/<collection>/sessions/` as redacted markdown. The
-  next ingest run embeds it; unchanged notes cost nothing.
+  `vault/<projects|classes>/<collection>/sessions/<session_id>.md` as redacted
+  markdown: one note per session, keyed on the repository rather than the folder,
+  carrying its branch, commits, PRs, phase, tags and resume chain. Rewrites merge
+  into what is already there, so a tag typed by hand survives. The next ingest
+  run embeds it; unchanged notes cost nothing.
 - **Access** — RLS enabled with zero policies, and the `rag` schema is not
   exposed to the REST API at all. Clients connect over **direct Postgres**
   (`DATABASE_URL`) with the service role. A `supabase-js` RPC returns
@@ -86,7 +89,7 @@ server refuses a `DATABASE_URL` naming the bb2dash project.
 | 1 | Export claude-mem history | ✅ Done — 4 JSON files + verified 56 MB snapshot |
 | 2 | Teardown and rebuild the harness | ✅ Done — 71→12 skills, 58→0 agents, 60→0 commands, 22→1 hooks, 220→0 permission rules |
 | 3 | pgvector schema | ✅ Done — 3 migrations applied to `harness-memory` and mirrored in `db/migrations/` |
-| 4 | Vault + ingestion pipeline | ✅ Done — 1,306 documents / 2,289 chunks / 18 collections; 214 tests |
+| 4 | Vault + ingestion pipeline | ✅ Done — 1,319 documents / 2,312 chunks / 27 collections; vault open in Obsidian with Fall 2026 class folders and bb2dash materials; 261 tests |
 | 5 | Retrieval MCP server | ✅ Done — registered with Claude Code as `rag`; 117 tests; verified against the live store |
 | 6 | Dev cycle | ✅ Done — `CLAUDE.md` rewritten with required gates |
 | 7 | Second agent on the same store | ⏸ Deferred. Schema is already agent-neutral |
@@ -95,16 +98,16 @@ server refuses a `DATABASE_URL` naming the bb2dash project.
 
 What is verifiable right now, against the live project:
 
-- `rag.documents` holds 1,306 rows across 18 collections; `rag.chunks` holds
-  2,289, every one with a 384-dim embedding and a generated `tsv`.
+- `rag.documents` holds 1,319 rows across 27 collections; `rag.chunks` holds
+  2,312, every one with a 384-dim embedding and a generated `tsv`.
 - `rag.search()` returns real results with real cosine similarities: relevant
   hits on this corpus score 0.79–0.87, unrelated queries 0.48–0.66, and the
   0.70 floor turns "banana bread recipe" into an honest empty result.
 - The `SessionEnd` hook has been observed firing unprompted; its note was
   ingested on the next run as the store's first `source='obsidian'` document.
 - `npm test` in `mcp-server/` passes 117 tests; `uv run pytest` in `ingest/`
-  passes 214. Both suites mock the database and the model, so they need no
-  credentials.
+  passes 261; `npm test` in `hooks/` passes 163. All three mock the database,
+  the model and the network, so they need no credentials.
 
 ---
 
@@ -122,10 +125,12 @@ agentic-harness/
 │   ├── harness-reset.md what was deleted in Phase 2 and why
 │   ├── ingestion.md     parse → chunk → embed → upsert, vault layout, session capture
 │   ├── embeddings.md    tokenization → 384-dim vectors → HNSW, runtime parity
-│   └── retrieval.md     hybrid search, RRF, the relevance floor, the contract
+│   ├── retrieval.md     hybrid search, RRF, the relevance floor, the contract
+│   └── tags.md          the controlled tag vocabulary for session notes
 ├── db/
 │   ├── README.md        project ref, connection gotchas, access model, migration mirror
 │   └── migrations/      SQL mirroring what is applied to harness-memory
+├── hooks/               the SessionEnd capture hook, its tests and the installer
 ├── ingest/              Python ingestion pipeline (uv)
 └── mcp-server/          Node/TS stdio MCP retrieval server
 ```
@@ -180,9 +185,17 @@ uv run ingest --source obsidian   --path "C:/Users/estac/OneDrive - Syracuse Uni
 ```
 
 Re-run the vault ingest whenever you like; `content_hash` skips every unchanged
-note, so a run after one session embeds one document. See
-[ingest/README.md](./ingest/README.md) for every flag, including the guarded
-`--prune` orphan sweep.
+note, so a run after one session embeds one document. A note whose *frontmatter*
+changed but whose body did not — a session concluded by the nightly sweep, say —
+gets its `title` and `metadata` refreshed with one UPDATE and no embedding. See
+[ingest/README.md](./ingest/README.md) for every flag, including the repeatable
+`--only` and the guarded `--prune` orphan sweep.
+
+Class materials are a separate, read-only step: `uv run export-materials`
+copies bb2dash's extracted text into `classes/<course>/materials/` as notes
+flagged `ingest: false`, so they are readable in Obsidian but searched through
+the `bb2dash` MCP server, never embedded here (the two stores use different
+models). Details in [docs/ingestion.md](./docs/ingestion.md).
 
 ### 4. Register the retrieval server with Claude Code
 
@@ -210,7 +223,21 @@ claude mcp list        # rag: ✔ Connected
 After restarting Claude Code the tools appear as `mcp__rag__search_context` and
 `mcp__rag__get_document`. Details in [mcp-server/README.md](./mcp-server/README.md).
 
-### 5. Search
+### 5. Install the session-capture hook
+
+```bash
+cd hooks && npm test          # 163 tests, no dependencies
+node install.mjs --dry-run    # what would change in ~/.claude/hooks
+node install.mjs              # copy, then verify every file by SHA-256
+```
+
+`~/.claude/settings.json` registers
+`~/.claude/hooks/session-capture.mjs` as a `SessionEnd` hook. The installer
+copies into that directory rather than pointing settings at a checkout: a
+worktree gets deleted, and a hook that goes with it takes every future session's
+note along. Details in [hooks/README.md](./hooks/README.md).
+
+### 6. Search
 
 From Claude Code, ask anything that depends on past decisions or project
 history; the server embeds the query locally and calls `rag.search()`. Or go

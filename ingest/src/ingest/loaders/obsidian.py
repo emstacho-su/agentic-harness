@@ -15,6 +15,12 @@ emits one :class:`SourceDocument` per note.
 * ``metadata``    = the frontmatter verbatim, plus an ``_ingest`` sub-object.
   Ingest-added keys are nested under ``_ingest`` so they can never collide with
   a user's own frontmatter key named ``path`` or ``source``.
+
+Opting out. A note with frontmatter ``ingest: false`` stays in the vault for
+reading and linking but is never embedded. Class materials exported from bb2dash
+use this: their retrieval belongs to the bb2dash store, and embedding them here
+would put gte-small content into a bge-small index (CONTEXT.md). Opt-outs are
+reported as skips, never hidden.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from ..config import DEFAULT_AGENT, SOURCE_OBSIDIAN
 from ..errors import SourceError
@@ -35,10 +41,16 @@ log = logging.getLogger(__name__)
 
 MARKDOWN_SUFFIXES = (".md", ".markdown", ".mdx")
 
-# Obsidian's own state, VCS metadata and dependency trees are not notes.
+# Obsidian's own state, VCS metadata and dependency trees are not notes, at any depth.
 SKIP_DIRECTORIES = frozenset(
     {".obsidian", ".trash", ".git", ".github", "node_modules", ".venv", "__pycache__"}
 )
+
+# Obsidian's Templates and Daily Notes plugins read from a vault-ROOT folder
+# (`.obsidian/templates.json`), and a template is `{{date}}` placeholders, not
+# content. Only the root folder is excluded: a `notes/templates/` deeper in a
+# project may well hold real documentation.
+TEMPLATES_DIRECTORY = "templates"
 
 _H1 = re.compile(r"^\s{0,3}#\s+(.+?)\s*#*\s*$", re.MULTILINE)
 
@@ -46,14 +58,49 @@ _H1 = re.compile(r"^\s{0,3}#\s+(.+?)\s*#*\s*$", re.MULTILINE)
 ID_KEY = "id"
 MAX_ID_LENGTH = 512
 
+# Frontmatter key that opts a note out of embedding. Absent means ingest.
+INGEST_KEY = "ingest"
+OPT_OUT_REASON = "frontmatter ingest: false"
+
+
+def vault_root(vault_path: str | Path) -> Path:
+    """Validate and return the vault directory. Shared by both entry points."""
+    root = Path(vault_path).expanduser()
+    if not _exists(root):
+        raise SourceError(f"Vault path does not exist: {root}")
+    if not _is_dir(root):
+        raise SourceError(f"Vault path is not a directory: {root}")
+    return root
+
+
+# Filesystem probes that turn an unusable path into a typed error rather than a
+# traceback. `Path.exists()` raises ValueError — not OSError — on a path holding
+# a null byte, and OSError on names the platform rejects outright; both reach a
+# CLI flag, so both are handled here instead of escaping as a crash.
+def _exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except (OSError, ValueError):
+        return False
+
+
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except (OSError, ValueError):
+        return False
+
+
+def _is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except (OSError, ValueError):
+        return False
+
 
 def load_vault(vault_path: str | Path) -> LoadedSource:
     """Load every markdown note under ``vault_path``."""
-    root = Path(vault_path).expanduser()
-    if not root.exists():
-        raise SourceError(f"Vault path does not exist: {root}")
-    if not root.is_dir():
-        raise SourceError(f"Vault path is not a directory: {root}")
+    root = vault_root(vault_path)
 
     documents: list[SourceDocument] = []
     skipped: list[SkippedRecord] = []
@@ -62,30 +109,187 @@ def load_vault(vault_path: str | Path) -> LoadedSource:
     for path in sorted(_iter_markdown(root)):
         relative = path.relative_to(root).as_posix()
         try:
-            document = _load_note(path, relative)
+            loaded = _load_note(path, relative)
         except SourceError as exc:
             log.warning("Skipping %s: %s", relative, exc)
             skipped.append(SkippedRecord(relative, str(exc)))
             continue
 
-        if document is None:
-            skipped.append(SkippedRecord(relative, "empty body"))
+        if isinstance(loaded, SkippedRecord):
+            # A deliberate skip (empty body, opt-out) is not a warning.
+            log.debug("Skipping %s: %s", relative, loaded.reason)
+            skipped.append(loaded)
             continue
 
-        owner = claimed_by.get(document.external_id)
-        if owner is not None:
-            # Two notes claiming one id would silently overwrite each other
-            # through the (source, external_id) upsert key. Refuse the second.
-            reason = f"duplicate external_id '{document.external_id}', already used by {owner}"
-            log.warning("Skipping %s: %s", relative, reason)
-            skipped.append(SkippedRecord(relative, reason))
-            continue
-
-        claimed_by[document.external_id] = relative
-        documents.append(document)
+        if _claim(loaded, relative, claimed_by, skipped):
+            documents.append(loaded)
 
     notes = (f"vault root: {root.as_posix()}",)
     return LoadedSource(tuple(documents), tuple(skipped), notes)
+
+
+def _claim(
+    document: SourceDocument,
+    relative: str,
+    claimed_by: dict[str, str],
+    skipped: list[SkippedRecord],
+) -> bool:
+    """Reserve this document's ``external_id``, or record why it cannot have it.
+
+    Two notes claiming one id would silently overwrite each other through the
+    ``(source, external_id)`` upsert key, so the second is refused and the
+    conflict named. One function, because both walkers enforce it and a second
+    copy would drift.
+    """
+    owner = claimed_by.get(document.external_id)
+    if owner is not None:
+        reason = f"duplicate external_id '{document.external_id}', already used by {owner}"
+        log.warning("Skipping %s: %s", relative, reason)
+        skipped.append(SkippedRecord(relative, reason))
+        return False
+
+    claimed_by[document.external_id] = relative
+    return True
+
+
+def load_vault_note(vault_path: str | Path, note_path: str | Path) -> LoadedSource:
+    """Load exactly one note, the way a full walk would load it."""
+    return load_vault_notes(vault_path, [note_path])
+
+
+def load_vault_notes(
+    vault_path: str | Path, note_paths: Sequence[str | Path]
+) -> LoadedSource:
+    """Load the named notes, the way a full walk would load them.
+
+    This is what ``ingest --only`` runs, and its caller is the ``SessionEnd``
+    hook's detached background process. Nobody watches its stdout, so every
+    reason a note cannot be ingested is raised rather than shrugged off: a typo
+    in the path must fail in the log, not look like a successful empty run. One
+    bad path therefore fails the whole run rather than ingesting the rest
+    quietly — the caller validated these paths before spawning, so a bad one is
+    a defect, not an ordinary condition.
+
+    Each note must resolve *inside* the vault and must be a file the full walk
+    would also visit. Ingesting an excluded path (``templates/``, ``.obsidian/``)
+    would create a row that the next ``--prune`` sweep deletes again.
+
+    A deliberate skip — ``ingest: false``, an empty body — is not an error. It
+    comes back as a :class:`SkippedRecord`, exactly as in a full walk.
+
+    More than one note in one call is the normal case, not an optimisation: a
+    ``SessionEnd`` that resumes also rewrites the note it supersedes, and a
+    ``SubagentStop`` rewrites its parent. Loading them together means one
+    process and one load of the embedding model instead of one per note.
+    """
+    root = vault_root(vault_path)
+    requested = list(note_paths or ())
+    if not requested:
+        raise SourceError("--only needs at least one markdown note")
+
+    documents: list[SourceDocument] = []
+    skipped: list[SkippedRecord] = []
+    notes: list[str] = [f"vault root: {root.as_posix()}"]
+    seen: set[str] = set()
+    claimed_by: dict[str, str] = {}
+
+    for note_path in requested:
+        note, relative = _resolve_note(root, note_path)
+        if relative in seen:
+            # The hook can name the same note twice — a subagent whose parent is
+            # also its own note, say. Loading it twice would embed it twice.
+            continue
+        seen.add(relative)
+        notes.append(f"only: {relative}")
+
+        try:
+            loaded = _load_note(note, relative)
+        except SourceError as exc:
+            # Exactly as in the full walk: a note that will not parse or will
+            # not read is one skipped note, not a dead run. Losing the other
+            # notes of the batch because OneDrive had this one locked would be
+            # worse than the old one-note-per-spawn behaviour it replaced.
+            log.warning("Skipping %s: %s", relative, exc)
+            skipped.append(SkippedRecord(relative, str(exc)))
+            continue
+
+        if isinstance(loaded, SkippedRecord):
+            log.debug("Skipping %s: %s", relative, loaded.reason)
+            skipped.append(loaded)
+            continue
+
+        if _claim(loaded, relative, claimed_by, skipped):
+            documents.append(loaded)
+
+    return LoadedSource(tuple(documents), tuple(skipped), tuple(notes))
+
+
+def _resolve_note(root: Path, note_path: str | Path) -> tuple[Path, str]:
+    """Return ``(path, vault_relative_posix)`` for one requested note."""
+    raw = str(note_path).strip()
+    if not raw:
+        raise SourceError("Note path is empty; --only needs a path to one markdown note")
+    if "\x00" in raw:
+        # Path.exists() raises ValueError rather than OSError on this, which
+        # would escape as a traceback from a plain CLI flag.
+        raise SourceError("Note path contains a null byte")
+
+    # Windows callers pass backslashes; the hook passes whatever Node gave it.
+    candidate = Path(raw.replace("\\", "/")).expanduser()
+    if not candidate.is_absolute():
+        # Deliberately resolved against the VAULT, never the process cwd: the
+        # hook runs with an arbitrary working directory.
+        candidate = root / candidate
+
+    # resolve() collapses '..' and follows symlinks, so neither can be used to
+    # step outside the vault after this check.
+    try:
+        resolved = candidate.resolve()
+        vault = root.resolve()
+    except (OSError, ValueError) as exc:
+        raise SourceError(f"Note path cannot be resolved ({exc})") from exc
+
+    try:
+        relative = resolved.relative_to(vault).as_posix()
+    except ValueError as exc:
+        raise SourceError(
+            f"{resolved} is outside the vault {vault}; --only may only name a note in the vault"
+        ) from exc
+
+    if not _exists(resolved):
+        raise SourceError(f"Note does not exist: {resolved}")
+    if not _is_file(resolved):
+        raise SourceError(f"Note is not a file: {resolved}")
+    if resolved.suffix.lower() not in MARKDOWN_SUFFIXES:
+        raise SourceError(
+            f"{relative} is not a markdown note (expected one of {', '.join(MARKDOWN_SUFFIXES)})"
+        )
+
+    excluded = walk_exclusion(relative)
+    if excluded:
+        raise SourceError(
+            f"{relative} is excluded from the vault walk ({excluded}); "
+            "a single-note run may not ingest what a full run skips"
+        )
+
+    # Join from the unresolved root so the document is byte-identical to the one
+    # a full walk produces, symlinked vaults included.
+    return root / relative, relative
+
+
+def walk_exclusion(relative: str) -> str | None:
+    """Why the vault walk skips this vault-relative path, or None if it does not.
+
+    Public because the conclude sweep must visit exactly the notes the loader
+    visits; two copies of this rule would drift.
+    """
+    folders = Path(relative).parts[:-1]
+    if folders and folders[0] == TEMPLATES_DIRECTORY:
+        return f"vault-root {TEMPLATES_DIRECTORY}/"
+    for part in folders:
+        if part in SKIP_DIRECTORIES:
+            return f"{part}/"
+    return None
 
 
 def _iter_markdown(root: Path):
@@ -94,12 +298,12 @@ def _iter_markdown(root: Path):
             continue
         if path.suffix.lower() not in MARKDOWN_SUFFIXES:
             continue
-        if any(part in SKIP_DIRECTORIES for part in path.relative_to(root).parts[:-1]):
+        if walk_exclusion(path.relative_to(root).as_posix()):
             continue
         yield path
 
 
-def _load_note(path: Path, relative: str) -> SourceDocument | None:
+def _load_note(path: Path, relative: str) -> SourceDocument | SkippedRecord:
     try:
         raw = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
@@ -108,8 +312,10 @@ def _load_note(path: Path, relative: str) -> SourceDocument | None:
         raise SourceError(f"unreadable ({exc})") from exc
 
     frontmatter, body = split_frontmatter(raw, relative)
+    if not _wants_ingest(frontmatter):
+        return SkippedRecord(relative, OPT_OUT_REASON)
     if not body.strip():
-        return None
+        return SkippedRecord(relative, "empty body")
 
     external_id = _derive_external_id(frontmatter, relative)
 
@@ -135,6 +341,30 @@ def _load_note(path: Path, relative: str) -> SourceDocument | None:
         agent=DEFAULT_AGENT,
         collection=_derive_collection(frontmatter, relative),
         metadata=metadata,
+    )
+
+
+def _wants_ingest(frontmatter: dict) -> bool:
+    """``ingest: false`` opts a note out. Absent, or ``true``, ingests.
+
+    YAML 1.1 already turns unquoted ``no``/``off``/``yes``/``on`` into booleans
+    before this code sees them. Beyond that only the ints ``0``/``1`` and the
+    quoted strings ``'true'``/``'false'`` are accepted — common hand-typed forms.
+    Anything else (a list, a mapping, an empty string, ``2``) is a typo, not a
+    preference, and fails rather than being guessed at.
+    """
+    raw = frontmatter.get(INGEST_KEY)
+    if raw is None:
+        return True
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, int) and raw in (0, 1):
+        return bool(raw)
+    if isinstance(raw, str) and raw.strip().lower() in ("true", "false"):
+        return raw.strip().lower() == "true"
+    raise SourceError(
+        f"frontmatter '{INGEST_KEY}' must be true or false, got {raw!r} "
+        f"(accepted: true/false, yes/no, on/off, 1/0, or the quoted strings 'true'/'false')"
     )
 
 
