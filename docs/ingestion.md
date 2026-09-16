@@ -2,7 +2,7 @@
 
 > **Status: live.** `ingest/` has loaded the full claude-mem export and the
 > vault into `harness-memory`: 1,324 documents and 2,360 chunks across 27
-> collections as of 2026-09-15. 354 tests, run with `uv run pytest`.
+> collections as of 2026-09-15. 405 tests, run with `uv run pytest`.
 
 Ingestion turns source artifacts into rows the retrieval function can rank. It
 runs as a batch job, not a service — you point it at a source and it reconciles
@@ -13,7 +13,7 @@ time from the session-capture hook, and nightly from Task Scheduler.
 cd C:/Users/estac/agentic-harness/ingest
 uv run ingest --source claude-mem --path C:/Users/estac/.claude-archive/2026-09-09/claude-mem-export   # one-time import
 uv run ingest --source obsidian   --path "C:/Users/estac/OneDrive - Syracuse University/vault"      # re-run any time; unchanged notes cost nothing
-uv run ingest --source obsidian   --path "<vault>" --only projects/bb2dash/sessions/<id>.md         # one note, what the hook runs
+uv run ingest --source obsidian   --path "<vault>" --only projects/bb2dash/sessions/<id>.md         # named notes, what the hook runs (repeatable)
 uv run ingest sweep-concluded     --path "<vault>" --dry-run                                        # conclude stale sessions
 uv run ingest --health                                                                              # is the nightly reconcile still running?
 ```
@@ -32,8 +32,11 @@ flowchart TD
     E -->|"no"| F["INSERT rag.documents"]
     E -->|"yes"| G{"stored content_hash<br/>equals new hash?"}
 
-    G -->|"yes — unchanged"| H["SKIP<br/>no chunking<br/>no embedding<br/>no writes"]
+    G -->|"yes — body unchanged"| P{"stored title + metadata<br/>equal the parsed ones?"}
     G -->|"no — changed"| I["UPDATE rag.documents<br/>trigger bumps updated_at"]
+
+    P -->|"yes"| H["SKIP<br/>no chunking<br/>no embedding<br/>no writes"]
+    P -->|"no — frontmatter only"| Q["UPDATE title + metadata<br/>chunks untouched, no embedding"]
 
     F --> J["Chunk the body"]
     I --> K["DELETE existing chunks<br/>for this document_id"]
@@ -160,7 +163,9 @@ keepalives, and the re-run picked up exactly where the hashes said it should.
 uv run ingest --source obsidian --path "<vault>" --only projects/bb2dash/sessions/<id>.md
 
 # repeatable: every note the capture hook touched, in one process
-uv run ingest --source obsidian --path "<vault>"     --only projects/bb2dash/sessions/<id>.md     --only projects/bb2dash/sessions/<id>--<agent>.md
+uv run ingest --source obsidian --path "<vault>" \
+    --only projects/bb2dash/sessions/<id>.md \
+    --only projects/bb2dash/sessions/<id>--<agent>.md
 ```
 
 A full vault walk reads every note to find the two that changed. That is cheap
@@ -515,7 +520,8 @@ SessionEnd
   └─ session-capture.mjs writes vault/projects/<c>/sessions/<id>.md
        └─ enqueueIngest()                                   9-16 ms
             └─ detached: uv --directory <project> run ingest
-                          --source obsidian --path <vault> --only <note>
+                          --source obsidian --path <vault>
+                          --only <note> [--only <note> ...]
                  └─ stdout + stderr -> ~/.claude/hooks/ingest-on-capture.log
 ```
 
