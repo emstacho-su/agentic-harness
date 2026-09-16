@@ -185,9 +185,11 @@ uv run ingest --source obsidian   --path "C:/Users/estac/OneDrive - Syracuse Uni
 ```
 
 Re-run the vault ingest whenever you like; `content_hash` skips every unchanged
-note, so a run after one session embeds one document. See
-[ingest/README.md](./ingest/README.md) for every flag, including the guarded
-`--prune` orphan sweep.
+note, so a run after one session embeds one document. A note whose *frontmatter*
+changed but whose body did not — a session concluded by the nightly sweep, say —
+gets its `title` and `metadata` refreshed with one UPDATE and no embedding. See
+[ingest/README.md](./ingest/README.md) for every flag, including the repeatable
+`--only` and the guarded `--prune` orphan sweep.
 
 Class materials are a separate, read-only step: `uv run export-materials`
 copies bb2dash's extracted text into `classes/<course>/materials/` as notes
