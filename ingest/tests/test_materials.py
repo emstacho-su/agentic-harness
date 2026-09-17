@@ -103,6 +103,16 @@ def test_note_path_carries_the_bb2dash_id_and_frontmatter_is_complete():
     assert "week" not in frontmatter  # null week_no is omitted, not written as null
 
 
+def test_note_links_up_to_its_course_index_as_a_quoted_wikilink():
+    content = render_note(row()).content
+    frontmatter, _ = split_frontmatter(content)
+    # Obsidian draws a graph edge only for a wikilink, and the full path is
+    # needed because every course has a note called `index`.
+    assert frontmatter["up"] == "[[classes/ist323/index|ist323]]"
+    # Unquoted, YAML reads `[[...]]` as a nested list and says nothing about it.
+    assert "up: '[[classes/ist323/index|ist323]]'" in content
+
+
 def test_units_render_in_order_with_headings_and_trimmed_text():
     _, body = split_frontmatter(render_note(row()).content)
     first = body.index("## Page 1")
