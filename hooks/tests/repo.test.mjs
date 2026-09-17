@@ -124,6 +124,32 @@ test('the collection is the repo, the worktree, and the class folder in turn', (
   }
 });
 
+test('a folder named with the bb2dash course id files under that class', () => {
+  const sandbox = createSandbox();
+  try {
+    // bb2dash keeps its harvested files in `course context/IST.323`, inside its
+    // own repository. The vault folder is `ist323`, and the class outranks the repo.
+    const at = (relative) => {
+      const cwd = path.join(sandbox.root, 'repos', 'bb2dash', 'course context', relative);
+      fs.mkdirSync(cwd, { recursive: true });
+      return deriveCollection({ cwd, vaultRoot: sandbox.vaultRoot, repo: resolveRepo(cwd) });
+    };
+    const ist323 = { area: 'classes', collection: 'ist323', collectionSource: 'folder' };
+
+    assert.deepEqual(at('IST.323'), ist323);
+    assert.deepEqual(at('IST.323.lecture'), ist323);
+    assert.deepEqual(at(path.join('IST.323', 'readings')), ist323);
+    assert.deepEqual(at('ist.323'), ist323);
+
+    // A course the vault has no folder for is not a class: the repo decides.
+    assert.equal(at('XYZ.999').collection, 'bb2dash');
+    // Only the course-id shape is read this way, not any name with a dot in it.
+    assert.equal(at('ist.323.notes.old').collection, 'bb2dash');
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
 test('the folder fallback prefers an ancestor that already owns a vault folder', () => {
   const sandbox = createSandbox();
   try {

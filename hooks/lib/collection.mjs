@@ -67,11 +67,27 @@ export function deriveCollection({ cwd, vaultRoot, repo }) {
 function matchClassFolder(cwd, vaultRoot) {
   const segments = toPosix(cwd).split('/').filter(Boolean);
   for (let i = segments.length - 1; i >= 0; i -= 1) {
-    const slug = slugify(segments[i]);
-    if (!slug) continue;
-    if (vaultFolderExists(vaultRoot, AREA_CLASSES, slug)) return slug;
+    for (const slug of [slugify(segments[i]), courseSlug(segments[i])]) {
+      if (slug && vaultFolderExists(vaultRoot, AREA_CLASSES, slug)) return slug;
+    }
   }
   return '';
+}
+
+/**
+ * bb2dash's course id — `IST.323`, `GEO.103.lecture` — as the vault spells it.
+ *
+ * bb2dash files what it harvests under `course context/<course id>`, and a
+ * session opened there is work for that class. The mapping is the one
+ * `export-materials` uses to file the same course's notes (`collection_for_course`
+ * in `ingest/materials/render.py`), so both arrive at the same folder. Still
+ * keyed on the vault: a course with no `classes/` folder is not matched.
+ */
+const COURSE_ID = /^([a-z]{2,4})\.(\d{3})(?:\.[a-z]+)?$/i;
+
+function courseSlug(segment) {
+  const match = COURSE_ID.exec(segment);
+  return match ? `${match[1]}${match[2]}`.toLowerCase() : '';
 }
 
 /**
