@@ -182,7 +182,8 @@ export function captureSubagent({
   }
 
   // A worker can be the first note in its collection: its parent may file elsewhere.
-  const index = ensureIndex(vaultRoot, facts.area, facts.collection);
+  // `SubagentStop` fires at every stop of a multi-turn worker; only the first can matter.
+  const index = current.fields ? { ok: true } : ensureIndex(vaultRoot, facts.area, facts.collection);
   const linked = linkIntoParent({ sessionsDir, area: facts.area, sessionId: input.sessionId, childId: fields.id });
 
   return {

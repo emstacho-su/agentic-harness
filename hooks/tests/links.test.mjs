@@ -72,6 +72,21 @@ test('withLinks: a hostile parent id falls back to the index', () => {
   assert.equal(linked.up, '[[projects/agentic-harness/index|agentic-harness]]');
 });
 
+test('withLinks: a parent that is filename-safe but not a session id is not followed', () => {
+  // A checkpoint note arrives through git. `README` would otherwise make any
+  // note in the vault this note's parent.
+  for (const parent of ['README', 'index', `${UUID}-r2`, `session-${UUID}`]) {
+    const linked = withLinks({ ...BASE, parent_session: parent }, 'projects');
+    assert.equal(linked.up, '[[projects/agentic-harness/index|agentic-harness]]', parent);
+  }
+});
+
+test('withLinks: the index is where the note is filed, when the caller knows better', () => {
+  const linked = withLinks({ ...BASE, collection: 'misc' }, 'projects', 'bb2dash');
+  assert.equal(linked.up, '[[projects/bb2dash/index|bb2dash]]');
+  assert.equal(linked.collection, 'misc', 'the field itself is a fact and is left alone');
+});
+
 test('withLinks: related is resumed_from then supersedes, de-duplicated', () => {
   const linked = withLinks(
     {

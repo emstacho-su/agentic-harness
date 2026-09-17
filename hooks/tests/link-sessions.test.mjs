@@ -70,6 +70,20 @@ test('a real run links, backs up the originals, and leaves the broken note alone
   assert.ok(fs.existsSync(path.join(vault, 'projects', 'bb2dash', 'index.md')));
 });
 
+test('a backup already in place is the original, and is never replaced', (t) => {
+  const { vault, sessions, backup } = scratchVault(t);
+  const original = fs.readFileSync(path.join(sessions, `${PARENT}.md`), 'utf8');
+  linkSessions({ vault, backup });
+
+  // The note changes again, and a second real run reuses the directory.
+  const notePath = path.join(sessions, `${PARENT}.md`);
+  fs.writeFileSync(notePath, fs.readFileSync(notePath, 'utf8').replace(/^up: .*$/m, "up: '[[stale]]'"), 'utf8');
+  const again = linkSessions({ vault, backup });
+
+  assert.equal(again.linked.length, 1);
+  assert.equal(fs.readFileSync(path.join(backup, 'projects', 'bb2dash', 'sessions', `${PARENT}.md`), 'utf8'), original);
+});
+
 test('a second run changes nothing', (t) => {
   const { vault, backup } = scratchVault(t);
   linkSessions({ vault, backup, ensureIndexes: true });

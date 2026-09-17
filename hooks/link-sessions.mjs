@@ -29,12 +29,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { DEFAULT_VAULT_SEGMENTS, VAULT_ENV_VAR } from './lib/constants.mjs';
+import { DEFAULT_VAULT_SEGMENTS, INDEX_FILENAME, VAULT_ENV_VAR } from './lib/constants.mjs';
 import { relinkNote } from './lib/link-notes.mjs';
 import { ensureIndex } from './lib/notes-io.mjs';
 import { readSessionNotes } from './untagged-sessions.mjs';
-
-const INDEX_FILENAME = 'index.md';
 
 function parseArgs(argv) {
   const args = {
@@ -60,10 +58,20 @@ function parseArgs(argv) {
   return args;
 }
 
+/**
+ * Copy a note into the backup, unless a copy is already there.
+ *
+ * The first copy is the original. A second run into the same directory would
+ * otherwise replace it with the note this script already rewrote.
+ */
 function backupOriginal(from, vaultRoot, backupDir) {
   const destination = path.join(backupDir, path.relative(vaultRoot, from));
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.copyFileSync(from, destination);
+  try {
+    fs.copyFileSync(from, destination, fs.constants.COPYFILE_EXCL);
+  } catch (err) {
+    if (err?.code !== 'EEXIST') throw err;
+  }
 }
 
 /**
@@ -87,18 +95,24 @@ export function linkSessions({ vault, backup = '', dryRun = false, ensureIndexes
   for (const note of notes) {
     // Read again rather than reassembled from the parse: the point of this
     // pass is that the bytes after the frontmatter are the bytes on disk.
-    const raw = fs.readFileSync(note.path, 'utf8');
-    const result = relinkNote(raw, note.area);
-    if (result.error) {
-      report.refused.push({ path: note.path, error: result.error });
-    } else if (!result.changed) {
-      report.unchanged += 1;
-    } else {
-      if (!dryRun) {
-        backupOriginal(note.path, vault, backup);
-        fs.writeFileSync(note.path, result.text, 'utf8');
+    // One note's I/O failure — a OneDrive placeholder that will not hydrate, a
+    // locked file — is that note's refusal, not the end of the run.
+    try {
+      const raw = fs.readFileSync(note.path, 'utf8');
+      const result = relinkNote(raw, note.area, note.collection);
+      if (result.error) {
+        report.refused.push({ path: note.path, error: result.error });
+      } else if (!result.changed) {
+        report.unchanged += 1;
+      } else {
+        if (!dryRun) {
+          backupOriginal(note.path, vault, backup);
+          fs.writeFileSync(note.path, result.text, 'utf8');
+        }
+        report.linked.push(note.path);
       }
-      report.linked.push(note.path);
+    } catch (err) {
+      report.refused.push({ path: note.path, error: err?.code || err?.message || 'unknown' });
     }
   }
 

@@ -235,8 +235,9 @@ export function fileNote({ vaultRoot, fields, body, dryRun = false }) {
   const notePath = path.join(sessionsDir, `${fields.session_id}.md`);
   const relative = `${placement.area}/${placement.collection}/sessions/${fields.session_id}.md`;
 
-  // Links are derived here, from the placement, and never taken from the note:
-  // whatever `up` or `related` arrived through git is overwritten.
+  // Links are derived here, from the placement: whatever `up` or `related`
+  // arrived through git is overwritten. `parent_session` did arrive that way,
+  // and `withLinks` follows it only when it is exactly a session id.
   const incoming = withLinks(
     {
       ...fields,
@@ -259,8 +260,9 @@ export function fileNote({ vaultRoot, fields, body, dryRun = false }) {
 
   const result = persist(notePath, renderNote(incoming, body));
   if (!result.ok) return { action: 'skip', reason: `write failed (${result.error})`, notePath: relative, placement };
-  ensureIndex(vaultRoot, placement.area, placement.collection);
-  return { action: 'create', reason: placement.reason, notePath: relative, placement, touched: notePath };
+  const index = ensureIndex(vaultRoot, placement.area, placement.collection);
+  const reason = [placement.reason, index.ok ? '' : `index not written (${index.error})`].filter(Boolean).join('; ');
+  return { action: 'create', reason, notePath: relative, placement, touched: notePath };
 }
 
 // ------------------------------------------------------------------- run

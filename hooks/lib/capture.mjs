@@ -202,8 +202,9 @@ function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
   }
 
   // The note links `up` to its collection index; a collection this write just
-  // created has none. A failure costs a ghost node, not the session.
-  const index = ensureIndex(vaultRoot, area, collection);
+  // created has none. Only a note's first write can be its collection's first
+  // note. A failure costs a ghost node, not the session.
+  const index = plan.action === ACTION_CREATE ? ensureIndex(vaultRoot, area, collection) : { ok: true };
 
   return {
     written: true,

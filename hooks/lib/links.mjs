@@ -22,12 +22,18 @@
  * moment the note appears.
  */
 
-import { AREA_CLASSES, AREA_PROJECTS } from './constants.mjs';
+import { AREAS, INDEX_NOTE } from './constants.mjs';
 import { isSafeFilenameSegment } from './text.mjs';
 
 const NOTE_ID_PREFIX = 'session-';
-const INDEX_NOTE = 'index';
-const AREAS = new Set([AREA_PROJECTS, AREA_CLASSES]);
+
+/**
+ * A session id, exactly. `parent_session` is the one link source that can arrive
+ * from outside — the hook's stdin, an environment variable, a checkpoint note
+ * that came through git — and a merely filename-safe value there would let it
+ * name any note in the vault as this note's parent.
+ */
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * The filename stem a note id or a bare session id names, or `''`.
@@ -53,12 +59,17 @@ export function sessionLink(idOrSessionId) {
   return stem ? `[[${stem}]]` : '';
 }
 
+/** The link to a parent session, or `''` when the value is not a session id. */
+function parentLink(parentSession) {
+  return SESSION_ID.test(String(parentSession ?? '')) ? sessionLink(parentSession) : '';
+}
+
 /**
  * `[[<area>/<collection>/index|<collection>]]` — the full path, because every
  * collection has a note called `index` and a bare `[[index]]` picks one of them.
  */
 export function indexLink(area, collection) {
-  if (!AREAS.has(area) || !isSafeFilenameSegment(collection)) return '';
+  if (!AREAS.includes(area) || !isSafeFilenameSegment(collection)) return '';
   return `[[${area}/${collection}/${INDEX_NOTE}|${collection}]]`;
 }
 
@@ -69,13 +80,17 @@ export function indexLink(area, collection) {
  * its collection index, which keeps the index from becoming a hub for every
  * worker note as well. The graph is undirected, so the parent needs no list of
  * its children to be joined to them.
+ *
+ * `collection` is where the note is filed. It defaults to the note's own field,
+ * which for a capture is the same thing; the backfill passes the folder it
+ * found the note in, because that is where the index actually is.
  */
-export function withLinks(fields, area) {
+export function withLinks(fields, area, collection = fields.collection) {
   const supersedes = Array.isArray(fields.supersedes) ? fields.supersedes : [];
   const related = [fields.resumed_from, ...supersedes].map(sessionLink).filter(Boolean);
   return {
     ...fields,
-    up: sessionLink(fields.parent_session) || indexLink(area, fields.collection),
+    up: parentLink(fields.parent_session) || indexLink(area, collection),
     related: [...new Set(related)],
   };
 }

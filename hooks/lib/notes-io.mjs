@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { AREA_CLASSES, AREA_PROJECTS } from './constants.mjs';
+import { AREAS, INDEX_FILENAME } from './constants.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { noteFilename } from './note.mjs';
 import { isSafeFilenameSegment, yamlStr } from './text.mjs';
@@ -107,9 +107,6 @@ export function resolveChainHead(sessionsDir, sessionId) {
   };
 }
 
-const INDEX_FILENAME = 'index.md';
-const INDEX_AREAS = new Set([AREA_PROJECTS, AREA_CLASSES]);
-
 /**
  * Make sure `<area>/<collection>/index.md` exists. Never throws, never
  * overwrites.
@@ -123,10 +120,12 @@ const INDEX_AREAS = new Set([AREA_PROJECTS, AREA_CLASSES]);
  * @returns {{ok: boolean, created: boolean, path: string, error: string}}
  */
 export function ensureIndex(vaultRoot, area, collection) {
-  if (!vaultRoot || !INDEX_AREAS.has(area) || !isSafeFilenameSegment(collection)) {
+  if (!vaultRoot || !AREAS.includes(area) || !isSafeFilenameSegment(collection)) {
     return { ok: false, created: false, path: '', error: 'not a collection folder' };
   }
   const indexPath = path.join(vaultRoot, area, collection, INDEX_FILENAME);
+  // The ordinary case, answered with one stat. `wx` below is for the race.
+  if (fs.existsSync(indexPath)) return { ok: true, created: false, path: indexPath, error: '' };
   const text = [
     '---',
     `id: ${yamlStr(randomUUID())}`,
