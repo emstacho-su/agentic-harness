@@ -41,6 +41,7 @@ const PAYLOAD = [
   'lib/enqueue-ingest.mjs',
   'lib/frontmatter.mjs',
   'lib/git-log.mjs',
+  'lib/links.mjs',
   'lib/logger.mjs',
   'lib/merge.mjs',
   'lib/note.mjs',

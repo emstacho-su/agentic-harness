@@ -46,11 +46,13 @@ agent: claude-code
 agent_type: 'general-purpose'
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.1.0'
+generator: 'session-capture.mjs 2.2.0'
 tools_used:
   Bash: 1
   Edit: 1
   Write: 1
+up: '[[88888888-8888-4888-8888-888888888888]]'
+related: []
 ---
 
 # Subagent general-purpose 2026-09-16 — bb2dash
