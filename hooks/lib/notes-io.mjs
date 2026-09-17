@@ -1,16 +1,19 @@
 /**
  * Reading and writing note files.
  *
- * Small on purpose: two callers need exactly these four operations, and both of
+ * Small on purpose: two callers need exactly these few operations, and both of
  * them care about the same rule — a note the parser cannot read is a note
  * somebody hand-edited, and the only safe response is to leave it alone.
  */
 
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { AREA_CLASSES, AREA_PROJECTS } from './constants.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { noteFilename } from './note.mjs';
+import { isSafeFilenameSegment, yamlStr } from './text.mjs';
 
 /** A resume chain longer than this is a bug, not a work pattern. */
 export const MAX_RESUME_INDEX = 50;
@@ -102,4 +105,47 @@ export function resolveChainHead(sessionsDir, sessionId) {
     path: path.join(sessionsDir, noteFilename(sessionId, index)),
     nextIndex: index < MAX_RESUME_INDEX ? index + 1 : 0,
   };
+}
+
+const INDEX_FILENAME = 'index.md';
+const INDEX_AREAS = new Set([AREA_PROJECTS, AREA_CLASSES]);
+
+/**
+ * Make sure `<area>/<collection>/index.md` exists. Never throws, never
+ * overwrites.
+ *
+ * Every session note links `up` to this note, and a collection the hook creates
+ * on demand does not have one. The body carries no links on purpose: an index
+ * is ingested like any other note, and a list of links would be embedded as
+ * text. The `wx` flag is what makes "never overwrites" true even when two hooks
+ * finish at once.
+ *
+ * @returns {{ok: boolean, created: boolean, path: string, error: string}}
+ */
+export function ensureIndex(vaultRoot, area, collection) {
+  if (!vaultRoot || !INDEX_AREAS.has(area) || !isSafeFilenameSegment(collection)) {
+    return { ok: false, created: false, path: '', error: 'not a collection folder' };
+  }
+  const indexPath = path.join(vaultRoot, area, collection, INDEX_FILENAME);
+  const text = [
+    '---',
+    `id: ${yamlStr(randomUUID())}`,
+    `title: ${yamlStr(collection)}`,
+    `collection: ${yamlStr(collection)}`,
+    'type: index',
+    '---',
+    '',
+    `# ${collection}`,
+    '',
+    `Collection \`${collection}\`. Session notes under \`sessions/\` link up to this note.`,
+    '',
+  ].join('\n');
+  try {
+    fs.mkdirSync(path.dirname(indexPath), { recursive: true });
+    fs.writeFileSync(indexPath, text, { encoding: 'utf8', flag: 'wx' });
+    return { ok: true, created: true, path: indexPath, error: '' };
+  } catch (err) {
+    if (err?.code === 'EEXIST') return { ok: true, created: false, path: indexPath, error: '' };
+    return { ok: false, created: false, path: indexPath, error: err?.code || err?.message || 'unknown' };
+  }
 }

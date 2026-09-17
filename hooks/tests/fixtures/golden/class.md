@@ -41,9 +41,11 @@ agent: claude-code
 agent_type: ''
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.1.0'
+generator: 'session-capture.mjs 2.2.0'
 tools_used:
   Write: 1
+up: '[[classes/ist323/index|ist323]]'
+related: []
 ---
 
 # Session 2026-09-14 — ist323

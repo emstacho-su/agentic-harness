@@ -34,6 +34,7 @@ import {
   STATUS_CONCLUDED,
 } from './constants.mjs';
 import { runGitSync } from './git-log.mjs';
+import { withLinks } from './links.mjs';
 import { mergeFields } from './merge.mjs';
 import {
   buildFields,
@@ -44,7 +45,7 @@ import {
   renderBody,
   renderNote,
 } from './note.mjs';
-import { persist, readNote, vaultAvailable } from './notes-io.mjs';
+import { ensureIndex, persist, readNote, vaultAvailable } from './notes-io.mjs';
 import { redact } from './redact.mjs';
 import { isoDate, uniqueCapped } from './text.mjs';
 import { extractOrigin, extractPrompts, extractTools, createAccumulator, readEntries } from './transcript.mjs';
@@ -170,14 +171,19 @@ export function captureSubagent({
   // The same merge rule as a session note: lists grow, scalars only improve,
   // and a tag added by hand survives. A subagent's note is rewritten if the
   // same agent id stops twice.
-  const fields = current.fields ? mergeFields(current.fields, buildFields(context)) : buildFields(context);
+  const fields = withLinks(
+    current.fields ? mergeFields(current.fields, buildFields(context)) : buildFields(context),
+    facts.area,
+  );
   const merged = { ...context, previousBody: current.body };
   const result = persist(targetPath, renderNote(fields, renderBody(merged, fields)));
   if (!result.ok) {
     return { written: false, action: 'skip', skip: `write failed (${result.error})`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
   }
 
-  const linked = linkIntoParent({ sessionsDir, sessionId: input.sessionId, childId: fields.id });
+  // A worker can be the first note in its collection: its parent may file elsewhere.
+  const index = ensureIndex(vaultRoot, facts.area, facts.collection);
+  const linked = linkIntoParent({ sessionsDir, area: facts.area, sessionId: input.sessionId, childId: fields.id });
 
   return {
     written: true,
@@ -194,7 +200,8 @@ export function captureSubagent({
     detail:
       `${facts.area}/${facts.collection}/sessions/${path.basename(targetPath)} ` +
       `agent_type=${agentType || 'unknown'} parent=${linked.status}` +
-      (result.changed ? '' : ' (identical on disk)'),
+      (result.changed ? '' : ' (identical on disk)') +
+      (index.ok ? '' : ` (index not written: ${index.error})`),
   };
 }
 
@@ -211,7 +218,7 @@ export function captureSubagent({
  *          call actually changed the parent note, so the caller knows whether it
  *          has to be re-ingested.
  */
-function linkIntoParent({ sessionsDir, sessionId, childId }) {
+function linkIntoParent({ sessionsDir, area, sessionId, childId }) {
   const untouched = (status) => ({ status, notePath: '' });
 
   const parentPath = path.join(sessionsDir, noteFilename(sessionId));
@@ -223,10 +230,10 @@ function linkIntoParent({ sessionsDir, sessionId, childId }) {
   const existing = Array.isArray(parent.fields.child_sessions) ? parent.fields.child_sessions : [];
   if (existing.includes(childId)) return untouched('already linked');
 
-  const fields = {
-    ...parent.fields,
-    child_sessions: uniqueCapped([...existing, childId], MAX_CHILD_SESSIONS),
-  };
+  const fields = withLinks(
+    { ...parent.fields, child_sessions: uniqueCapped([...existing, childId], MAX_CHILD_SESSIONS) },
+    area,
+  );
   const written = persist(parentPath, renderNote(fields, parent.body));
   if (!written.ok) return untouched('link failed');
   return { status: 'linked', notePath: written.changed ? parentPath : '' };

@@ -43,10 +43,12 @@ agent: claude-code
 agent_type: ''
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.1.0'
+generator: 'session-capture.mjs 2.2.0'
 tools_used:
   Bash: 1
   Write: 1
+up: '[[a1b2c3d4-0000-4000-8000-000000000001]]'
+related: []
 ---
 
 # Session 2026-09-15 — agentic-harness

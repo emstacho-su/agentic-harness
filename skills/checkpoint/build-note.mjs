@@ -67,7 +67,7 @@ export const FIELD_SPEC = Object.freeze([
   ['memory_files', LIST], ['plan_file', QUOTED], ['docs_touched', LIST], ['artifacts', LIST],
   ['files_modified', LIST], ['prompt_count', PLAIN], ['command_count', PLAIN], ['agent', PLAIN],
   ['agent_type', QUOTED], ['origin', QUOTED], ['captured_by', QUOTED], ['generator', QUOTED],
-  ['tools_used', MAP],
+  ['tools_used', MAP], ['up', QUOTED], ['related', LIST],
 ]);
 
 const EMITTABLE_KEY = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
@@ -279,6 +279,9 @@ export function buildNote({ repo, body, collection = '', sessionId = '', now = n
     captured_by: CAPTURED_BY,
     generator: GENERATOR,
     tools_used: {},
+    // Empty on purpose: the collector derives both from where it files the note.
+    up: '',
+    related: [],
   };
 
   const text =

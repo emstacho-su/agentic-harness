@@ -29,8 +29,9 @@ import {
 } from './constants.mjs';
 import { FIELD_SPEC, parseFrontmatter } from './frontmatter.mjs';
 import { runGitSync } from './git-log.mjs';
+import { withLinks } from './links.mjs';
 import { renderNote } from './note.mjs';
-import { persist, readNote, vaultAvailable } from './notes-io.mjs';
+import { ensureIndex, persist, readNote, vaultAvailable } from './notes-io.mjs';
 import { redact } from './redact.mjs';
 import { isSafeFilenameSegment, slugify, toPosix } from './text.mjs';
 
@@ -234,11 +235,16 @@ export function fileNote({ vaultRoot, fields, body, dryRun = false }) {
   const notePath = path.join(sessionsDir, `${fields.session_id}.md`);
   const relative = `${placement.area}/${placement.collection}/sessions/${fields.session_id}.md`;
 
-  const incoming = {
-    ...fields,
-    collection: placement.collection,
-    tags: Array.isArray(fields.tags) && fields.tags.length ? fields.tags : [UNCLASSIFIED],
-  };
+  // Links are derived here, from the placement, and never taken from the note:
+  // whatever `up` or `related` arrived through git is overwritten.
+  const incoming = withLinks(
+    {
+      ...fields,
+      collection: placement.collection,
+      tags: Array.isArray(fields.tags) && fields.tags.length ? fields.tags : [UNCLASSIFIED],
+    },
+    placement.area,
+  );
 
   const current = readNote(notePath);
   if (current.error) return { action: 'skip', reason: `existing note unreadable: ${current.error}`, notePath: relative, placement };
@@ -253,6 +259,7 @@ export function fileNote({ vaultRoot, fields, body, dryRun = false }) {
 
   const result = persist(notePath, renderNote(incoming, body));
   if (!result.ok) return { action: 'skip', reason: `write failed (${result.error})`, notePath: relative, placement };
+  ensureIndex(vaultRoot, placement.area, placement.collection);
   return { action: 'create', reason: placement.reason, notePath: relative, placement, touched: notePath };
 }
 

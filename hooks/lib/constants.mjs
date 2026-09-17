@@ -6,7 +6,7 @@
  */
 
 /** Written into `generator:`; bumped whenever the note's shape changes. */
-export const GENERATOR_VERSION = '2.1.0';
+export const GENERATOR_VERSION = '2.2.0';
 
 /** Written into `schema_version:`. Lets a reader tell "old note" from "unknown". */
 export const SCHEMA_VERSION = 2;
