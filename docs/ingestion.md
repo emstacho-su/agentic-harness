@@ -627,6 +627,17 @@ The script does three things, in this order:
    killed with their terminal, desktop sessions from before the hook, and cloud
    sessions pulled down with `claude --teleport`. See
    [../hooks/README.md](../hooks/README.md#the-nightly-transcript-sweep).
+0b. **`node hooks/collect-checkpoints.mjs`** — the notes cloud sessions left in
+   git. A cloud session has no transcript here and runs no local hook, so when
+   one is worth keeping Stack runs `/checkpoint` (or `/checkpoint <course>`)
+   inside it; the skill commits a schema-v2 note under `.harness/sessions/` and
+   pushes. The collector fetches every branch of the tracked repositories,
+   validates and redacts each note, and files it under the class or project it
+   names, marked `captured_by: skill`. See
+   [../hooks/README.md](../hooks/README.md#cloud-sessions-checkpoint).
+   The same collector also runs on its own at 12:00 and 18:00
+   (`scripts/register-checkpoint-collect.ps1`), with `--ingest`, so a daytime
+   checkpoint is searchable the same afternoon.
 1. **`ingest sweep-concluded --apply`** — see below.
 2. **`ingest --source obsidian --path <vault>`** — a full walk, which picks up
    the notes both sweeps just wrote or edited in the same night.

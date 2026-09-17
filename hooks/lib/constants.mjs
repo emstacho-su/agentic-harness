@@ -148,6 +148,18 @@ export const PARENT_SESSION_ENV_VAR = 'HARNESS_PARENT_SESSION';
 export const CAPTURED_BY_HOOK = 'hook';
 export const CAPTURED_BY_SWEEP = 'sweep';
 export const CAPTURED_BY_MIGRATION = 'migration';
+/** Written by the /checkpoint skill inside a cloud session; collected from git nightly. */
+export const CAPTURED_BY_SKILL = 'skill';
+
+/** Where the /checkpoint skill leaves its notes inside a repository. */
+export const CHECKPOINT_NOTES_DIR = '.harness/sessions';
+
+/** Repositories the nightly collector fetches, relative to the home directory. */
+export const DEFAULT_CHECKPOINT_REPO_SEGMENTS = Object.freeze([['agentic-harness'], ['projects', 'bb2dash']]);
+
+/** `git fetch` touches the network; the other collector git calls do not. */
+export const CHECKPOINT_FETCH_TIMEOUT_MS = 60_000;
+export const CHECKPOINT_GIT_TIMEOUT_MS = 10_000;
 
 /**
  * `origin:` — the `entrypoint` Claude Code stamps on every transcript record

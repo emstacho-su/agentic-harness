@@ -318,6 +318,13 @@ imperfectly.
 vault, and ingested on the next run as the store's first `source='obsidian'` document (the 18th
 collection, `agentic-harness`). Hook lives at `~/.claude/hooks/session-capture.mjs`.
 
+Two more paths feed the same folder (2026-09-16): the **nightly transcript sweep**
+(`hooks/sweep-transcripts.mjs`) captures every idle transcript the hook never saw (SDK
+review workers, killed sessions, teleported cloud sessions), and the **`/checkpoint`
+skill** (`skills/checkpoint/`, installed into bb2dash and agentic-harness) lets a cloud
+session write its own note into git, collected nightly by `hooks/collect-checkpoints.mjs`.
+Notes carry `captured_by: hook | sweep | skill` and `origin`. See `hooks/README.md`.
+
 ## Environment
 
 - Windows 11. Both PowerShell and Git Bash available.

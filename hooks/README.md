@@ -450,3 +450,83 @@ the full ingest, so a note written tonight is embedded tonight:
 Its log is `~/.claude/hooks/transcript-sweep.log` (override with
 `HARNESS_TRANSCRIPT_SWEEP_LOG`), one line per session and per worker, with the
 summary the CLI prints at the end.
+
+---
+
+## Cloud sessions: /checkpoint
+
+A claude.ai/code session runs on Anthropic's machines. No transcript reaches this computer,
+the user-level hook never runs there, and there is no export API on this plan. So the one
+surface the hook and the sweep cannot reach is covered by a **skill that runs inside the
+session**, invoked by Stack only when the session is worth keeping:
+
+```
+/checkpoint            file under the repository's project (from the git remote)
+/checkpoint ist323     file as classwork for that course
+```
+
+Three parts:
+
+| Part | Where | What it does |
+| --- | --- | --- |
+| `skills/checkpoint/SKILL.md` | committed into each repo as `.claude/skills/checkpoint/` | Claude writes a four-section body (asked for, done, decisions, next), runs the builder, commits `.harness/sessions/<id>.md`, pushes |
+| `skills/checkpoint/build-note.mjs` | same | the frontmatter, **from git and the argument only**: repo, branch, commits past `main`, files changed, `captured_by: skill`, `origin: cloud`. Refuses a body missing a heading. Carries its own copy of the serializer; a test pins it to `lib/frontmatter.mjs` |
+| `hooks/collect-checkpoints.mjs` | this checkout, nightly step 0b | fetches each tracked repo, reads every `.harness/sessions/*.md` off every branch, validates and redacts, files into the vault |
+
+```bash
+node hooks/install-checkpoint.mjs --repo C:/Users/estac/projects/bb2dash   # then commit there
+node hooks/collect-checkpoints.mjs --dry-run                                # what would be filed
+node hooks/collect-checkpoints.mjs --repo <path> --no-fetch                 # one repo, refs already on disk
+```
+
+What the collector accepts is deliberately narrow, because a note is model-written text
+that arrived through git: `type: session`, `captured_by: skill`, a `session_id` that passes
+the filename allow-list, `id` equal to `session-<session_id>`, a non-empty collection. The
+body goes through `lib/redact.mjs` before it is written. A class argument must name a folder
+the vault already has; otherwise the note is filed under `misc` and the log says why. A
+project from the git remote is created on demand, as the hook does.
+
+Fidelity, stated plainly: the body is Claude's own account, bounded by what is still in its
+context. The frontmatter is a record; the body is a recollection. That is why every such
+note says `captured_by: skill`, and why its id is `cp-<session id or UUID>`: a session later
+pulled down with `claude --teleport` gets a transcript named by the raw id, so the sweep still
+writes its fuller note beside this one instead of skipping it as already noted.
+
+The id is `cp-` plus whatever the sandbox exposes (`CLAUDE_CODE_REMOTE_SESSION_ID`, or the
+`ccr:session_id` claim of `CLAUDE_CODE_SESSION_ACCESS_TOKEN`), else `cp-` plus a fresh UUID. If `node`
+is missing in the sandbox the skill hand-writes the same frontmatter from a template; the
+collector validates both identically.
+
+### Twice a day, not just at 03:00
+
+The nightly job collects checkpoints as step 0b, but a session checkpointed at noon should
+not wait until tomorrow. `scripts/register-checkpoint-collect.ps1` registers
+`AgenticHarness-CheckpointCollect`, which runs `node hooks/collect-checkpoints.mjs --ingest`
+at 12:00 and 18:00 (`-Times` to change) and starts a detached ingest for every note it filed.
+Register it once, from a prompt that may create scheduled tasks:
+
+```powershell
+./scripts/register-checkpoint-collect.ps1                 # 12:00 and 18:00
+./scripts/register-checkpoint-collect.ps1 -Times @('09:00','13:00','17:00')
+./scripts/register-checkpoint-collect.ps1 -Unregister
+```
+
+### The trust boundary, stated
+
+The collector reads notes from **every branch** of the tracked repositories, because a cloud
+session pushes to its own branch and nothing merges it first. So whoever can push to
+`bb2dash` or `agentic-harness` can put a note in front of the collector. Three things bound
+what that can do:
+
+- **Written once, never merged.** The first copy of an id is the note; a later copy is
+  refused, and an id that already belongs to a hook- or sweep-written note is refused. Nothing
+  from git can change a note the vault already holds.
+- **Only the v2 fields, with `status`, `type`, `schema_version` and `captured_by` pinned** by the
+  collector, so a note cannot mark another session superseded or smuggle keys.
+- **`--author <email>`** (repeatable) restricts collection to commits by that author. It is off
+  by default because the docs do not say which identity a cloud session commits under; after
+  the first real checkpoint, read the author from `collect-checkpoints.log` and pass it to
+  `register-checkpoint-collect.ps1 -Authors @('<email>')` to turn it on.
+
+What a forged note can still do is exist: one more `captured_by: skill` note, redacted, in the
+collection it names. That is the accepted residual risk for two repositories with one committer.

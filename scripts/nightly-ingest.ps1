@@ -8,6 +8,8 @@
       0. transcript sweep — hooks/sweep-transcripts.mjs writes a note for every
          idle transcript under ~/.claude/projects that has none: SDK workers,
          sessions killed with their terminal, teleported cloud sessions.
+      0b. checkpoints    — hooks/collect-checkpoints.mjs fetches the notes the
+         /checkpoint skill pushed from cloud sessions and files them in the vault.
       1. sweep-concluded  — sets status: concluded and concluded_at on session
          notes still 'active' more than 24 h after their ended_at (R-27.2).
       2. ingest           — a full walk of the vault, which picks up the notes
@@ -60,7 +62,12 @@ param(
     [ValidateSet('Apply', 'DryRun', 'Skip')]
     [string] $TranscriptSweep = 'Apply',
     [ValidateRange(0, 8760)]
-    [int] $TranscriptIdleHours = 6
+    [int] $TranscriptIdleHours = 6,
+    # Step 0b: /checkpoint notes pushed by cloud sessions, collected out of git
+    # (hooks/collect-checkpoints.mjs). Empty means the collector's own defaults.
+    [string[]] $CheckpointRepos = @(),
+    [ValidateSet('Apply', 'DryRun', 'Skip')]
+    [string] $Checkpoints = 'Apply'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -131,7 +138,7 @@ function Resolve-Node {
 function Invoke-TranscriptSweep {
     param([string] $Node, [string] $Script, [string[]] $SweepArgs, [string] $Label)
 
-    Write-Log "$Label : node sweep-transcripts.mjs $($SweepArgs -join ' ')"
+    Write-Log "$Label : node $(Split-Path -Leaf $Script) $($SweepArgs -join ' ')"
 
     # Same stderr handling as Invoke-Ingest: merge both streams into the log
     # without a NativeCommandError turning the first line into a fatal one.
@@ -230,6 +237,31 @@ if ($TranscriptSweep -eq 'Skip') {
 }
 if ($transcriptCode -ne 0) { Write-Log "transcript sweep failed with $transcriptCode; continuing to the ingest" }
 
+# Step 0b: notes the /checkpoint skill pushed from cloud sessions. Same
+# runner as step 0; a refused note or a failed fetch is exit 1, never fatal.
+$checkpointCode = 0
+if ($Checkpoints -eq 'Skip') {
+    Write-Log 'checkpoints: skipped by -Checkpoints Skip'
+} else {
+    $collectScript = Join-Path $HooksDir 'collect-checkpoints.mjs'
+    if (-not (Test-Path $collectScript)) {
+        Write-Log "checkpoints: no collector at $collectScript; continuing to the ingest"
+        $checkpointCode = 2
+    } else {
+        try {
+            $node = Resolve-Node -Explicit $NodePath
+            $collectArgs = @('--vault', $VaultPath)
+            foreach ($repo in $CheckpointRepos) { $collectArgs += @('--repo', $repo) }
+            if ($Checkpoints -eq 'DryRun') { $collectArgs += '--dry-run' }
+            $checkpointCode = Invoke-TranscriptSweep -Node $node -Script $collectScript -SweepArgs $collectArgs -Label 'checkpoints'
+        } catch {
+            Write-Log "checkpoints: $($_.Exception.Message); continuing to the ingest"
+            $checkpointCode = 2
+        }
+    }
+}
+if ($checkpointCode -ne 0) { Write-Log "checkpoint collection ended with $checkpointCode; continuing to the ingest" }
+
 $sweepCode = 0
 if ($SweepMode -eq 'Skip') {
     Write-Log 'sweep: skipped by -SweepMode Skip'
@@ -246,7 +278,7 @@ if ($sweepCode -ne 0) { Write-Log "sweep failed with $sweepCode; continuing to t
 $ingestArgs = @('--source', 'obsidian', '--path', $VaultPath) + $envArgs
 $ingestCode = Invoke-Ingest -Uv $uv -Project $ProjectDir -IngestArgs $ingestArgs -Label 'ingest'
 
-Write-Log "=== nightly reconcile finished (transcripts $transcriptCode, sweep $sweepCode, ingest $ingestCode) ==="
+Write-Log "=== nightly reconcile finished (transcripts $transcriptCode, checkpoints $checkpointCode, sweep $sweepCode, ingest $ingestCode) ==="
 
 # Task Scheduler shows this as the last result, so it has to mean "the reconcile
 # worked". Only the ingest decides that.
