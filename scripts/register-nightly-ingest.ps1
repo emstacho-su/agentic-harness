@@ -29,7 +29,7 @@
     ./register-nightly-ingest.ps1 -At 02:30 -SweepMode DryRun
     ./register-nightly-ingest.ps1 -Unregister
 #>
-[CmdletBinding()]
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [string] $TaskName = 'AgenticHarness-NightlyIngest',
     [string] $At = '03:00',

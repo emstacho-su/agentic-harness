@@ -29,7 +29,10 @@
     ./register-checkpoint-collect.ps1 -Times @('09:00', '13:00', '17:00')
     ./register-checkpoint-collect.ps1 -Unregister
 #>
-[CmdletBinding()]
+# PositionalBinding off: `powershell -File … -Authors @('a', 'b')` splits the
+# array and would otherwise hand 'b' to -TaskName, registering a task named
+# after an email address. With it off, a stray positional value is an error.
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [string] $TaskName = 'AgenticHarness-CheckpointCollect',
     [string[]] $Times = @('12:00', '18:00'),
