@@ -493,7 +493,15 @@ pulled down with `claude --teleport` gets a transcript named by the raw id, so t
 writes its fuller note beside this one instead of skipping it as already noted.
 
 The id is `cp-` plus whatever the sandbox exposes (`CLAUDE_CODE_REMOTE_SESSION_ID`, or the
-`ccr:session_id` claim of `CLAUDE_CODE_SESSION_ACCESS_TOKEN`), else `cp-` plus a fresh UUID. If `node`
+`ccr:session_id` claim of `CLAUDE_CODE_SESSION_ACCESS_TOKEN`), else `cp-` plus a fresh UUID.
+
+**Verified in a real cloud session on 2026-09-17** (bb2dash): `node` is present in the sandbox
+and the builder ran; the sandbox exposes the session id (the note came out as
+`cp-cse_…`, not a UUID); the push landed on a `claude/<name>` branch the session created; and
+the commit author was `noreply@anthropic.com`. The collector filed it as
+`projects/bb2dash/sessions/cp-cse_….md` and the store returned it with `origin: cloud`.
+One caveat from the same run: the slash menu only lists the skill in a session created after the
+skill reached the branch; a session started from an older snapshot does not see it. If `node`
 is missing in the sandbox the skill hand-writes the same frontmatter from a template; the
 collector validates both identically.
 
@@ -523,10 +531,12 @@ what that can do:
   from git can change a note the vault already holds.
 - **Only the v2 fields, with `status`, `type`, `schema_version` and `captured_by` pinned** by the
   collector, so a note cannot mark another session superseded or smuggle keys.
-- **`--author <email>`** (repeatable) restricts collection to commits by that author. It is off
-  by default because the docs do not say which identity a cloud session commits under; after
-  the first real checkpoint, read the author from `collect-checkpoints.log` and pass it to
-  `register-checkpoint-collect.ps1 -Authors @('<email>')` to turn it on.
+- **`--author <email>`** (repeatable) restricts collection to commits by that author. Cloud
+  sessions commit as `noreply@anthropic.com` (verified 2026-09-17), and a checkpoint run from a
+  local terminal commits as the machine's git identity, so the allow-list that covers both is
+  `register-checkpoint-collect.ps1 -Authors @('noreply@anthropic.com', '<your git email>')`.
+  Note what that does and does not buy: it excludes a collaborator's hand-made commits, but any
+  cloud session on the repository commits under the same Anthropic identity.
 
 What a forged note can still do is exist: one more `captured_by: skill` note, redacted, in the
 collection it names. That is the accepted residual risk for two repositories with one committer.

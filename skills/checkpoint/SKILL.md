@@ -116,5 +116,6 @@ branch so the next push will carry it.
 
 ## 4. Report
 
-Tell the user in one or two lines: the note path, the collection it was filed under, and
-whether the push succeeded. The harness collects it nightly; it will be searchable the next day.
+Tell the user in one or two lines: the note path, the collection it was filed under, the
+branch it was pushed to, and whether the push succeeded. The harness collects it at 12:00,
+18:00 and 03:00 on the user's machine; it is searchable after the next of those.
