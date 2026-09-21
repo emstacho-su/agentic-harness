@@ -10,7 +10,7 @@ The RAG store lives in its own Supabase Postgres project, in a schema called `ra
 | Postgres | 17 |
 | pgvector | 0.8.2 |
 | Schema owned by this repo | `rag` |
-| Live contents | 1,324 documents, 2,360 chunks, 27 collections |
+| Live contents | moves nightly — `select source, count(*) from rag.documents group by 1`. 1,249 documents and 2,883 chunks on 2026-09-21, after short prompts and SDK worker sessions were pruned |
 
 ## Two stores exist. Never cross them.
 
@@ -113,7 +113,7 @@ order by version;
 ```
 
 Every row should have a matching `<version>_<name>.sql` in `migrations/`, and the six files
-above are the complete list as of 2026-09-15.
+above are the complete list as of 2026-09-21.
 
 "Mirror" means byte-identical, and that is checkable. `apply_migration` stores the query it was
 given verbatim — one array element, comments and all — so the file and the row must hash the

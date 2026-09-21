@@ -2,7 +2,8 @@
 
 > **Status: live.** `ingest/` has loaded the full claude-mem export and the
 > vault into `harness-memory`: 1,324 documents and 2,360 chunks across 27
-> collections as of 2026-09-15. 413 tests, run with `uv run pytest`.
+> collections as of 2026-09-15 (before short prompts and SDK worker sessions were
+> pruned on 2026-09-21). Tests run with `uv run pytest`.
 
 Ingestion turns source artifacts into rows the retrieval function can rank. It
 runs as a batch job, not a service — you point it at a source and it reconciles

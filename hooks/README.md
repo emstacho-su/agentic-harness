@@ -214,7 +214,7 @@ stream exists to fix.
 
 ## Tests
 
-`npm test` runs 223 tests with no dependencies and no network:
+`npm test` runs the suite with no dependencies and no network:
 
 | File | What it holds |
 | --- | --- |
