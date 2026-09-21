@@ -96,6 +96,9 @@ export const MAX_CHILD_SESSIONS = 40;
 /** Tools whose input names a file the session edited. */
 export const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
+/** Tools whose input names a path the session looked at. Inputs only; what they returned is never read. */
+export const READ_TOOLS = new Set(['Read', 'NotebookRead', 'Grep', 'Glob']);
+
 /** Tools whose input is a shell command line. */
 export const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
 

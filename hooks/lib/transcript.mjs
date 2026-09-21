@@ -18,6 +18,7 @@ import {
   MAX_COMMANDS_LISTED,
   MAX_COMMAND_CHARS,
   MAX_LABEL_CHARS,
+  READ_TOOLS,
   SHELL_TOOLS,
   SUBAGENT_BUDGET_BYTES,
   ORIGIN_PATTERN,
@@ -187,6 +188,7 @@ export function extractPrompts(entries) {
 export function createAccumulator() {
   return {
     files: new Map(),
+    filesRead: new Map(),
     commands: [],
     commandTexts: [],
     commandCount: 0,
@@ -291,6 +293,12 @@ function recordToolUse(block, into) {
   if (EDIT_TOOLS.has(name)) {
     const file = toPosix(args.file_path || args.notebook_path || '');
     if (file) into.files.set(file, (into.files.get(file) || 0) + 1);
+    return;
+  }
+  if (READ_TOOLS.has(name)) {
+    // Classification only: read paths raise area tags and are never listed in the note.
+    const file = toPosix(args.file_path || args.notebook_path || args.path || '');
+    if (file) into.filesRead.set(file, (into.filesRead.get(file) || 0) + 1);
     return;
   }
   if (SHELL_TOOLS.has(name)) {
