@@ -408,3 +408,31 @@ relevance, and the two would drift apart in ways that are extremely hard to
 notice — both would return results, both would look fine, and they would disagree
 about what the knowledge base says. A point lookup by `(source, external_id)`
 may read `rag.documents` directly; that is a key lookup, not ranking.
+
+## Measuring it
+
+Every number above — the 0.70 floor, `k = 60`, the per-document cap — was measured
+once by hand. `uv run ingest eval` makes the measurement repeatable: it embeds the
+questions in [`ingest/eval/golden.yaml`](../ingest/eval/golden.yaml), calls
+`rag.search` with the MCP server's defaults, and reports three scores.
+
+| Score | Meaning |
+| --- | --- |
+| hit@3 | share of questions with an expected document in the top 3 |
+| MRR | mean of 1/rank of the first expected document; 0 on a miss |
+| negatives pass | share of off-topic questions that correctly return nothing |
+
+```bash
+cd ingest
+uv run ingest eval                       # read-only; prints scores and each failed case
+uv run ingest eval --json > before.json  # keep a run to diff against
+uv run ingest eval --min-hit-rate 0.8    # exit 1 below the bar or on any failed negative
+```
+
+Run it before and after any change to capture, chunking, the embedding model or
+`rag.search`, and put both scores in the commit message. Add a case whenever
+retrieval lets you down in real use; never edit a case to make a run pass.
+
+| Date | Change | hit@3 | MRR | negatives |
+| --- | --- | --- | --- | --- |
+| 2026-09-21 | baseline | 0.70 | 0.64 | 1.00 |

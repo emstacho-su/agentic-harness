@@ -1,0 +1,99 @@
+# Golden queries for `uv run ingest eval`.
+#
+# Each question is phrased the way it would be asked, not the way the answer is
+# titled. A positive case names what should come back:
+#   expect           document external ids (any one in the top k is a hit)
+#   expect_contains  text that must appear in a returned chunk — for answers
+#                    that may live in more than one note, or not exist yet
+# A negative case is off-topic and must return nothing.
+#
+# Add a case whenever retrieval lets you down in real use. Do not edit a case to
+# make a run pass; change it only when the corpus genuinely moved.
+
+cases:
+  # -- migrated claude-mem observations ---------------------------------------
+  - id: bankroll-balance-chains
+    query: how does bankroll balance tracking work in quant edge tracker
+    expect: ["313", "314"]
+  - id: reconciliation-drift
+    query: how did I get rid of the 15 cent reconciliation drift in the betting tracker
+    expect: ["448"]
+  - id: missing-bets-fix
+    query: bets were missing and duplicated in the betting database, what was the fix
+    expect: ["314"]
+  - id: betting-schema
+    query: what tables make up the betting database schema
+    expect: ["440"]
+  - id: animation-config-conflict
+    query: why were there two background animation settings systems
+    expect: ["341", "342", "357", "338"]
+  - id: container-id-error
+    query: container id error when using code execution with server tools in the news agent
+    expect: ["110", "121"]
+  - id: routines-billing
+    query: how are Claude Code routines billed and scheduled
+    expect: ["252"]
+  - id: v1-routines-blockers
+    query: what decisions had to be made before starting the v1-routines build
+    expect: ["380", "352", "276"]
+  - id: first-briefing
+    query: did the first production daily briefing run succeed
+    expect: ["246"]
+  - id: vercel-dependencies
+    query: what dependencies did the news dashboard need to deploy on Vercel
+    expect: ["382"]
+  - id: harness-health-check
+    query: harness health check after moving off claude-mem
+    expect: ["66"]
+  - id: nextjs-survey
+    query: which of my spring 2026 projects are Next.js apps
+    expect: ["84"]
+
+  # -- captured sessions --------------------------------------------------------
+  - id: navbar-redesign
+    query: making the quant edge tracker nav bar horizontal across the top
+    expect: ["session-918369a9-5cd6-4c0c-8391-cea3d5a453d3"]
+  - id: hero-grid
+    query: thermodynamic grid for the portfolio site hero
+    expect: ["session-8448de7e-0cb8-447f-9e68-72bc3d89ad38"]
+  - id: planner-calendar-phase
+    query: planner week grid and push-only Google Calendar sync
+    expect:
+      - session-031d51be-6a6f-4d8f-b141-6b9bb7b2e0b3
+      - session-240d0141-4b89-4936-8bbb-468d06c073b1
+  - id: gradebook-phase
+    query: gradebook mirror and grades screens for bb2dash
+    expect: ["session-8bdd4d97-f492-4d8c-a0a6-7e148fde55d2"]
+  - id: capture-web-and-desktop
+    query: capturing sessions from the desktop app and the web with their relationships
+    expect: ["session-cp-7d2c52ab-be91-47aa-a148-5325de5849b9"]
+
+  # -- vault notes ----------------------------------------------------------------
+  - id: ist323-index
+    query: what is IST 323 about
+    expect: ["1e822b6f-1495-4d0f-bd73-84fa9f08aea3"]
+
+  # -- answers, not questions: these need the session outcome to be captured ----
+  - id: nightly-reconcile
+    query: how does the nightly reconcile job work
+    expect_contains: ["nightly reconcile", "nightly-ingest"]
+  - id: claude-mem-retired
+    query: why was claude-mem retired and what replaced it
+    expect_contains: ["claude-mem was retired", "retired claude-mem", "retiring claude-mem", "replaces claude-mem"]
+
+  # -- off-topic: must return nothing ---------------------------------------------
+  - id: neg-sourdough
+    query: best sourdough hydration ratio for a dutch oven loaf
+    negative: true
+  - id: neg-bicycle
+    query: how to change a flat tire on a road bicycle
+    negative: true
+  - id: neg-vitamin-d
+    query: symptoms of vitamin D deficiency
+    negative: true
+  - id: neg-flights
+    query: cheap flights to Tokyo in the spring
+    negative: true
+  - id: neg-guitar
+    query: how to tune a guitar by ear
+    negative: true

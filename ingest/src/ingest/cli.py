@@ -6,6 +6,7 @@
     uv run ingest --source obsidian   --path C:/Users/you/vault --only projects/x/sessions/y.md
     uv run ingest --source obsidian   --path C:/Users/you/vault --only a.md --only b.md
     uv run ingest sweep-concluded     --path C:/Users/you/vault [--apply]
+    uv run ingest eval                [--json] [--min-hit-rate 0.8]
     uv run ingest --health
 
 Windows note: always pass ``C:/Users/...``. An MSYS-style ``/c/Users/...`` path
@@ -24,6 +25,7 @@ from .config import CHUNKING, EMBEDDING, SOURCE_CLAUDE_MEM, SOURCE_OBSIDIAN, loa
 from .embedding import FastEmbedEmbedder
 from .envfile import load_env_file
 from .errors import IngestError
+from .eval_cli import SUBCOMMAND as EVAL_SUBCOMMAND, run_eval_command
 from .loaders import LoadedSource, load_claude_mem, load_vault, load_vault_notes
 from .pipeline import Action, IngestPipeline, IngestStats
 from .prune import PruneResult, prune_orphans
@@ -38,7 +40,7 @@ SOURCES = (SOURCE_OBSIDIAN, SOURCE_CLAUDE_MEM)
 
 # Subcommands are dispatched before argparse sees anything, so the flag-only
 # parser above keeps working exactly as it did.
-SUBCOMMANDS = {SWEEP_SUBCOMMAND: run_sweep}
+SUBCOMMANDS = {SWEEP_SUBCOMMAND: run_sweep, EVAL_SUBCOMMAND: run_eval_command}
 
 
 def build_parser() -> argparse.ArgumentParser:
