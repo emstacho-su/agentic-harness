@@ -42,6 +42,8 @@ htmlcov/
 
 # Local embedding model cache (fastembed / ONNX weights — hundreds of MB)
 .fastembed_cache/
+.fastembed-cache/
+local_cache/
 models/
 *.onnx
 
@@ -49,6 +51,7 @@ models/
 # Node / TypeScript (mcp-server/)
 # ---------------------------------------------------------------------------
 node_modules/
+coverage/
 dist/
 build/
 out/
@@ -93,3 +96,7 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 .harness/checkpoint-body.md
+
+# Per-machine Claude Code settings. `.claude/skills/` is committed on purpose,
+# so the directory cannot be ignored wholesale.
+.claude/settings.local.json
