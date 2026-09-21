@@ -21,7 +21,7 @@ import {
 } from './constants.mjs';
 import { serializeFrontmatter } from './frontmatter.mjs';
 import { redact, redactLiterals } from './redact.mjs';
-import { humanDuration, toPosix } from './text.mjs';
+import { humanDuration, normalizeLineBreaks, toPosix } from './text.mjs';
 
 /** `session-<id>` — the stable `external_id` ingest keys on. */
 export function noteId(sessionId, resumeIndex = 1) {
@@ -135,7 +135,7 @@ export function renderBody(ctx, fields) {
   lines.push('## What I asked for');
   lines.push('');
   ctx.prompts.slice(0, MAX_PROMPTS_RENDERED).forEach((prompt, index) => {
-    const text = redact(prompt.text).slice(0, MAX_PROMPT_CHARS);
+    const text = redact(normalizeLineBreaks(prompt.text)).slice(0, MAX_PROMPT_CHARS);
     lines.push(`${index + 1}. ${text.replace(/\n+/g, '\n   ')}`);
     lines.push('');
   });
@@ -205,7 +205,7 @@ export function renderBody(ctx, fields) {
 export function renderOutcome(outcome, knownSecrets = []) {
   // Literals first: a rule that rewrote half of a known value would leave the
   // other half unmatched.
-  const text = redact(redactLiterals(String(outcome ?? '').trim(), knownSecrets));
+  const text = redact(redactLiterals(normalizeLineBreaks(outcome).trim(), knownSecrets));
   if (!text) return [];
 
   const truncated = text.length > MAX_OUTCOME_CHARS;

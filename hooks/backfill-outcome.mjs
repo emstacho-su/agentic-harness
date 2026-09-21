@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { DEFAULT_VAULT_SEGMENTS, MAIN_TRANSCRIPT_MAX_BYTES, VAULT_ENV_VAR } from './lib/constants.mjs';
 import { renderOutcome } from './lib/note.mjs';
 import { hasOutcome, insertOutcome, transcriptPathFrom } from './lib/outcome-backfill.mjs';
+import { isLocalPath } from './lib/text.mjs';
 import {
   createAccumulator,
   extractOutcome,
@@ -112,7 +113,10 @@ export function backfillOutcomes({ vault, backup = '', dryRun = false }) {
         continue;
       }
       const transcriptPath = transcriptPathFrom(raw);
-      if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+      // The path comes out of the note's text. A UNC path is refused before any
+      // filesystem call: Windows answers `existsSync('//host/share')` by
+      // authenticating to `host` as the logged-in user (see `isLocalPath`).
+      if (!transcriptPath || !isLocalPath(transcriptPath) || !fs.existsSync(transcriptPath)) {
         report.transcriptGone += 1;
         continue;
       }

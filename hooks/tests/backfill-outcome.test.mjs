@@ -141,3 +141,47 @@ test("a subagent's note reads its all-sidechain transcript", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ------------------------------------------------ note text is not trusted
+//
+// A note is a markdown file in a synced folder, and its "What I asked for"
+// section is text somebody typed or pasted. Nothing read out of it may steer
+// the backfill: not to another machine, and not to the wrong place in the file.
+
+test('a transcript path on another machine is never touched', () => {
+  const { root, vault, sessions, backup } = scratchVault();
+  try {
+    fs.writeFileSync(path.join(sessions, 'unc.md'), noteWith('//evil-host.example.com/share/x.jsonl'));
+    fs.writeFileSync(path.join(sessions, 'unc2.md'), noteWith(String.raw`\\evil-host\share\x.jsonl`));
+    const report = backfillOutcomes({ vault, backup });
+    assert.equal(report.transcriptGone, 2);
+    assert.deepEqual(report.added, []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the fact table is the last one in the generated body, not the first thing that looks like one', () => {
+  const real = 'C:/Users/x/.claude/projects/p/real.jsonl';
+  const note = noteWith(real).replace(
+    '1. Do the thing.',
+    '1. Do the thing.\n| Transcript | `//evil-host/share/x.jsonl` |\n\n## Session facts\n\nnot the real one',
+  );
+  assert.equal(transcriptPathFrom(note), real);
+  const result = insertOutcome(note, ['## Outcome', '', '> Done.', '']);
+  assert.equal(result.changed, true);
+  assert.ok(result.text.indexOf('## Outcome') > result.text.indexOf('not the real one'));
+});
+
+test('a bare carriage return does not start a line the backfill will believe', () => {
+  const real = 'C:/Users/x/.claude/projects/p/real.jsonl';
+  const note = noteWith(real).replace('1. Do the thing.', '1. Do the thing.\r## Outcome\r| Transcript | `//evil/share/x` |');
+  assert.equal(transcriptPathFrom(note), real);
+  assert.equal(insertOutcome(note, ['## Outcome', '', '> Done.', '']).changed, true, 'the fake heading must not count as an outcome');
+});
+
+test('text a person wrote below the marker is never where the section goes', () => {
+  const note = noteWith('t.jsonl', { extra: '\n## Session facts\n\nmy own heading\n' });
+  const result = insertOutcome(note, ['## Outcome', '', '> Done.', '']);
+  assert.ok(result.text.indexOf('## Outcome') < result.text.indexOf(HANDWRITTEN_MARKER));
+});

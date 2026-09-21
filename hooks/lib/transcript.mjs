@@ -18,6 +18,7 @@ import {
   MAX_COMMANDS_LISTED,
   MAX_COMMAND_CHARS,
   MAX_LABEL_CHARS,
+  MAX_SECRET_SCAN_CHARS,
   READ_TOOLS,
   SHELL_TOOLS,
   SUBAGENT_BUDGET_BYTES,
@@ -248,8 +249,19 @@ export function extractOutcome(entries, { includeSidechain = false } = {}) {
  * a command. Call after `extractTools`, which fills `commandTexts`.
  */
 export function knownSecrets(prompts, accumulator) {
+  // Bounded, like everything else inside the exit budget: command text is kept
+  // whole and a long session holds megabytes of it. Prompts go first — a secret
+  // is pasted far more often than it is typed into a command.
   const texts = [...prompts.map((prompt) => prompt.text), ...(accumulator?.commandTexts ?? [])];
-  return findSecretValues(texts.join('\n'));
+  const parts = [];
+  let remaining = MAX_SECRET_SCAN_CHARS;
+  for (const text of texts) {
+    if (remaining <= 0) break;
+    const part = String(text ?? '').slice(0, remaining);
+    parts.push(part);
+    remaining -= part.length + 1;
+  }
+  return findSecretValues(parts.join('\n'));
 }
 
 /** Walk assistant turns and record what the session did. Mutates `into`. */

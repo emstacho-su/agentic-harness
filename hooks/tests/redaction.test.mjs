@@ -17,9 +17,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
-import { MAX_COMMAND_CHARS } from '../lib/constants.mjs';
+import { MAX_COMMAND_CHARS, MAX_SECRET_SCAN_CHARS } from '../lib/constants.mjs';
 import { findSecretValues, looksRedacted, redact, redactLiterals } from '../lib/redact.mjs';
-import { createAccumulator, extractTools } from '../lib/transcript.mjs';
+import { createAccumulator, extractTools, knownSecrets } from '../lib/transcript.mjs';
 import { GOLDEN_DIR, createSandbox, readNote } from './helpers/sandbox.mjs';
 import { SCENARIOS, runScenario } from './helpers/scenarios.mjs';
 
@@ -213,4 +213,19 @@ test('redactLiterals removes every occurrence, longest value first', () => {
 test('redactLiterals leaves text alone when there is nothing to remove', () => {
   assert.equal(redactLiterals('nothing here', []), 'nothing here');
   assert.equal(redactLiterals('', ['Sup3rSecretPassw0rd']), '');
+});
+
+test('a placeholder or a variable reference is not a secret worth hunting through prose', () => {
+  const values = findSecretValues(
+    'GITHUB_TOKEN: undefined\nAPI_KEY=changeme\nDB_PASSWORD=password\nTOKEN=$GITHUB_TOKEN\n' +
+      'SECRET=${{ secrets.DEPLOY }}\nAPI_KEY=<your-api-key>\nAUTH_TOKEN=process.env.AUTH_TOKEN',
+  );
+  assert.deepEqual(values, []);
+});
+
+test('the secret scan reads a bounded amount however large the session was', () => {
+  const huge = [{ text: `${'x'.repeat(MAX_SECRET_SCAN_CHARS)} DATABASE_PASSWORD=Sup3rSecretPassw0rd` }];
+  assert.deepEqual(knownSecrets(huge, { commandTexts: [] }), []);
+  const early = [{ text: `DATABASE_PASSWORD=Sup3rSecretPassw0rd ${'x'.repeat(MAX_SECRET_SCAN_CHARS)}` }];
+  assert.deepEqual(knownSecrets(early, { commandTexts: [] }), ['Sup3rSecretPassw0rd']);
 });

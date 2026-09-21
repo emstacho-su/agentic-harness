@@ -81,6 +81,12 @@ export const MAX_LABEL_CHARS = 200;
  * its note into a transcript.
  */
 export const MAX_OUTCOME_CHARS = 2000;
+/**
+ * How much prompt and command text is scanned for secret values to strip from
+ * the closing message. 1 MB runs through every rule in a few milliseconds; the
+ * shape rules still cover the closing message itself whatever this leaves out.
+ */
+export const MAX_SECRET_SCAN_CHARS = 1024 * 1024;
 
 /** Frontmatter array caps — a session note is an index, not an archive. */
 export const MAX_HOOK_TAGS = 5;

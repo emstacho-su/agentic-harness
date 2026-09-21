@@ -111,6 +111,24 @@ export const MIN_LITERAL_SECRET_CHARS = 8;
 const LITERAL_MARKER = '[REDACTED]';
 
 /**
+ * Values that fill a secret's slot without being one. `GITHUB_TOKEN: undefined`
+ * pasted while debugging a missing secret must not get every "undefined" in the
+ * closing message replaced. The shape rules still redact the assignment itself.
+ */
+const PLACEHOLDER_VALUES = new Set([
+  'undefined', 'password', 'changeme', 'change-me', 'placeholder', 'redacted', 'required',
+  'localhost', 'example', 'examples', 'your-key', 'your_key', 'xxxxxxxx', '********',
+]);
+
+/** `$TOKEN`, `${{ secrets.X }}`, `%TOKEN%`, `<your-key>`, `process.env.X`: a reference to a secret, not its value. */
+const REFERENCE_VALUE = /^(?:[$%<{]|process\.env\b|os\.environ\b|env\.|secrets\.)/i;
+
+function isLiteralSecret(value) {
+  if (value.length < MIN_LITERAL_SECRET_CHARS || value.includes(LITERAL_MARKER)) return false;
+  return !PLACEHOLDER_VALUES.has(value.toLowerCase()) && !REFERENCE_VALUE.test(value);
+}
+
+/**
  * The secret values the rules find in `text` — the password, not the connection
  * string around it; the token, not `GITHUB_TOKEN=`.
  *
@@ -128,7 +146,7 @@ export function findSecretValues(text) {
     try {
       for (const match of text.matchAll(rule.re)) {
         const value = String(rule.secret ? rule.secret(match) : match[0]).trim();
-        if (value.length >= MIN_LITERAL_SECRET_CHARS && !value.includes(LITERAL_MARKER)) found.add(value);
+        if (isLiteralSecret(value)) found.add(value);
       }
     } catch {
       /* as in redact(): one bad rule must not cost the rest */
