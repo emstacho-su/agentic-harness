@@ -441,3 +441,8 @@ retrieval lets you down in real use; never edit a case to make a run pass.
 | 2026-09-21 | text arm admits partial keyword matches (20260921223446) — two cases gained, two lost | 0.80 | 0.62 | 1.00 |
 | 2026-09-21 | strict matches rank first in the text arm (20260921223612) | 0.85 | 0.69 | 1.00 |
 | 2026-09-21 | gradebook label corrected (two worker notes on the same phase) | 0.90 | 0.74 | 1.00 |
+| 2026-09-21 | `## Outcome` backfilled into 371 session notes and re-embedded | 0.95 | 0.72 | 1.00 |
+
+The one miss left after all of this, "why was claude-mem retired", is a decision that was
+made outside any captured session: no document in the store states it. The case stays in
+the golden set so a note that does say it will be noticed.
