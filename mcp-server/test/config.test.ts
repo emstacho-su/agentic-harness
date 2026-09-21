@@ -1,11 +1,12 @@
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID, loadConfig } from '../src/config.js';
 import { ConfigError } from '../src/errors.js';
 
 const DB_URL = 'postgresql://postgres:pw@db.example.supabase.co:5432/postgres';
 
-/** The real pinned Supabase CA that ships with the repo. */
-const CA_PATH = 'C:/Users/estac/agentic-harness/certs/prod-ca.crt';
+/** The real pinned Supabase CA that ships with the repo, wherever the repo is checked out. */
+const CA_PATH = fileURLToPath(new URL('../../certs/prod-ca.crt', import.meta.url)).replace(/\\/g, '/');
 
 describe('loadConfig', () => {
   it('builds a postgres config from DATABASE_URL', () => {
