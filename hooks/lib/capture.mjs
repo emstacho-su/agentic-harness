@@ -26,6 +26,7 @@ import {
   STATUS_CONCLUDED,
 } from './constants.mjs';
 import { runGitSync } from './git-log.mjs';
+import { withLinks } from './links.mjs';
 import {
   ACTION_CREATE,
   ACTION_MERGE,
@@ -35,7 +36,7 @@ import {
   planWrite,
 } from './merge.mjs';
 import { buildFields, childNoteId, noteFilename, noteId, renderBody, renderNote } from './note.mjs';
-import { persist, readNote, resolveChainHead, vaultAvailable } from './notes-io.mjs';
+import { ensureIndex, persist, readNote, resolveChainHead, vaultAvailable } from './notes-io.mjs';
 import { isoDate, uniqueCapped } from './text.mjs';
 import {
   extractOrigin,
@@ -191,7 +192,7 @@ function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
     return writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, previous: current, plan, previousPath: targetPath, index: head.nextIndex });
   }
 
-  const fields = plan.fields;
+  const fields = withLinks(plan.fields, area);
   // The previous body carries anything Stack typed below the generated marker;
   // `renderBody` regenerates the machine sections and re-appends the rest.
   const merged = { ...context, previousBody: current.body };
@@ -199,6 +200,11 @@ function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
   if (!result.ok) {
     return { written: false, action: 'skip', skip: `write failed (${result.error})`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
   }
+
+  // The note links `up` to its collection index; a collection this write just
+  // created has none. Only a note's first write can be its collection's first
+  // note. A failure costs a ghost node, not the session.
+  const index = plan.action === ACTION_CREATE ? ensureIndex(vaultRoot, area, collection) : { ok: true };
 
   return {
     written: true,
@@ -211,7 +217,8 @@ function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
     vaultRoot,
     detail:
       `${area}/${collection}/sessions/${path.basename(targetPath)}` +
-      (result.changed ? '' : ' (identical on disk)'),
+      (result.changed ? '' : ' (identical on disk)') +
+      (index.ok ? '' : ` (index not written: ${index.error})`),
   };
 }
 
@@ -225,7 +232,7 @@ function writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, pr
     return { written: false, action: 'skip', skip: 'resume chain is implausibly long', notePath: '', touchedPaths: [], vaultRoot, detail: '' };
   }
 
-  const fields = { ...plan.fields, id: noteId(context.sessionId, index) };
+  const fields = withLinks({ ...plan.fields, id: noteId(context.sessionId, index) }, area);
   const resumedContext = { ...context, noteId: fields.id };
   const targetPath = path.join(sessionsDir, noteFilename(context.sessionId, index));
 
@@ -236,7 +243,7 @@ function writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, pr
 
   // Only after the successor exists: a crash between the two leaves a complete
   // note and a stale status, never a superseded note with no successor.
-  const flipped = persist(previousPath, renderNote(markSuperseded(previous.fields), previous.body));
+  const flipped = persist(previousPath, renderNote(withLinks(markSuperseded(previous.fields), area), previous.body));
 
   return {
     written: true,

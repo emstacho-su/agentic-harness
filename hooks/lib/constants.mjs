@@ -6,7 +6,7 @@
  */
 
 /** Written into `generator:`; bumped whenever the note's shape changes. */
-export const GENERATOR_VERSION = '2.1.0';
+export const GENERATOR_VERSION = '2.2.0';
 
 /** Written into `schema_version:`. Lets a reader tell "old note" from "unknown". */
 export const SCHEMA_VERSION = 2;
@@ -114,6 +114,12 @@ export const SUBAGENT_STOP_EVENT = 'SubagentStop';
 /** Vault top-level areas the hook may write into. */
 export const AREA_PROJECTS = 'projects';
 export const AREA_CLASSES = 'classes';
+/** The vault's two top-level areas. A collection folder lives in exactly one. */
+export const AREAS = Object.freeze([AREA_PROJECTS, AREA_CLASSES]);
+
+/** Every collection's hub note: what a session links `up` to. */
+export const INDEX_NOTE = 'index';
+export const INDEX_FILENAME = `${INDEX_NOTE}.md`;
 
 /** `collection_source:` — how the collection name was decided. */
 export const COLLECTION_FROM_GIT = 'git';

@@ -114,6 +114,9 @@ export function buildFields(ctx) {
     captured_by: ctx.capturedBy ?? CAPTURED_BY_HOOK,
     generator: `session-capture.mjs ${GENERATOR_VERSION}`,
     tools_used: Object.fromEntries(ctx.toolCounts),
+    // Placeholders: `withLinks` derives both after the merge, at the write.
+    up: '',
+    related: [],
   };
 }
 
