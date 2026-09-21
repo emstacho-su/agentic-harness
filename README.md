@@ -88,10 +88,10 @@ server refuses a `DATABASE_URL` naming the bb2dash project.
 | 0 | Archive the old harness | ✅ Done — 839 files, 210 MB, `~/.claude-archive/2026-09-09/` |
 | 1 | Export claude-mem history | ✅ Done — 4 JSON files + verified 56 MB snapshot |
 | 2 | Teardown and rebuild the harness | ✅ Done — 71→12 skills, 58→0 agents, 60→0 commands, 22→1 hooks, 220→0 permission rules |
-| 3 | pgvector schema | ✅ Done — 3 migrations applied to `harness-memory` and mirrored in `db/migrations/` |
+| 3 | pgvector schema | ✅ Done — migrations applied to `harness-memory` and mirrored in `db/migrations/` |
 | 4 | Vault + ingestion pipeline | ✅ Done — 1,319 documents / 2,312 chunks / 27 collections; vault open in Obsidian with Fall 2026 class folders and bb2dash materials; 261 tests |
 | 5 | Retrieval MCP server | ✅ Done — registered with Claude Code as `rag`; 117 tests; verified against the live store |
-| 6 | Dev cycle | ✅ Done — `CLAUDE.md` rewritten with required gates |
+| 6 | Dev cycle | ✅ Done — user-level `~/.claude/CLAUDE.md` rewritten with required gates |
 | 7 | Second agent on the same store | ⏸ Deferred. Schema is already agent-neutral |
 | 8 | Self-evolution loop | ⏸ Deferred |
 | 9 | Docs + diagrams | ✅ This |
