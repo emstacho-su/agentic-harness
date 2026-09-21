@@ -56,6 +56,8 @@ verbatim from that table.
 | `20260909175058_create_rag_hybrid_search.sql` | `rag.search()`: hybrid vector + full-text retrieval fused with RRF, `filter_source`, `filter_collection`, `max_per_document`; raises when both query arguments are null |
 | `20260909190458_rag_search_relevance_floor.sql` | Adds `min_similarity` (default 0.70) gating the vector arm, and the `vector_similarity` output column. Measured on this corpus: relevant 0.79–0.83, nonsense 0.48–0.66 |
 | `20260915144257_rag_search_filter_metadata.sql` | Adds `filter_metadata jsonb` (a `@>` contains-match on frontmatter, pushed into both arms) and `include_superseded boolean default true`; re-asserts the `documents_metadata_idx` GIN index the filter needs, and pins the function's `search_path` |
+| `20260921223446_rag_search_question_tolerant_text.sql` | The text arm also admits a chunk matching at least half the query's lexemes (minimum two) whose cosine is within 0.08 of `min_similarity`, so a natural-language question gets keyword support instead of an all-terms-or-nothing match. Signature unchanged |
+| `20260921223612_rag_search_strict_matches_first.sql` | Inside the text arm, chunks matching every term rank ahead of partial matches. Fixes two golden cases the previous migration pushed out of the top 3 |
 
 ## Access model
 
@@ -110,7 +112,7 @@ from supabase_migrations.schema_migrations
 order by version;
 ```
 
-Every row should have a matching `<version>_<name>.sql` in `migrations/`, and the four files
+Every row should have a matching `<version>_<name>.sql` in `migrations/`, and the six files
 above are the complete list as of 2026-09-15.
 
 "Mirror" means byte-identical, and that is checkable. `apply_migration` stores the query it was

@@ -438,3 +438,6 @@ retrieval lets you down in real use; never edit a case to make a run pass.
 | 2026-09-21 | baseline | 0.70 | 0.64 | 1.00 |
 | 2026-09-21 | two labels corrected after reading the returned documents (baseline would score 0.75) | — | — | — |
 | 2026-09-21 | short raw prompts and SDK worker sessions left out of the index (403 documents pruned) | 0.80 | 0.67 | 1.00 |
+| 2026-09-21 | text arm admits partial keyword matches (20260921223446) — two cases gained, two lost | 0.80 | 0.62 | 1.00 |
+| 2026-09-21 | strict matches rank first in the text arm (20260921223612) | 0.85 | 0.69 | 1.00 |
+| 2026-09-21 | gradebook label corrected (two worker notes on the same phase) | 0.90 | 0.74 | 1.00 |

@@ -67,7 +67,12 @@ cases:
       - session-240d0141-4b89-4936-8bbb-468d06c073b1
   - id: gradebook-phase
     query: gradebook mirror and grades screens for bb2dash
-    expect: ["session-8bdd4d97-f492-4d8c-a0a6-7e148fde55d2"]
+    # The Phase 10a grades researcher and the Phase 10b Grades-screen worker are
+    # about the same thing as the Phase 10a PM session, and outrank it.
+    expect:
+      - session-8bdd4d97-f492-4d8c-a0a6-7e148fde55d2
+      - session-ac1f5264-046d-4f8f-83be-682428b248d4--a80e86194ed168de9
+      - session-b453d876-aaef-424b-8ade-aba7f88c689a--a7328416f6668e18c
   - id: capture-web-and-desktop
     query: capturing sessions from the desktop app and the web with their relationships
     expect: ["session-cp-7d2c52ab-be91-47aa-a148-5325de5849b9"]
