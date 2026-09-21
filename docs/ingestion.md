@@ -408,7 +408,8 @@ the path `~/.claude/settings.json` registers.
 3. Writes **one note per session**,
    `vault/<projects|classes>/<collection>/sessions/<session_id>.md`, named by the
    full session id and rewritten on every `SessionEnd`.
-4. Copies only user prompts and tool *inputs*, both run through redaction (env
+4. Copies only user prompts, tool *inputs* and the session's closing assistant
+   message (`## Outcome`, verbatim, capped), all run through redaction (env
    assignments, connection-string passwords, JWTs, vendor key formats). Raw tool
    output is never copied, with two narrow exceptions that keep one capture group
    each: a pull request number from `gh pr` output and an artifact URL.

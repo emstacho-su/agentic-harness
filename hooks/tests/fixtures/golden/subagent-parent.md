@@ -89,6 +89,12 @@ Working directory `__SANDBOX__/repos/bb2dash`. Ran 45m, 1 prompt, 1 shell comman
 - Agent: Finish the retrieval filter (general-purpose)
 - Agent: Review the migration (feature-dev:code-reviewer)
 
+## Outcome
+
+_The assistant's closing message, verbatim._
+
+> Both workers reported; the brief is updated.
+
 ## Session facts
 
 | Field | Value |

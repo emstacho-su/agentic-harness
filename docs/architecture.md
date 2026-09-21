@@ -350,7 +350,9 @@ On secrets:
   `apply_migration` tool, which authenticates separately.
 - **The session-capture hook redacts** before anything reaches the vault: key-like
   environment assignments, connection-string passwords, JWTs, and vendor key
-  formats are replaced with `[REDACTED]`. Raw tool output is never copied.
+  formats are replaced with `[REDACTED]`. Raw tool output is never copied. The
+  closing assistant message is (as `## Outcome`), through the same redaction plus
+  literal removal of every secret value seen elsewhere in the session.
 
 ---
 

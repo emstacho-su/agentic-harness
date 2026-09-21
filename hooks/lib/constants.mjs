@@ -75,6 +75,12 @@ export const MAX_COMMANDS_LISTED = 20;
 export const MAX_COMMAND_CHARS = 160;
 /** Agent descriptions, skill names, artifact URLs — short labels, capped too. */
 export const MAX_LABEL_CHARS = 200;
+/**
+ * The closing assistant message. Roughly 500 tokens: enough for a summary of
+ * what was done and decided, short enough that one verbose session cannot turn
+ * its note into a transcript.
+ */
+export const MAX_OUTCOME_CHARS = 2000;
 
 /** Frontmatter array caps — a session note is an index, not an archive. */
 export const MAX_HOOK_TAGS = 5;

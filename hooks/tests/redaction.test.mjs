@@ -18,7 +18,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { MAX_COMMAND_CHARS } from '../lib/constants.mjs';
-import { looksRedacted, redact } from '../lib/redact.mjs';
+import { findSecretValues, looksRedacted, redact, redactLiterals } from '../lib/redact.mjs';
 import { createAccumulator, extractTools } from '../lib/transcript.mjs';
 import { GOLDEN_DIR, createSandbox, readNote } from './helpers/sandbox.mjs';
 import { SCENARIOS, runScenario } from './helpers/scenarios.mjs';
@@ -175,4 +175,42 @@ test('redact never throws on non-strings', () => {
   assert.equal(redact(undefined), '');
   assert.equal(redact(42), '');
   assert.equal(redact(''), '');
+});
+
+// ------------------------------------------------------ secrets seen elsewhere
+//
+// A rule matches a shape. A password repeated in prose has none: "the database
+// password Sup3rSecretPassw0rd" is just a word. But the same session usually
+// showed that value once *in* a shape — a connection string, a KEY=value — so
+// every value a rule finds anywhere in the session is also removed literally
+// from the closing message.
+
+test('findSecretValues returns the secret part of each match, not the key or the scheme', () => {
+  const values = findSecretValues(
+    'postgresql://postgres.ref:Sup3rSecretPassw0rd@host:6543/db and DATABASE_PASSWORD="hunter2 hunter2" ' +
+      'and export GITHUB_TOKEN=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8',
+  );
+  assert.ok(values.includes('Sup3rSecretPassw0rd'));
+  assert.ok(values.includes('hunter2 hunter2'));
+  assert.ok(values.includes('ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'));
+  assert.ok(!values.some((value) => value.includes('postgresql') || value.includes('DATABASE_PASSWORD')));
+});
+
+test('findSecretValues ignores values too short to replace safely', () => {
+  // Replacing every "abcd" in a paragraph would shred it and hide nothing.
+  assert.deepEqual(findSecretValues('PASSWORD=abcd'), []);
+});
+
+test('redactLiterals removes every occurrence, longest value first', () => {
+  const out = redactLiterals('use Sup3rSecretPassw0rd, then Sup3rSecretPassw0rd-2 again', [
+    'Sup3rSecretPassw0rd',
+    'Sup3rSecretPassw0rd-2',
+  ]);
+  assert.ok(!out.includes('Sup3rSecret'));
+  assert.equal(out, 'use [REDACTED], then [REDACTED] again');
+});
+
+test('redactLiterals leaves text alone when there is nothing to remove', () => {
+  assert.equal(redactLiterals('nothing here', []), 'nothing here');
+  assert.equal(redactLiterals('', ['Sup3rSecretPassw0rd']), '');
 });

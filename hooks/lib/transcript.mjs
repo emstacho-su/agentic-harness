@@ -4,9 +4,10 @@
  * The transcript is the only record of what happened, and it is also the one
  * thing here that can be hundreds of megabytes. So: a bounded tail read, a
  * parser that tolerates a truncated or malformed line, and extraction that
- * copies **user prompts and tool inputs only**. Raw tool output never reaches
- * the note — with two deliberate, narrow exceptions documented at
- * `scanToolResults`, which pull an integer and a URL and nothing else.
+ * copies **user prompts, tool inputs and the closing assistant message only**
+ * (`extractOutcome`). Raw tool output never reaches the note — with two
+ * deliberate, narrow exceptions documented at `scanToolResults`, which pull an
+ * integer and a URL and nothing else.
  */
 
 import fs from 'node:fs';
@@ -21,7 +22,7 @@ import {
   SUBAGENT_BUDGET_BYTES,
   ORIGIN_PATTERN,
 } from './constants.mjs';
-import { redact } from './redact.mjs';
+import { findSecretValues, redact } from './redact.mjs';
 import { isLocalPath, toPosix } from './text.mjs';
 
 /** Wrapper tags Claude Code uses for machinery that is not a human turn. */
@@ -198,6 +199,55 @@ export function createAccumulator() {
     artifacts: [],
     branches: new Set(),
   };
+}
+
+// ----------------------------------------------------------------- outcome
+
+/** Marks a message Claude Code wrote itself, e.g. "No response requested." */
+const SYNTHETIC_MODEL = '<synthetic>';
+
+/**
+ * The session's closing message: the text of the last assistant turn that said
+ * anything, on the main chain. Returned raw — the renderer redacts and caps it.
+ *
+ * A note holding only the questions cannot answer "what did we decide", and the
+ * closing message is where a session says what it did. It is copied verbatim,
+ * so the rule that no model runs at session end still holds, and it is model
+ * *text*, not tool output: `tool_use` and `tool_result` blocks are never read.
+ * Unlike a user turn (`contentToText`), an assistant turn routinely carries text
+ * beside a tool call, so the text blocks are kept and the rest ignored.
+ *
+ * A subagent's own transcript is all sidechain, so its capture passes
+ * `includeSidechain`; a parent session must not, or a worker's last words
+ * would pass for the session's.
+ *
+ * @returns {string} empty when the session ended without assistant text
+ */
+export function extractOutcome(entries, { includeSidechain = false } = {}) {
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if (entry?.type !== 'assistant' || entry.isApiErrorMessage) continue;
+    if (entry.isSidechain && !includeSidechain) continue;
+    if (entry.message?.model === SYNTHETIC_MODEL) continue;
+    const content = entry.message?.content;
+    if (!Array.isArray(content)) continue;
+
+    const parts = content
+      .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text.trim())
+      .filter(Boolean);
+    if (parts.length) return parts.join('\n\n');
+  }
+  return '';
+}
+
+/**
+ * Secret values this session showed inside a recognisable shape, in a prompt or
+ * a command. Call after `extractTools`, which fills `commandTexts`.
+ */
+export function knownSecrets(prompts, accumulator) {
+  const texts = [...prompts.map((prompt) => prompt.text), ...(accumulator?.commandTexts ?? [])];
+  return findSecretValues(texts.join('\n'));
 }
 
 /** Walk assistant turns and record what the session did. Mutates `into`. */

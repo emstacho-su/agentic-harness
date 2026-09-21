@@ -74,6 +74,12 @@ Working directory `__SANDBOX__/repos/bb2dash`. Ran 28m, 1 prompt, 1 shell comman
 
 - Run the retrieval filter test
 
+## Outcome
+
+_The assistant's closing message, verbatim._
+
+> Filter is in and the test passes.
+
 ## Session facts
 
 | Field | Value |

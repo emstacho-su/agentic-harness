@@ -40,10 +40,12 @@ import { ensureIndex, persist, readNote, resolveChainHead, vaultAvailable } from
 import { isoDate, uniqueCapped } from './text.mjs';
 import {
   extractOrigin,
+  extractOutcome,
   extractPrompts,
   extractSubagentTools,
   extractTools,
   createAccumulator,
+  knownSecrets,
   parentSessionFromPath,
   readEntries,
   resolveTranscript,
@@ -153,6 +155,8 @@ export function capture({
     artifacts: facts.artifacts,
     files: facts.paths.files,
     prompts,
+    outcome: extractOutcome(entries),
+    knownSecrets: knownSecrets(prompts, accumulator),
     commands: accumulator.commands,
     commandCount: accumulator.commandCount,
     agents: accumulator.agents,

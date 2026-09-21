@@ -14,12 +14,13 @@ import {
   GENERATOR_VERSION,
   MAX_COMMANDS_LISTED,
   MAX_FILES_LISTED,
+  MAX_OUTCOME_CHARS,
   MAX_PROMPTS_RENDERED,
   MAX_PROMPT_CHARS,
   SCHEMA_VERSION,
 } from './constants.mjs';
 import { serializeFrontmatter } from './frontmatter.mjs';
-import { redact } from './redact.mjs';
+import { redact, redactLiterals } from './redact.mjs';
 import { humanDuration, toPosix } from './text.mjs';
 
 /** `session-<id>` — the stable `external_id` ingest keys on. */
@@ -120,7 +121,10 @@ export function buildFields(ctx) {
   };
 }
 
-/** The markdown body. Extracted, never summarised: no model runs at session end. */
+/**
+ * The markdown body. Extracted, never summarised: no model runs at session end.
+ * The one piece of model-written text is the closing message, copied verbatim.
+ */
 export function renderBody(ctx, fields) {
   const lines = [];
   lines.push(`# ${fields.title}`);
@@ -175,6 +179,8 @@ export function renderBody(ctx, fields) {
     lines.push('');
   }
 
+  lines.push(...renderOutcome(ctx.outcome, ctx.knownSecrets));
+
   lines.push(
     ...renderFacts(fields, {
       transcriptPath: ctx.transcriptPath,
@@ -183,6 +189,34 @@ export function renderBody(ctx, fields) {
   );
 
   return `${lines.join('\n')}${keptFrom(ctx.previousBody)}`;
+}
+
+/**
+ * `## Outcome`: the session's closing assistant message, or nothing.
+ *
+ * Quoted line by line. The message is markdown in its own right, and an unquoted
+ * `## Session facts` or `#` heading inside it would restructure the note — for
+ * the chunker's breadcrumbs and for anything that splits the body on a heading.
+ * `knownSecrets` are values the session showed inside a secret shape elsewhere;
+ * prose repeats them with no shape at all, so they are removed literally.
+ * Redacted before it is cut, so a secret straddling the cap cannot survive as a
+ * prefix the rules no longer match.
+ */
+export function renderOutcome(outcome, knownSecrets = []) {
+  // Literals first: a rule that rewrote half of a known value would leave the
+  // other half unmatched.
+  const text = redact(redactLiterals(String(outcome ?? '').trim(), knownSecrets));
+  if (!text) return [];
+
+  const truncated = text.length > MAX_OUTCOME_CHARS;
+  const quoted = text
+    .slice(0, MAX_OUTCOME_CHARS)
+    .split('\n')
+    .map((line) => (line.trim() ? `> ${line}` : '>'));
+
+  const lines = ['## Outcome', '', "_The assistant's closing message, verbatim._", '', ...quoted, ''];
+  if (truncated) lines.push(`_…truncated at ${MAX_OUTCOME_CHARS} characters._`, '');
+  return lines;
 }
 
 /**

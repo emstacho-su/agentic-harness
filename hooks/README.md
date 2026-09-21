@@ -57,8 +57,14 @@ never changes, so a note that moves does not strand its row.
    every run. `tests/budget.test.mjs` holds it to that over 18 MB of transcript.
 2. **Never fail loudly.** Every path exits 0. Failures go to
    `~/.claude/hooks/session-capture.log` and nowhere else.
-3. **Never write a credential.** Only prompts and tool *inputs* reach the note,
-   both through `lib/redact.mjs`. The two narrow exceptions that read tool
+3. **Never write a credential.** Only prompts, tool *inputs* and the closing
+   assistant message (`## Outcome`) reach the note, all through `lib/redact.mjs`.
+   The closing message is the one piece of model-written text: copied verbatim,
+   quoted, capped at 2,000 characters, and additionally stripped of any value
+   the session showed inside a secret shape elsewhere — a password repeated in
+   prose has no shape for a rule to match. What this cannot catch is a secret
+   that appeared *only* in tool output and is then repeated in prose; if a
+   session did that, edit the note. The two narrow exceptions that read tool
    output — a PR number and an artifact URL — are documented at
    `scanToolResults` and keep one capture group each.
 4. **Never write an empty note.** No user prompts means nothing to remember.

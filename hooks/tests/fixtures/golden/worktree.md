@@ -73,6 +73,12 @@ Working directory `__SANDBOX__/repos/bb2dash-wt-sl`. Ran 31m, 1 prompt, 1 shell 
 
 - Run the sync button test
 
+## Outcome
+
+_The assistant's closing message, verbatim._
+
+> Suite is green.
+
 ## Session facts
 
 | Field | Value |

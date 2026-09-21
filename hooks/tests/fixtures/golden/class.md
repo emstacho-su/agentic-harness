@@ -60,6 +60,12 @@ Working directory `__SANDBOX__/onedrive/.fall2026/ist323`. Ran 26m, 1 prompt, 0 
 
 - `__SANDBOX__/onedrive/.fall2026/ist323/threat-model-outline.md`
 
+## Outcome
+
+_The assistant's closing message, verbatim._
+
+> Outline drafted.
+
 ## Session facts
 
 | Field | Value |
