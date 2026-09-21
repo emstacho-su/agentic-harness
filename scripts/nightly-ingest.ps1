@@ -275,7 +275,10 @@ if ($SweepMode -eq 'Skip') {
 # re-ingesting, and a stale status is a smaller problem than a stale index.
 if ($sweepCode -ne 0) { Write-Log "sweep failed with $sweepCode; continuing to the ingest" }
 
-$ingestArgs = @('--source', 'obsidian', '--path', $VaultPath) + $envArgs
+# --prune drops rows whose note left the vault or stopped qualifying for the
+# index (an SDK worker session, a note newly marked ingest: false). It refuses on
+# its own after any failed document or an empty load, so a bad night deletes nothing.
+$ingestArgs = @('--source', 'obsidian', '--path', $VaultPath, '--prune') + $envArgs
 $ingestCode = Invoke-Ingest -Uv $uv -Project $ProjectDir -IngestArgs $ingestArgs -Label 'ingest'
 
 Write-Log "=== nightly reconcile finished (transcripts $transcriptCode, checkpoints $checkpointCode, sweep $sweepCode, ingest $ingestCode) ==="

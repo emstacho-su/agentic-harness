@@ -8,13 +8,16 @@
 # A negative case is off-topic and must return nothing.
 #
 # Add a case whenever retrieval lets you down in real use. Do not edit a case to
-# make a run pass; change it only when the corpus genuinely moved.
+# make a run pass; change it only when the corpus genuinely moved, or when a
+# returned document you did not list turns out to answer the question — read it
+# first, and say why in a comment.
 
 cases:
   # -- migrated claude-mem observations ---------------------------------------
   - id: bankroll-balance-chains
     query: how does bankroll balance tracking work in quant edge tracker
-    expect: ["313", "314"]
+    # summary:109 is the session summary that describes the same architecture.
+    expect: ["313", "314", "summary:109"]
   - id: reconciliation-drift
     query: how did I get rid of the 15 cent reconciliation drift in the betting tracker
     expect: ["448"]
@@ -41,7 +44,8 @@ cases:
     expect: ["246"]
   - id: vercel-dependencies
     query: what dependencies did the news dashboard need to deploy on Vercel
-    expect: ["382"]
+    # 384 and summary:120 both state the cause (empty dependencies in pyproject.toml).
+    expect: ["382", "384", "summary:120"]
   - id: harness-health-check
     query: harness health check after moving off claude-mem
     expect: ["66"]

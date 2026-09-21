@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from ingest.errors import SourceError
-from ingest.loaders.obsidian import load_vault
+from ingest.loaders.obsidian import SDK_SESSION_REASON, load_vault, load_vault_notes
 
 
 def by_id(loaded):
@@ -85,3 +85,43 @@ def test_nested_templates_folder_is_ordinary_content(tmp_path: Path):
     (tmp_path / "templates" / "daily.md").write_text("# {{date}}\n", encoding="utf-8")
     loaded = load_vault(tmp_path)
     assert set(by_id(loaded)) == {"projects/quant-edge-tracker/notes/templates/weekly-report.md"}
+
+
+# --------------------------------------------------------------------------
+# SDK worker sessions — kept in the vault, kept out of the index
+# --------------------------------------------------------------------------
+
+
+def session_note(origin: str | None, note_type: str = "session") -> str:
+    origin_line = f"origin: {origin}\n" if origin is not None else ""
+    return f"---\nid: session-abc\ntype: {note_type}\n{origin_line}---\n\n## What I asked for\n\n1. Review this diff.\n"
+
+
+@pytest.mark.parametrize("origin", ["sdk-py", "sdk-cli", "sdk-ts"])
+def test_a_session_started_by_the_sdk_is_skipped(tmp_path: Path, origin: str):
+    # /code-review and /security-review workers: one prompt holding a diff, often
+    # several identical copies. The sweep files them so the vault is complete;
+    # indexing them buries the sessions a person actually drove.
+    (tmp_path / "worker.md").write_text(session_note(origin), encoding="utf-8")
+    loaded = load_vault(tmp_path)
+    assert not loaded.documents
+    assert skipped_ids(loaded)["worker.md"] == SDK_SESSION_REASON
+
+
+@pytest.mark.parametrize("origin", ["cli", "claude-desktop", "cloud", "", None])
+def test_a_session_a_person_drove_still_loads(tmp_path: Path, origin):
+    (tmp_path / "mine.md").write_text(session_note(origin), encoding="utf-8")
+    assert set(by_id(load_vault(tmp_path))) == {"session-abc"}
+
+
+def test_origin_only_excludes_session_notes(tmp_path: Path):
+    # `origin` on some other kind of note is somebody's own frontmatter, not ours.
+    (tmp_path / "note.md").write_text(session_note("sdk-py", note_type="reference"), encoding="utf-8")
+    assert set(by_id(load_vault(tmp_path))) == {"session-abc"}
+
+
+def test_only_on_an_sdk_session_is_a_skip_not_an_error(tmp_path: Path):
+    (tmp_path / "worker.md").write_text(session_note("sdk-py"), encoding="utf-8")
+    loaded = load_vault_notes(tmp_path, ["worker.md"])
+    assert not loaded.documents
+    assert skipped_ids(loaded)["worker.md"] == SDK_SESSION_REASON

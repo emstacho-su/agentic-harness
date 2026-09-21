@@ -15,12 +15,13 @@ from conftest import (
     session_row,
     summary_row,
 )
-from ingest.config import DEFAULT_AGENT, SOURCE_CLAUDE_MEM
+from ingest.config import DEFAULT_AGENT, MIN_PROMPT_CHARS, SOURCE_CLAUDE_MEM
 from ingest.errors import SourceError
 from ingest.jsonutil import parse_json_text_column
 from ingest.loaders.claude_mem import (
     EMPTY_OBSERVATION,
     PROMPT_PREFIX,
+    SHORT_PROMPT,
     SUMMARY_PREFIX,
     load_claude_mem,
 )
@@ -219,7 +220,7 @@ def test_prompts_are_ingested_with_the_prompt_prefix_and_no_title(export_dir: Pa
     doc = by_id(load_claude_mem(export_dir))[f"{PROMPT_PREFIX}2"]
     assert doc.source == SOURCE_CLAUDE_MEM
     assert doc.title is None
-    assert doc.body == "Prompt text number 2, asking for something."
+    assert doc.body.startswith("Prompt text number 2, asking for something specific")
     assert doc.metadata["record_type"] == "user_prompt"
     assert PROMPT_PREFIX == "prompt:"
 
@@ -242,6 +243,32 @@ def test_blank_prompt_text_is_skipped(tmp_path: Path):
     assert f"{PROMPT_PREFIX}1" in ids
     assert f"{PROMPT_PREFIX}2" not in ids
     assert f"{PROMPT_PREFIX}3" not in ids
+
+
+def test_a_prompt_too_short_to_carry_meaning_is_skipped(tmp_path: Path):
+    # "quant-edge-tracker", "yes", "~/.claude/sessions/": a fragment embeds close
+    # to anything that shares a word with it and crowds out real documents.
+    short = "x" * (MIN_PROMPT_CHARS - 1)
+    exact = "y" * MIN_PROMPT_CHARS
+    rows = [prompt_row(1, prompt_text=short), prompt_row(2, prompt_text=exact), prompt_row(3)]
+    loaded = load_claude_mem(
+        write_export(tmp_path / "e", [observation_row(1)], prompts=rows),
+        include_summaries=False,
+    )
+    ids = set(by_id(loaded))
+    assert f"{PROMPT_PREFIX}1" not in ids
+    assert {f"{PROMPT_PREFIX}2", f"{PROMPT_PREFIX}3"} <= ids
+    reasons = {record.external_id: record.reason for record in loaded.skipped}
+    assert reasons[f"{PROMPT_PREFIX}1"] == SHORT_PROMPT
+
+
+def test_prompt_length_is_measured_after_trimming(tmp_path: Path):
+    padded = " " * MIN_PROMPT_CHARS + "short" + " " * MIN_PROMPT_CHARS
+    loaded = load_claude_mem(
+        write_export(tmp_path / "e", [observation_row(1)], prompts=[prompt_row(1, prompt_text=padded)]),
+        include_summaries=False,
+    )
+    assert f"{PROMPT_PREFIX}1" not in set(by_id(loaded))
 
 
 def test_prompts_can_be_excluded(export_dir: Path):

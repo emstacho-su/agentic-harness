@@ -420,7 +420,9 @@ node hooks/sweep-transcripts.mjs --session <id> --ingest   # one teleported sess
 
 Notes written this way carry `captured_by: sweep`; the hook's carry `hook`. Both
 carry `origin`, the `entrypoint` the transcript declares, so an SDK worker's
-note is distinguishable from a human session in search. Neither field is ever
+note is distinguishable from a human session. `ingest` uses it: a session whose
+`origin` starts with `sdk` stays in the vault and is left out of the search index
+(see [../ingest/README.md](../ingest/README.md)). Neither field is ever
 inferred: a transcript with no `entrypoint` gets `origin: ''`, and an SDK
 worker's `parent_session` stays empty because nothing in its transcript names
 one.

@@ -150,6 +150,15 @@ is skipped too, but a deeper `templates/` is ordinary content. A note whose
 YAML is malformed is skipped and counted — one bad note never aborts a vault
 ingest.
 
+**SDK worker sessions** — a `type: session` note whose `origin` starts with `sdk`
+(`/code-review` and `/security-review` workers, workflow agents) — are skipped and
+reported as such. Their one prompt is a pasted diff, often in identical copies;
+indexed, they were 130 of 313 session notes and buried the sessions a person drove.
+The vault keeps them. **Raw claude-mem prompts under 80 characters**
+(`MIN_PROMPT_CHARS`) are skipped for the same reason: a fragment such as a bare
+project name scores above every real document that mentions it. A full run with
+`--prune` removes rows that stopped qualifying; the nightly job passes it.
+
 **`ingest: false`** in frontmatter opts a note out of embedding. It is reported
 as a skip (`frontmatter ingest: false`), never hidden. `no`, `off`, `'false'`
 and `0` are accepted; a list, mapping or empty string is refused as a typo.

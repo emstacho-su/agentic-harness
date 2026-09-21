@@ -211,7 +211,11 @@ def prompt_row(prompt_id: int, **overrides) -> dict:
         "id": prompt_id,
         "content_session_id": CONTENT_SESSION_ID,
         "prompt_number": prompt_id,
-        "prompt_text": f"Prompt text number {prompt_id}, asking for something.",
+        # Long enough to clear MIN_PROMPT_CHARS: the fixture stands for a real request.
+        "prompt_text": (
+            f"Prompt text number {prompt_id}, asking for something specific enough "
+            "to be worth finding again later on."
+        ),
         "created_at": "2026-03-24T17:35:26.929Z",
         "created_at_epoch": 1774373726929,
     }

@@ -30,7 +30,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from ..config import DEFAULT_AGENT, SOURCE_CLAUDE_MEM
+from ..config import DEFAULT_AGENT, MIN_PROMPT_CHARS, SOURCE_CLAUDE_MEM
 from ..errors import SourceError
 from ..jsonutil import json_safe, parse_json_text_column
 from ..models import SourceDocument
@@ -62,6 +62,7 @@ SUMMARY_SECTIONS = (
 EMPTY_OBSERVATION = "no narrative, text or title (2026-05-07 migration failure)"
 EMPTY_SUMMARY = "all summary fields blank"
 EMPTY_PROMPT = "blank prompt_text"
+SHORT_PROMPT = f"prompt shorter than {MIN_PROMPT_CHARS} characters"
 
 
 def load_claude_mem(
@@ -234,6 +235,9 @@ def _load_prompts(path: Path, sessions: SessionIndex) -> LoadedSource:
         body = _clean_str(row.get("prompt_text"))
         if not body:
             skipped.append(SkippedRecord(external_id, EMPTY_PROMPT))
+            continue
+        if len(body) < MIN_PROMPT_CHARS:
+            skipped.append(SkippedRecord(external_id, SHORT_PROMPT))
             continue
         documents.append(_prompt_document(row, external_id, body, sessions))
 
