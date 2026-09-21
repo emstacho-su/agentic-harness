@@ -24,7 +24,7 @@ import {
   SWEEP_INGEST_BATCH,
   VAULT_ENV_VAR,
 } from './lib/constants.mjs';
-import { enqueueIngest } from './lib/enqueue-ingest.mjs';
+import { enqueueIngest, inBatches } from './lib/enqueue-ingest.mjs';
 import { createLogger } from './lib/logger.mjs';
 
 export const LOG_ENV_VAR = 'HARNESS_CHECKPOINT_LOG';
@@ -115,7 +115,7 @@ export function run(argv, { env = process.env, out = console.log, err = console.
   if (options.ingest && !options.dryRun && summary.touchedPaths.length) {
     // One detached ingest per batch, as the sweep does: a Windows command line
     // tops out at 32 KiB and each ingest process loads the embedding model once.
-    for (const batch of chunk(summary.touchedPaths, SWEEP_INGEST_BATCH)) {
+    for (const batch of inBatches(summary.touchedPaths, SWEEP_INGEST_BATCH)) {
       const result = enqueueIngest({ notePaths: batch, vaultRoot: options.vaultRoot, log, env });
       if (!result.enqueued) {
         ingestFailures += 1;
@@ -132,12 +132,6 @@ export function run(argv, { env = process.env, out = console.log, err = console.
   out(`collect ${mode}: ${line}`);
   log(`=== collect finished (${mode}) ${line}`);
   return problems > 0 ? EXIT_PROBLEMS : EXIT_OK;
-}
-
-function chunk(items, size) {
-  const batches = [];
-  for (let i = 0; i < items.length; i += size) batches.push(items.slice(i, i + size));
-  return batches;
 }
 
 const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

@@ -320,6 +320,19 @@ function isInside(parent, child) {
   return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
+/**
+ * Split note paths into batches, one `enqueueIngest` call each.
+ *
+ * A Windows command line tops out at 32 KiB and every ingest process loads the
+ * embedding model once, so callers with a backlog send it in slices.
+ */
+export function inBatches(items, size) {
+  if (!Number.isInteger(size) || size < 1) throw new Error(`batch size must be a positive integer, got ${size}`);
+  const batches = [];
+  for (let i = 0; i < items.length; i += size) batches.push(items.slice(i, i + size));
+  return batches;
+}
+
 export function resolveProjectDir(env = process.env) {
   const override = (env?.[ENV_PROJECT_DIR] ?? '').trim();
   return override ? path.resolve(override) : DEFAULT_PROJECT_DIR;

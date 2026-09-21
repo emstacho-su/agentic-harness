@@ -104,7 +104,6 @@ export const searchContextShape = {
 } as const;
 
 export const searchContextSchema = z.object(searchContextShape);
-export type SearchContextInput = z.infer<typeof searchContextSchema>;
 
 export const getDocumentShape = {
   external_id: z
@@ -125,7 +124,6 @@ export const getDocumentShape = {
 } as const;
 
 export const getDocumentSchema = z.object(getDocumentShape);
-export type GetDocumentInput = z.infer<typeof getDocumentSchema>;
 
 /** MCP text-content tool result. Structurally compatible with the SDK type. */
 export interface ToolResult {

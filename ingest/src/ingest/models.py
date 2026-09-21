@@ -72,12 +72,3 @@ class DocumentState:
     collection: str | None
     agent: str | None
     metadata: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class PreparedDocument:
-    """A document that has been hashed and chunked, ready to embed and write."""
-
-    document: SourceDocument
-    content_hash: str
-    chunks: tuple[Chunk, ...]

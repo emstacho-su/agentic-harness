@@ -613,3 +613,22 @@ describe('enqueueIngest — resolution without hardcoded paths', () => {
     );
   });
 });
+
+describe('inBatches', () => {
+  it('splits into consecutive batches, the last one short', async () => {
+    const { inBatches } = await import('../lib/enqueue-ingest.mjs');
+    assert.deepEqual(inBatches(['a', 'b', 'c', 'd', 'e'], 2), [['a', 'b'], ['c', 'd'], ['e']]);
+  });
+
+  it('returns no batches for no items, and leaves the input alone', async () => {
+    const { inBatches } = await import('../lib/enqueue-ingest.mjs');
+    const items = Object.freeze(['a', 'b']);
+    assert.deepEqual(inBatches([], 3), []);
+    assert.deepEqual(inBatches(items, 5), [['a', 'b']]);
+  });
+
+  it('refuses a batch size that would never advance', async () => {
+    const { inBatches } = await import('../lib/enqueue-ingest.mjs');
+    assert.throws(() => inBatches(['a'], 0), /batch size/);
+  });
+});
