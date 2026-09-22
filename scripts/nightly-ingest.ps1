@@ -67,7 +67,11 @@ param(
     # (hooks/collect-checkpoints.mjs). Empty means the collector's own defaults.
     [string[]] $CheckpointRepos = @(),
     [ValidateSet('Apply', 'DryRun', 'Skip')]
-    [string] $Checkpoints = 'Apply'
+    [string] $Checkpoints = 'Apply',
+    # Steps -1 and 3: pull every realm before the night's work, push the
+    # push-policy realms after it (hooks/sync-realms.mjs). Nothing is forced.
+    [ValidateSet('Apply', 'DryRun', 'Skip')]
+    [string] $RealmSync = 'Apply'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -252,6 +256,28 @@ if ($EnvFile) { $envArgs = @('--env-file', $EnvFile) }
 
 # Step 0: transcripts the hook never saw become notes now, so the ingest below
 # embeds them tonight. Runs from the checkout, like the ingest project does.
+# Step -1: pull every realm this machine holds, so the night's work starts from
+# what the other machines pushed. A conflict is exit 2 and never fatal: the
+# realm is left exactly as it was, and the rest of the night still runs.
+function Invoke-RealmSync {
+    param([string] $Mode, [string] $Label)
+    if ($RealmSync -eq 'Skip') { Write-Log "$Label : skipped by -RealmSync Skip"; return 0 }
+    $syncScript = Join-Path $HooksDir 'sync-realms.mjs'
+    if (-not (Test-Path $syncScript)) { Write-Log "$Label : no sync script at $syncScript"; return 2 }
+    try {
+        $node = Resolve-Node -Explicit $NodePath
+        $syncArgs = @("--$Mode", '--vault', $VaultPath)
+        if ($RealmSync -eq 'DryRun') { $syncArgs += '--dry-run' }
+        return Invoke-TranscriptSweep -Node $node -Script $syncScript -SweepArgs $syncArgs -Label $Label
+    } catch {
+        Write-Log "$Label : $($_.Exception.Message)"
+        return 2
+    }
+}
+
+$pullCode = Invoke-RealmSync -Mode 'pull' -Label 'realms-pull'
+if ($pullCode -ne 0) { Write-Log "realm pull ended with $pullCode; continuing with what is on disk" }
+
 $transcriptCode = 0
 if ($TranscriptSweep -eq 'Skip') {
     Write-Log 'transcripts: skipped by -TranscriptSweep Skip'
@@ -319,7 +345,12 @@ if ($sweepCode -ne 0) { Write-Log "sweep failed with $sweepCode; continuing to t
 $ingestArgs = @('--source', 'obsidian', '--path', $VaultPath, '--prune') + $envArgs
 $ingestCode = Invoke-Ingest -Uv $uv -Project $ProjectDir -IngestArgs $ingestArgs -Label 'ingest'
 
-Write-Log "=== nightly reconcile finished (transcripts $transcriptCode, checkpoints $checkpointCode, sweep $sweepCode, ingest $ingestCode) ==="
+# Step 3: commit the night's notes and push the realms whose policy allows it.
+# Last, so a machine that fails earlier pushes nothing half-reconciled.
+$pushCode = Invoke-RealmSync -Mode 'push' -Label 'realms-push'
+if ($pushCode -ne 0) { Write-Log "realm push ended with $pushCode; the notes are on disk and will go next time" }
+
+Write-Log "=== nightly reconcile finished (realms-pull $pullCode, transcripts $transcriptCode, checkpoints $checkpointCode, sweep $sweepCode, ingest $ingestCode, realms-push $pushCode) ==="
 
 # Task Scheduler shows this as the last result, so it has to mean "the reconcile
 # worked". Only the ingest decides that.

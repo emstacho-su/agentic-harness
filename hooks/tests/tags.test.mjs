@@ -161,3 +161,8 @@ test('reading raises areas only: no phase-brief, which means a brief was written
 test('a session that neither edited nor read anything recognisable is still unclassified', () => {
   assert.deepEqual(classify({ filesRead: [{ path: 'notes.txt' }] }).tags, [UNCLASSIFIED]);
 });
+
+test('a planning brief filed in a per-sprint folder still names its phase', () => {
+  assert.equal(derivePhase({ docsTouched: ['docs/planning/sprint-1/50_PHASE7_retrieval.md'] }), 'phase-7');
+  assert.equal(derivePhase({ docsTouched: ['docs/planning/50_PHASE7_retrieval.md'] }), 'phase-7');
+});

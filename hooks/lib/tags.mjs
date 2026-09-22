@@ -46,7 +46,8 @@ const ACTIVITY_SLOTS = 2;
 
 const HOTFIX_BRANCH = /^(fix|hotfix)\//;
 const PHASE_IN_BRANCH = /phase[-_ ]?(\d{1,2})\b/i;
-const PHASE_IN_PLANNING_PATH = /docs\/planning\/[^/]*phase[-_ ]?(\d{1,2})/i;
+// Anywhere under docs/planning/: briefs are being filed into per-sprint folders.
+const PHASE_IN_PLANNING_PATH = /docs\/planning\/(?:[^/]+\/)*[^/]*phase[-_ ]?(\d{1,2})/i;
 const PHASE_IN_TITLE = /\bphase[-_ ]?(\d{1,2})\b/i;
 const PHASE_BRIEF_PATH = /^docs\/planning\/.*phase/i;
 
