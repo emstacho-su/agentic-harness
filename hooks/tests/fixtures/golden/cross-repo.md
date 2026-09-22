@@ -57,6 +57,7 @@ tools_used:
   Bash: 1
 up: '[[projects/bb2dash/index|bb2dash]]'
 related: []
+machine: ''
 ---
 
 # Session 2026-09-12 — bb2dash

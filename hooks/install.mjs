@@ -43,6 +43,7 @@ const PAYLOAD = [
   'lib/git-log.mjs',
   'lib/links.mjs',
   'lib/logger.mjs',
+  'lib/machine-env.mjs',
   'lib/merge.mjs',
   'lib/note.mjs',
   'lib/notes-io.mjs',

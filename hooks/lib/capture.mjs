@@ -27,6 +27,7 @@ import {
 } from './constants.mjs';
 import { runGitSync } from './git-log.mjs';
 import { withLinks } from './links.mjs';
+import { machineName } from './machine-env.mjs';
 import {
   ACTION_CREATE,
   ACTION_MERGE,
@@ -146,6 +147,7 @@ export function capture({
     ),
     agentType: '',
     origin: extractOrigin(entries),
+    machine: machineName(process.env),
     capturedBy,
     commits: facts.commits,
     prs: facts.prs,

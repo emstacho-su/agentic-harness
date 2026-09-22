@@ -61,6 +61,7 @@ tools_used:
   Write: 1
 up: '[[projects/bb2dash/index|bb2dash]]'
 related: []
+machine: ''
 ---
 
 # Session 2026-09-16 — bb2dash

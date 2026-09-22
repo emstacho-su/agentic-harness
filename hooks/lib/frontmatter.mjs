@@ -75,6 +75,8 @@ export const FIELD_SPEC = Object.freeze([
   // Derived Obsidian links (`links.mjs`). Appended, so no contract field moved.
   ['up', QUOTED],
   ['related', LIST],
+  // Which machine wrote the note (`machine-env.mjs`). Appended, same reason.
+  ['machine', QUOTED],
 ]);
 
 /** Field names in emit order. Handy for tests and for the migration. */

@@ -49,6 +49,7 @@ tools_used:
   Write: 1
 up: '[[a1b2c3d4-0000-4000-8000-000000000001]]'
 related: []
+machine: ''
 ---
 
 # Session 2026-09-15 — agentic-harness

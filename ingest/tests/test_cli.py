@@ -392,3 +392,31 @@ def test_harness_realms_that_covers_the_vault_lets_the_run_through(monkeypatch, 
     code = main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
                  "--env-file", str(clean_env)])
     assert code == 0
+
+
+# --------------------------------------------------------------------------
+# the machine file
+# --------------------------------------------------------------------------
+
+
+def test_machine_env_fills_what_the_repo_env_and_the_shell_lack(monkeypatch, tmp_path, capsys):
+    for name in ("HARNESS_MACHINE", "HARNESS_REALMS", "DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    repo_env = tmp_path / "repo.env"
+    repo_env.write_text("DATABASE_URL=postgresql://repo\n", encoding="utf-8")
+    machine = tmp_path / "machine.env"
+    machine.write_text("DATABASE_URL=postgresql://machine\nHARNESS_MACHINE=home-pc\n", encoding="utf-8")
+    monkeypatch.setenv("HARNESS_MACHINE_ENV", str(machine))
+
+    load_env_file(repo_env)
+
+    import os
+    assert os.environ["DATABASE_URL"] == "postgresql://repo", "the repo .env wins over the machine file"
+    assert os.environ["HARNESS_MACHINE"] == "home-pc", "the machine file fills the gap"
+
+
+def test_a_missing_machine_env_is_not_an_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_MACHINE_ENV", str(tmp_path / "absent.env"))
+    repo_env = tmp_path / "repo.env"
+    repo_env.write_text("# nothing\n", encoding="utf-8")
+    assert load_env_file(repo_env) == []

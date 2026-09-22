@@ -35,6 +35,7 @@ import {
 } from './constants.mjs';
 import { runGitSync } from './git-log.mjs';
 import { withLinks } from './links.mjs';
+import { machineName } from './machine-env.mjs';
 import { mergeFields } from './merge.mjs';
 import {
   buildFields,
@@ -142,6 +143,7 @@ export function captureSubagent({
     childSessions: [],
     agentType,
     origin: extractOrigin(entries),
+    machine: machineName(process.env),
     capturedBy,
     commits: facts.commits,
     prs: facts.prs,

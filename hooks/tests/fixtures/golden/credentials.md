@@ -48,6 +48,7 @@ tools_used:
   Write: 1
 up: '[[projects/agentic-harness/index|agentic-harness]]'
 related: []
+machine: ''
 ---
 
 # Session 2026-09-12 — agentic-harness

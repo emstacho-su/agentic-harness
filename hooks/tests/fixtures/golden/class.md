@@ -46,6 +46,7 @@ tools_used:
   Write: 1
 up: '[[classes/ist323/index|ist323]]'
 related: []
+machine: ''
 ---
 
 # Session 2026-09-14 — ist323

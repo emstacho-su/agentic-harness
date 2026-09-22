@@ -44,8 +44,14 @@ import {
   VAULT_ENV_VAR,
 } from './lib/constants.mjs';
 import { createLogger } from './lib/logger.mjs';
+import { loadMachineEnv } from './lib/machine-env.mjs';
 import { enqueueIngest } from './lib/enqueue-ingest.mjs';
 import { parseHookInput, readStdin } from './lib/stdin.mjs';
+
+// The machine file behaves like exported variables for this process and the
+// detached ingest it spawns; problems are logged once the logger exists.
+const MACHINE_ENV_PROBLEMS = [];
+Object.assign(process.env, loadMachineEnv(process.env, os.homedir(), (message) => MACHINE_ENV_PROBLEMS.push(message)));
 
 const STARTED_AT_MS = Date.now();
 const DEADLINE_AT = STARTED_AT_MS + BUDGET_MS;
@@ -55,6 +61,7 @@ const LOG_PATH = process.env[LOG_ENV_VAR] || path.join(HOOKS_DIR, 'session-captu
 
 function main() {
   const log = createLogger(LOG_PATH);
+  for (const problem of MACHINE_ENV_PROBLEMS) log(problem);
 
   if (DISABLE_VALUES.has(String(process.env[DISABLE_ENV_VAR] ?? '').toLowerCase())) return;
 
