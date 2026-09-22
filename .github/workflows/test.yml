@@ -1,0 +1,53 @@
+name: test
+
+# The three suites, each self-contained: no database, no network, no model
+# download. Windows because that is the platform the harness runs on and the
+# hooks suite exercises Windows path handling.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hooks:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: hooks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+
+  ingest:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ingest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen
+      - run: uv run pytest
+
+  mcp-server:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: mcp-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test

@@ -28,7 +28,7 @@ import {
   SWEEP_INGEST_BATCH,
   VAULT_ENV_VAR,
 } from './lib/constants.mjs';
-import { enqueueIngest } from './lib/enqueue-ingest.mjs';
+import { enqueueIngest, inBatches } from './lib/enqueue-ingest.mjs';
 import { createLogger } from './lib/logger.mjs';
 import { runSweep } from './lib/sweep.mjs';
 import { isSafeFilenameSegment } from './lib/text.mjs';
@@ -163,7 +163,7 @@ export function run(argv, { env = process.env, out = console.log, err = console.
   if (options.ingest && summary.touchedPaths.length) {
     // One detached ingest per batch: a Windows command line tops out at 32 KiB,
     // and a full backlog can touch hundreds of notes.
-    for (const batch of chunk(summary.touchedPaths, SWEEP_INGEST_BATCH)) {
+    for (const batch of inBatches(summary.touchedPaths, SWEEP_INGEST_BATCH)) {
       const result = enqueueIngest({ notePaths: batch, vaultRoot: options.vaultRoot, log, env });
       if (!result.enqueued) {
         ingestFailures += 1;
@@ -173,12 +173,6 @@ export function run(argv, { env = process.env, out = console.log, err = console.
     out(`ingest: ${summary.touchedPaths.length} note(s) in ${Math.ceil(summary.touchedPaths.length / SWEEP_INGEST_BATCH)} batch(es), ${ingestFailures} failed to start`);
   }
   return summary.errors > 0 || ingestFailures > 0 ? EXIT_ERRORS : EXIT_OK;
-}
-
-function chunk(items, size) {
-  const batches = [];
-  for (let i = 0; i < items.length; i += size) batches.push(items.slice(i, i + size));
-  return batches;
 }
 
 const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

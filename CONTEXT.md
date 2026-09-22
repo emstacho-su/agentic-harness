@@ -4,7 +4,7 @@
 decisions already made. Do not re-litigate them; if something here looks wrong, report it rather than
 silently diverging.
 
-Last updated: 2026-09-10 (vault registered in Obsidian, Fall 2026 layout, bb2dash materials export)
+Last updated: 2026-09-21 (retrieval contract, note filenames and repo layout brought back in line with the code)
 
 ---
 
@@ -113,14 +113,16 @@ rag.search(
   filter_collection text default null,      -- project or class
   rrf_k             int  default 60,
   max_per_document  int  default 3,
-  min_similarity    double precision default 0.70
+  min_similarity    double precision default 0.70,
+  filter_metadata   jsonb default null,       -- contains-match on frontmatter, e.g. {"repo": "owner/name"}
+  include_superseded boolean default true     -- false drops status: superseded
 )
 returns (chunk_id, doc_id, doc_source, doc_collection, doc_external,
          doc_title, chunk_content, doc_metadata, fused_score, vector_similarity)
 ```
 
 **Bind by NAME (`query_embedding => $1`), never positionally.** This signature has already
-changed three times, and a positional call silently shifted `rrf_k` into `filter_collection`
+changed four times, and a positional call silently shifted `rrf_k` into `filter_collection`
 — an int into a text parameter, surfacing as a misleading "function does not exist".
 
 ### `min_similarity` — an empty result is a correct answer
@@ -305,7 +307,8 @@ The capability that claude-mem used to provide and that nothing currently replac
 1. A `SessionEnd` hook fires when a session ends.
 2. It reads that session's transcript (Claude Code writes JSONL under
    `~/.claude/projects/<sanitised-cwd>/<session-id>.jsonl`).
-3. It writes a markdown summary to `vault/<projects|classes>/<collection>/sessions/<date>-<slug>.md`
+3. It writes a markdown summary to `vault/<projects|classes>/<collection>/sessions/<session_id>.md`
+   (a subagent's note is `<session_id>--<agent_id>.md`)
    with YAML frontmatter carrying `collection`, `session_id`, `date`, and files touched.
 4. The next ingest run embeds it. `content_hash` means re-running is free.
 
@@ -399,6 +402,11 @@ agentic-harness/
   db/migrations/    <- SQL mirroring what is applied to Supabase
   ingest/           <- Python ingestion pipeline (uv)
   mcp-server/       <- Node/TS stdio MCP retrieval server
+  hooks/            <- SessionEnd capture hook, nightly transcript sweep, checkpoint collector (Node, zero deps)
+  scripts/          <- PowerShell: nightly ingest + Task Scheduler registration
+  skills/           <- /checkpoint skill for cloud sessions (copied into .claude/skills/)
+  certs/            <- Supabase public root CA, pinned for TLS
+  .harness/         <- checkpoint notes committed by cloud sessions, collected into the vault
 ```
 
 Repo lives at `C:/Users/estac/agentic-harness`, deliberately **outside OneDrive** — `.git` and
@@ -420,11 +428,11 @@ OneDrive sync corrupt each other. Branch `main`. Public at
 | --- | --- |
 | 0 Archive | done — `~/.claude-archive/2026-09-09/`, 839 files, 210 MB |
 | 1 Export claude-mem | done — 4 JSON files + verified snapshot |
-| 2 Teardown + rebuild harness | done — 71→12 skills, 58→0 agents, 60→0 commands, 22→0 hooks |
+| 2 Teardown + rebuild harness | done — 71→12 skills, 58→0 agents, 60→0 commands, 22→1 hooks |
 | 3 pgvector schema | done — `rag` schema live, verified |
 | 4 Vault + ingestion | done — vault live and registered in Obsidian (2026-09-10), Fall 2026 class folders + index notes, bb2dash materials exported with `ingest: false`, SessionEnd capture verified |
 | 5 Retrieval MCP server | done — registered with Claude Code as `rag` (user scope, `~/.claude.json`) |
-| 6 Dev cycle | mostly done — `CLAUDE.md` rewritten with required gates |
+| 6 Dev cycle | mostly done — user-level `~/.claude/CLAUDE.md` rewritten with required gates |
 | 7 Hermes Agent | deferred until 0–6 land |
 | 8 Self-evolution | deferred; repo currently unlicensed, re-check before adopting |
 | 9 Docs repo | done — public on GitHub, docs rewritten for the harness-memory relocation |

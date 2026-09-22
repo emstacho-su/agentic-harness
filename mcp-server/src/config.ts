@@ -27,7 +27,6 @@ export const EMBEDDING_DIMENSIONS = 384;
 
 /** Sources currently produced by the ingestion pipeline. */
 export const KNOWN_SOURCES = ['obsidian', 'claude-mem', 'hermes'] as const;
-export type KnownSource = (typeof KNOWN_SOURCES)[number];
 
 export const DEFAULT_MATCH_COUNT = 10;
 export const MAX_MATCH_COUNT = 50;

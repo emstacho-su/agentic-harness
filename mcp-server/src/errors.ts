@@ -32,9 +32,6 @@ export class DimensionMismatchError extends EmbeddingError {}
 /** Connection, query, or transport failure talking to Postgres / PostgREST. */
 export class DatabaseError extends HarnessError {}
 
-/** Tool arguments failed validation at the boundary. */
-export class ValidationError extends HarnessError {}
-
 /**
  * Render any thrown value as an actionable, single-string message suitable for
  * returning to an LLM client. Never throws.

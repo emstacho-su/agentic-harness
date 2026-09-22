@@ -304,10 +304,3 @@ class MarkdownChunker:
 
 def _breadcrumb(trail: tuple[str, ...]) -> str:
     return " > ".join(trail)
-
-
-def chunk_markdown(
-    body: str, *, title: str | None = None, count_tokens: TokenCounter | None = None
-) -> list[Chunk]:
-    """Convenience wrapper around :class:`MarkdownChunker` with the defaults."""
-    return MarkdownChunker(count_tokens=count_tokens).chunk(body, title=title)

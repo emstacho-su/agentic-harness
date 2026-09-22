@@ -360,7 +360,7 @@ On secrets:
 | --- | --- | --- |
 | Harness rebuild | `~/.claude/` | Done — 71→12 skills, 58→0 agents, 60→0 commands, 1 hook |
 | claude-mem export | `~/.claude-archive/2026-09-09/` | Done — 4 JSON files, snapshot verified |
-| `rag` schema + `rag.search()` | `db/migrations/` | Applied to `harness-memory`, 3 migrations, verified |
+| `rag` schema + `rag.search()` | `db/migrations/` | Applied to `harness-memory`, verified |
 | Ingestion pipeline | `ingest/` | Live — 1,305 claude-mem documents + 14 vault notes; 261 tests |
 | Retrieval MCP server | `mcp-server/` | Live — registered with Claude Code as `rag`; 117 tests |
 | Obsidian vault | `OneDrive - Syracuse University/vault/` | Live — `projects/`, `classes/`, `daily/` |
