@@ -60,7 +60,10 @@ new machine to the nightly job.
    `git init`, commit, add the private remote.
 5. Write `~/.harness/machine.env` (above). `node hooks/doctor.mjs`.
 6. `node hooks/install.mjs --register-mcp` — copies the hook, registers it in
-   `settings.json`, and registers the `rag` MCP server from the machine file.
+   `settings.json`, and registers the `rag` MCP server. The registration carries only
+   the *path* to the repo `.env` (`HARNESS_ENV_FILE`); the server reads the secret
+   itself at start. `claude mcp get` prints a server's env block in clear text, so a
+   connection string must never be put there.
 7. Register the nightly job: `powershell -File scripts/register-nightly-ingest.ps1`
    (reads the machine file). On Linux/macOS: cron or launchd running
    `scripts/nightly-ingest.sh`.

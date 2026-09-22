@@ -177,7 +177,8 @@ function registerMcp(args) {
   }
   let config;
   try {
-    config = buildRagServerConfig({ node: args.node, distIndex, env: process.env });
+    const envFile = path.resolve(HERE, '..', '.env');
+    config = buildRagServerConfig({ node: args.node, distIndex, envFile, env: process.env });
   } catch (err) {
     console.error(`  mcp: refused — ${err.message}`);
     return false;

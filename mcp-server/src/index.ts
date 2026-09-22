@@ -7,8 +7,11 @@
  * the protocol and the client silently loses the server.
  */
 
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { loadConfig } from './config.js';
+import { loadEnvFiles } from './env-file.js';
 import { createRagClient } from './db/index.js';
 import { FastEmbedEmbedder } from './embedder.js';
 import { describeError } from './errors.js';
@@ -19,7 +22,10 @@ function log(message: string): void {
 }
 
 async function main(): Promise<void> {
-  const config = loadConfig(process.env);
+  // dist/index.js -> mcp-server -> the repo, where the gitignored .env lives.
+  // The registration names the file; the secret never sits in ~/.claude.json.
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const config = loadConfig(loadEnvFiles(process.env, { repoRoot, report: log }));
 
   const embedder = new FastEmbedEmbedder({
     modelId: config.embedding.modelId,

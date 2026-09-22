@@ -13,22 +13,31 @@ import { spawnSync } from 'node:child_process';
 export const SERVER_NAME = 'rag';
 export const SCOPE = 'user';
 
-/** The variables the server reads (mcp-server/src/config.ts). Nothing else is passed. */
-const SERVER_ENV = Object.freeze(['DATABASE_URL', 'DATABASE_CA_CERT', 'DATABASE_SSL', 'FASTEMBED_CACHE_DIR']);
+/**
+ * The non-secret variables the server reads (mcp-server/src/config.ts).
+ *
+ * DATABASE_URL is deliberately not among them. `claude mcp get` prints a
+ * server's env block in clear text, so the registration carries the *path* to
+ * the secrets file (HARNESS_ENV_FILE) and the server reads it at start.
+ */
+const SERVER_ENV = Object.freeze(['DATABASE_CA_CERT', 'DATABASE_SSL', 'FASTEMBED_CACHE_DIR']);
+export const ENV_FILE_VAR = 'HARNESS_ENV_FILE';
 
 const CLI_TIMEOUT_MS = 30_000;
 
 /**
- * @param {{node: string, distIndex: string, env: NodeJS.ProcessEnv}} options
+ * @param {{node: string, distIndex: string, envFile: string, env: NodeJS.ProcessEnv}} options
+ *        `env` is the merged environment (repo .env + machine file) used only
+ *        to check that a DATABASE_URL exists; its value never enters the config.
  */
-export function buildRagServerConfig({ node, distIndex, env }) {
-  const serverEnv = {};
+export function buildRagServerConfig({ node, distIndex, envFile, env }) {
+  if (!String(env?.DATABASE_URL ?? '').trim()) {
+    throw new Error(`DATABASE_URL is not set in ${envFile} or the environment: nothing to register the rag server against`);
+  }
+  const serverEnv = { [ENV_FILE_VAR]: envFile };
   for (const name of SERVER_ENV) {
     const value = String(env?.[name] ?? '').trim();
     if (value) serverEnv[name] = value;
-  }
-  if (!serverEnv.DATABASE_URL) {
-    throw new Error('DATABASE_URL is not set: nothing to register the rag server against');
   }
   return { type: 'stdio', command: node, args: [distIndex], env: serverEnv };
 }
@@ -64,9 +73,9 @@ export function registerRagServer({ config, run = runClaude, claudeBin = 'claude
   }
 }
 
-/** The CLI may echo its input; the connection string must not reach a log. */
+/** The CLI may echo its input; nothing from the env block reaches a log verbatim. */
 function scrub(text, config) {
   let out = String(text ?? '').trim().slice(0, 400);
   for (const value of Object.values(config.env)) out = out.split(value).join('[REDACTED]');
-  return out;
+  return out.replace(/postgres(?:ql)?:\/\/\S+/g, 'postgresql://[REDACTED]');
 }
