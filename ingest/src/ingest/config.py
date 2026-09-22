@@ -8,8 +8,11 @@ rest of the pipeline reads the name and dimension from this object.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from .errors import ConfigError
 
 # --------------------------------------------------------------------------
 # Embeddings
@@ -125,6 +128,40 @@ MIN_PROMPT_CHARS = 80
 # Agent SDK, not by a person: /code-review and /security-review workers, workflow
 # agents. Their single prompt is a pasted diff, frequently in identical copies.
 SDK_ORIGIN_PREFIX = "sdk"
+
+# --------------------------------------------------------------------------
+# Realms: which git repo of notes a document belongs to
+# --------------------------------------------------------------------------
+
+# `HARNESS_REALMS=projects:push,classes:local,work-vm:push` — the realms this
+# machine may hold, each with its sync policy. The loader refuses a realm that
+# is on disk but not listed: a realm cloned by mistake must never enter this
+# machine's store. The policy is consumed by the sync script, not by ingest.
+ENV_REALMS = "HARNESS_REALMS"
+REALM_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+REALM_POLICIES = frozenset({"push", "local"})
+
+
+def parse_realm_policies(raw: str | None) -> dict[str, str] | None:
+    """``name:policy`` pairs, or None when the variable is unset or blank."""
+    if raw is None or not raw.strip():
+        return None
+    policies: dict[str, str] = {}
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        name, separator, policy = entry.partition(":")
+        name, policy = name.strip(), policy.strip()
+        if not separator or not REALM_NAME.match(name) or policy not in REALM_POLICIES:
+            raise ConfigError(
+                f"{ENV_REALMS}: '{entry}' is not <realm>:<push|local>; realm names are "
+                "lowercase letters, digits and dashes"
+            )
+        if name in policies:
+            raise ConfigError(f"{ENV_REALMS}: realm '{name}' is listed twice")
+        policies[name] = policy
+    return policies or None
 
 
 # Canonical env var names. These are the names actually on disk in the repo's

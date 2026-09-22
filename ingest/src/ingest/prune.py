@@ -32,6 +32,8 @@ class PruneResult:
     """What the sweep found and whether it acted."""
 
     source: str
+    #: The realm swept, or None for the rows written before realms existed.
+    realm: str | None = None
     orphans: tuple[str, ...] = ()
     deleted: int = 0
     performed: bool = False
@@ -51,25 +53,32 @@ def prune_orphans(
     document_count: int = 0,
     failure_count: int = 0,
     limited: bool = False,
+    realm: str | None = None,
 ) -> PruneResult:
-    """Delete documents of ``source`` whose ``external_id`` was not seen."""
+    """Delete documents of ``source`` inside ``realm`` whose ``external_id`` was not seen.
+
+    One call per realm the loader walked. A realm this machine holds no clone of
+    is never listed, so two vaults sharing one store cannot prune each other.
+    ``realm=None`` sweeps only the rows written before realms existed.
+    """
+    label = f"{source}/{realm or 'legacy'}"
     declined = _decline_reason(document_count, failure_count, limited)
     if declined:
-        log.warning("Skipping orphan sweep for %s: %s", source, declined)
-        return PruneResult(source=source, declined_reason=declined)
+        log.warning("Skipping orphan sweep for %s: %s", label, declined)
+        return PruneResult(source=source, realm=realm, declined_reason=declined)
 
     seen = {str(value) for value in seen_external_ids}
-    existing = store.list_external_ids(source)
+    existing = store.list_external_ids(source, realm=realm)
     orphans = tuple(sorted(existing - seen))
 
     if not orphans:
-        return PruneResult(source=source, performed=not dry_run)
+        return PruneResult(source=source, realm=realm, performed=not dry_run)
     if dry_run:
-        return PruneResult(source=source, orphans=orphans, performed=False)
+        return PruneResult(source=source, realm=realm, orphans=orphans, performed=False)
 
-    deleted = store.delete_documents(source, orphans)
-    log.info("Orphan sweep removed %d document(s) from %s", deleted, source)
-    return PruneResult(source=source, orphans=orphans, deleted=deleted, performed=True)
+    deleted = store.delete_documents(source, orphans, realm=realm)
+    log.info("Orphan sweep removed %d document(s) from %s", deleted, label)
+    return PruneResult(source=source, realm=realm, orphans=orphans, deleted=deleted, performed=True)
 
 
 def _decline_reason(document_count: int, failure_count: int, limited: bool) -> str | None:

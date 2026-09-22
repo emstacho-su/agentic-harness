@@ -51,6 +51,12 @@ def _state(document_id: int, content_hash: str, document: SourceDocument) -> Doc
     )
 
 
+def _realm_of(state: DocumentState) -> str | None:
+    """Mirrors the store's jsonb predicate: the realm key, or None for a legacy row."""
+    ingest_meta = state.metadata.get("_ingest")
+    return ingest_meta.get("realm") if isinstance(ingest_meta, dict) else None
+
+
 class FakeStore:
     """In-memory ChunkStore that records every write."""
 
@@ -102,15 +108,20 @@ class FakeStore:
             return
         raise StoreError(f"no document with id {document_id}")
 
-    def list_external_ids(self, source: str) -> set[str]:
-        return {external_id for src, external_id in self.documents if src == source}
+    def list_external_ids(self, source: str, realm: str | None = None) -> set[str]:
+        return {
+            external_id
+            for (src, external_id), state in self.documents.items()
+            if src == source and _realm_of(state) == realm
+        }
 
-    def delete_documents(self, source: str, external_ids) -> int:
+    def delete_documents(self, source: str, external_ids, realm: str | None = None) -> int:
         deleted = 0
         for external_id in external_ids:
-            state = self.documents.pop((source, external_id), None)
-            if state is None:
+            state = self.documents.get((source, external_id))
+            if state is None or _realm_of(state) != realm:
                 continue
+            self.documents.pop((source, external_id))
             self.chunks.pop(state.document_id, None)
             self.embeddings.pop(state.document_id, None)
             deleted += 1

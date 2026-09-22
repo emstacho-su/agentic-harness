@@ -340,3 +340,55 @@ def test_a_dry_run_says_it_would_refresh_metadata(capsys):
 
     assert "would-update-metadata" in out
     assert "would refresh" in out
+
+
+# --------------------------------------------------------------------------
+# realms at the command line
+# --------------------------------------------------------------------------
+
+
+def realm_vault(tmp_path):
+    vault = tmp_path / "vault"
+    for name in ("projects", "classes"):
+        (vault / name).mkdir(parents=True)
+        (vault / name / ".realm").write_text(f"{name}\n", encoding="utf-8")
+        (vault / name / "a.md").write_text(f"---\nid: {name}-a\n---\n\nA note in {name}.\n", encoding="utf-8")
+    return vault
+
+
+def test_prune_sweeps_each_realm_the_run_walked(clean_env, tmp_path, capsys):
+    main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
+          "--prune", "--env-file", str(clean_env)])
+    out = capsys.readouterr().out
+    assert "realm 'projects'" in out and "realm 'classes'" in out
+    assert "legacy" not in out, "a realm run must not sweep the pre-realm rows without --prune-legacy"
+
+
+def test_prune_legacy_sweeps_the_pre_realm_rows_too(clean_env, tmp_path, capsys):
+    main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
+          "--prune", "--prune-legacy", "--env-file", str(clean_env)])
+    out = capsys.readouterr().out
+    assert "legacy" in out
+
+
+def test_prune_legacy_needs_a_full_pass(clean_env, tmp_path, capsys):
+    vault = realm_vault(tmp_path)
+    code = main(["--source", "obsidian", "--path", str(vault), "--only", "projects/a.md",
+                 "--prune-legacy", "--dry-run", "--env-file", str(clean_env)])
+    assert code == 2
+    assert "--prune-legacy" in capsys.readouterr().err
+
+
+def test_a_realm_missing_from_harness_realms_stops_the_run(monkeypatch, clean_env, tmp_path, capsys):
+    monkeypatch.setenv("HARNESS_REALMS", "projects:push")
+    code = main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
+                 "--env-file", str(clean_env)])
+    assert code == 1
+    assert "classes" in capsys.readouterr().err
+
+
+def test_harness_realms_that_covers_the_vault_lets_the_run_through(monkeypatch, clean_env, tmp_path, capsys):
+    monkeypatch.setenv("HARNESS_REALMS", "projects:push,classes:local,work-vm:push")
+    code = main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
+                 "--env-file", str(clean_env)])
+    assert code == 0
