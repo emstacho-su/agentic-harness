@@ -57,8 +57,14 @@ never changes, so a note that moves does not strand its row.
    every run. `tests/budget.test.mjs` holds it to that over 18 MB of transcript.
 2. **Never fail loudly.** Every path exits 0. Failures go to
    `~/.claude/hooks/session-capture.log` and nowhere else.
-3. **Never write a credential.** Only prompts and tool *inputs* reach the note,
-   both through `lib/redact.mjs`. The two narrow exceptions that read tool
+3. **Never write a credential.** Only prompts, tool *inputs* and the closing
+   assistant message (`## Outcome`) reach the note, all through `lib/redact.mjs`.
+   The closing message is the one piece of model-written text: copied verbatim,
+   quoted, capped at 2,000 characters, and additionally stripped of any value
+   the session showed inside a secret shape elsewhere — a password repeated in
+   prose has no shape for a rule to match. What this cannot catch is a secret
+   that appeared *only* in tool output and is then repeated in prose; if a
+   session did that, edit the note. The two narrow exceptions that read tool
    output — a PR number and an artifact URL — are documented at
    `scanToolResults` and keep one capture group each.
 4. **Never write an empty note.** No user prompts means nothing to remember.
@@ -208,7 +214,7 @@ stream exists to fix.
 
 ## Tests
 
-`npm test` runs 223 tests with no dependencies and no network:
+`npm test` runs the suite with no dependencies and no network:
 
 | File | What it holds |
 | --- | --- |
@@ -420,7 +426,9 @@ node hooks/sweep-transcripts.mjs --session <id> --ingest   # one teleported sess
 
 Notes written this way carry `captured_by: sweep`; the hook's carry `hook`. Both
 carry `origin`, the `entrypoint` the transcript declares, so an SDK worker's
-note is distinguishable from a human session in search. Neither field is ever
+note is distinguishable from a human session. `ingest` uses it: a session whose
+`origin` starts with `sdk` stays in the vault and is left out of the search index
+(see [../ingest/README.md](../ingest/README.md)). Neither field is ever
 inferred: a transcript with no `entrypoint` gets `origin: ''`, and an SDK
 worker's `parent_session` stays empty because nothing in its transcript names
 one.

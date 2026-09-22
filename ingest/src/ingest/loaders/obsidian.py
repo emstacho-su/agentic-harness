@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from ..config import DEFAULT_AGENT, SOURCE_OBSIDIAN
+from ..config import DEFAULT_AGENT, SDK_ORIGIN_PREFIX, SOURCE_OBSIDIAN
 from ..errors import SourceError
 from ..jsonutil import json_safe
 from ..models import SourceDocument
@@ -61,6 +61,10 @@ MAX_ID_LENGTH = 512
 # Frontmatter key that opts a note out of embedding. Absent means ingest.
 INGEST_KEY = "ingest"
 OPT_OUT_REASON = "frontmatter ingest: false"
+
+# Session notes the Agent SDK started stay in the vault and out of the index.
+SESSION_TYPE = "session"
+SDK_SESSION_REASON = "session started by the Agent SDK (origin: sdk-*)"
 
 
 def vault_root(vault_path: str | Path) -> Path:
@@ -316,6 +320,8 @@ def _load_note(path: Path, relative: str) -> SourceDocument | SkippedRecord:
         return SkippedRecord(relative, OPT_OUT_REASON)
     if not body.strip():
         return SkippedRecord(relative, "empty body")
+    if _is_sdk_session(frontmatter):
+        return SkippedRecord(relative, SDK_SESSION_REASON)
 
     external_id = _derive_external_id(frontmatter, relative)
 
@@ -342,6 +348,18 @@ def _load_note(path: Path, relative: str) -> SourceDocument | SkippedRecord:
         collection=_derive_collection(frontmatter, relative),
         metadata=metadata,
     )
+
+
+def _is_sdk_session(frontmatter: dict) -> bool:
+    """A session note whose ``origin`` says the Agent SDK started it.
+
+    The hook copies ``origin`` from the transcript and never infers it, so an
+    absent or empty value means "unknown" and the note is kept.
+    """
+    if frontmatter.get("type") != SESSION_TYPE:
+        return False
+    origin = frontmatter.get("origin")
+    return isinstance(origin, str) and origin.startswith(SDK_ORIGIN_PREFIX)
 
 
 def _wants_ingest(frontmatter: dict) -> bool:

@@ -1,7 +1,8 @@
 /**
  * The tag classifier (R-27.4).
  *
- * Area tags come from the repo-relative paths the session edited; activity tags
+ * Area tags come from the repo-relative paths the session edited — or, when the
+ * edits raise none, from the paths it read; activity tags
  * come from transcript signals — the commands it ran, the skills it invoked and
  * the branch it was on. Every term it can produce is in `docs/tags.md`, and
  * `tests/tags.test.mjs` proves that by set difference rather than by trust.
@@ -94,6 +95,7 @@ export function derivePhase({ branch = '', docsTouched = [], prTitles = [] } = {
  */
 export function classify({
   files = [],
+  filesRead = [],
   docsTouched = [],
   commandTexts = [],
   promptTexts = [],
@@ -103,7 +105,10 @@ export function classify({
   prTitles = [],
 } = {}) {
   const phase = derivePhase({ branch, docsTouched, prTitles });
-  const areaCounts = countAreas(files);
+  // What a session read is weaker evidence than what it changed, so it speaks
+  // only when the edits are silent: a research or review worker edits nothing.
+  const editedAreas = countAreas(files);
+  const areaCounts = editedAreas.size ? editedAreas : countAreas(filesRead);
   const activities = new Set(collectActivities({ commandTexts, promptTexts, skills, toolNames, branch, files }));
 
   if (activities.has('review')) {

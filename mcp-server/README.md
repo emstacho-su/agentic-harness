@@ -8,7 +8,7 @@ Two tools: **`search_context`** (hybrid retrieval) and **`get_document`** (full 
 by natural key). All ranked retrieval goes through the `rag.search()` SQL function, so
 every client shares one definition of search.
 
-Live store: **1,305 documents / 2,278 chunks across 17 collections.**
+Live store: the counts move every night; `db/README.md` has the query.
 
 ---
 
@@ -379,7 +379,7 @@ mcp-server/
 ## Tests
 
 ```powershell
-npm test                 # 155 tests
+npm test
 npm run test:coverage
 npm run typecheck        # includes the test sources
 ```

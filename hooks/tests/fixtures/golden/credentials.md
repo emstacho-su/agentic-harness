@@ -71,6 +71,12 @@ Working directory `__SANDBOX__/repos/agentic-harness`. Ran 20m, 2 prompts, 2 she
 - curl -H 'Authorization: Bearer [REDACTED-JWT]' https://example.supabase.co/rest/v1/rag
 - export GITHUB_TOKEN=[REDACTED] && gh auth status
 
+## Outcome
+
+_The assistant's closing message, verbatim._
+
+> Credentials belong in .env; nothing was committed. Rotate [REDACTED] and the database password [REDACTED], both are in this transcript now.
+
 ## Session facts
 
 | Field | Value |

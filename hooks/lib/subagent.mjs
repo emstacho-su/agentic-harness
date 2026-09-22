@@ -48,7 +48,7 @@ import {
 import { ensureIndex, persist, readNote, vaultAvailable } from './notes-io.mjs';
 import { redact } from './redact.mjs';
 import { isoDate, uniqueCapped } from './text.mjs';
-import { extractOrigin, extractPrompts, extractTools, createAccumulator, readEntries } from './transcript.mjs';
+import { extractOrigin, extractOutcome, extractPrompts, extractTools, createAccumulator, knownSecrets, readEntries } from './transcript.mjs';
 
 /**
  * Capture one finished subagent.
@@ -151,6 +151,9 @@ export function captureSubagent({
     artifacts: facts.artifacts,
     files: facts.paths.files,
     prompts,
+    // A worker's transcript is all sidechain; its closing message is its report.
+    outcome: extractOutcome(entries, { includeSidechain: true }),
+    knownSecrets: knownSecrets(prompts, accumulator),
     commands: accumulator.commands,
     commandCount: accumulator.commandCount,
     agents: accumulator.agents,

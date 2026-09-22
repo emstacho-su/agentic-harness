@@ -128,3 +128,36 @@ test('the phase comes from the branch first, then a planning brief, then nowhere
     'phase is never guessed from prose',
   );
 });
+
+// ------------------------------------------------------- files read, not edited
+//
+// A research or review worker edits nothing, so edited paths say nothing about
+// it; 102 of the 112 unclassified notes in the index on 2026-09-21 were such
+// subagents. What a session read is weaker evidence than what it changed, so it
+// is consulted only when the edits raise no area at all.
+
+test('a session that edited nothing takes its areas from the files it read', () => {
+  const { tags } = classify({ filesRead: [{ path: 'ingest/src/ingest/cli.py' }, { path: 'db/migrations/001.sql' }] });
+  assert.ok(tags.includes('ingest'));
+  assert.ok(tags.includes('db'));
+  assert.ok(!tags.includes(UNCLASSIFIED));
+});
+
+test('edits outrank reads: an editing session is described by what it changed', () => {
+  const { tags } = classify({
+    files: [{ path: 'hooks/lib/note.mjs' }],
+    filesRead: [{ path: 'web/src/app/page.tsx' }, { path: 'web/src/app/layout.tsx' }],
+  });
+  assert.ok(tags.includes('harness'));
+  assert.ok(!tags.includes('gui'));
+});
+
+test('reading raises areas only: no phase-brief, which means a brief was written', () => {
+  const { tags } = classify({ filesRead: [{ path: 'docs/planning/50_PHASE7_retrieval.md' }] });
+  assert.ok(tags.includes('planning'));
+  assert.ok(!tags.includes('phase-brief'));
+});
+
+test('a session that neither edited nor read anything recognisable is still unclassified', () => {
+  assert.deepEqual(classify({ filesRead: [{ path: 'notes.txt' }] }).tags, [UNCLASSIFIED]);
+});

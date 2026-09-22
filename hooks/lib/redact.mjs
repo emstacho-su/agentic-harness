@@ -27,12 +27,15 @@ export const SECRET_RULES = Object.freeze([
     name: 'named-secret-assignment',
     re: /(["']?)\b([A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|SERVICE[_-]?ROLE|ANON[_-]?KEY|AUTH[_-]?KEY|BEARER|DSN|APIKEY|PAT)[A-Za-z0-9_]*)\1(\s*[:=]\s*)(?:"[^"\n]{4,}"|'[^'\n]{4,}'|[^\s"'`,;)]{4,})/gi,
     to: (_m, quote, key, sep) => `${quote}${key}${quote}${sep}[REDACTED]`,
+    // Everything after the separator, minus the quotes a quoted value carries.
+    secret: (m) => unquote(m[0].slice(m[1].length * 2 + m[2].length + m[3].length)),
   },
   // Connection strings carrying an inline password: postgresql://user:pw@host.
   {
     name: 'connection-string-password',
     re: /\b([a-z][a-z0-9+.-]{2,15}:\/\/)([^\s:@/]{1,64}):([^\s@/]{1,256})@/gi,
     to: (_m, scheme, user) => `${scheme}${user}:[REDACTED]@`,
+    secret: (m) => m[3],
   },
   { name: 'jwt', re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, to: '[REDACTED-JWT]' },
   { name: 'supabase-key', re: /\bsb[a-z]{0,12}_[A-Za-z0-9_-]{16,}/g, to: '[REDACTED-KEY]' },
@@ -52,11 +55,31 @@ export const SECRET_RULES = Object.freeze([
     re: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
     to: '[REDACTED-PRIVATE-KEY]',
   },
-  { name: 'bearer-header', re: /\b[Bb]earer\s+[A-Za-z0-9._~+/-]{16,}=*/g, to: 'Bearer [REDACTED]' },
+  {
+    name: 'bearer-header',
+    re: /\b[Bb]earer\s+[A-Za-z0-9._~+/-]{16,}=*/g,
+    to: 'Bearer [REDACTED]',
+    secret: (m) => withoutFirstWord(m[0]),
+  },
   // `Authorization` matches none of the key names above, so Basic auth needs a
   // rule of its own; the base64 blob is a username and password.
-  { name: 'basic-header', re: /\b([Bb]asic)\s+[A-Za-z0-9+/]{12,}={0,2}/g, to: '$1 [REDACTED]' },
+  {
+    name: 'basic-header',
+    re: /\b([Bb]asic)\s+[A-Za-z0-9+/]{12,}={0,2}/g,
+    to: '$1 [REDACTED]',
+    secret: (m) => withoutFirstWord(m[0]),
+  },
 ]);
+
+function unquote(value) {
+  const quote = value[0];
+  const quoted = (quote === '"' || quote === "'") && value.length > 1 && value.endsWith(quote);
+  return quoted ? value.slice(1, -1) : value;
+}
+
+function withoutFirstWord(value) {
+  return value.replace(/^\S+\s+/, '');
+}
 
 /**
  * Redact every known secret shape in `text`.
@@ -77,6 +100,71 @@ export function redact(text) {
     }
   }
   return out;
+}
+
+/**
+ * Below this a literal is not replaced: removing every "abcd" from a paragraph
+ * would shred the text and protect nothing.
+ */
+export const MIN_LITERAL_SECRET_CHARS = 8;
+
+const LITERAL_MARKER = '[REDACTED]';
+
+/**
+ * Values that fill a secret's slot without being one. `GITHUB_TOKEN: undefined`
+ * pasted while debugging a missing secret must not get every "undefined" in the
+ * closing message replaced. The shape rules still redact the assignment itself.
+ */
+const PLACEHOLDER_VALUES = new Set([
+  'undefined', 'password', 'changeme', 'change-me', 'placeholder', 'redacted', 'required',
+  'localhost', 'example', 'examples', 'your-key', 'your_key', 'xxxxxxxx', '********',
+]);
+
+/** `$TOKEN`, `${{ secrets.X }}`, `%TOKEN%`, `<your-key>`, `process.env.X`: a reference to a secret, not its value. */
+const REFERENCE_VALUE = /^(?:[$%<{]|process\.env\b|os\.environ\b|env\.|secrets\.)/i;
+
+function isLiteralSecret(value) {
+  if (value.length < MIN_LITERAL_SECRET_CHARS || value.includes(LITERAL_MARKER)) return false;
+  return !PLACEHOLDER_VALUES.has(value.toLowerCase()) && !REFERENCE_VALUE.test(value);
+}
+
+/**
+ * The secret values the rules find in `text` — the password, not the connection
+ * string around it; the token, not `GITHUB_TOKEN=`.
+ *
+ * A rule matches a shape, and a secret repeated in prose has none. Model-written
+ * text (the closing message) is where that happens: "rotate the database
+ * password hunter2hunter2". So the values seen in a shape anywhere in the
+ * session are collected here and removed literally by `redactLiterals`.
+ *
+ * @returns {string[]} distinct values, each at least MIN_LITERAL_SECRET_CHARS long
+ */
+export function findSecretValues(text) {
+  if (typeof text !== 'string' || text === '') return [];
+  const found = new Set();
+  for (const rule of SECRET_RULES) {
+    try {
+      for (const match of text.matchAll(rule.re)) {
+        const value = String(rule.secret ? rule.secret(match) : match[0]).trim();
+        if (isLiteralSecret(value)) found.add(value);
+      }
+    } catch {
+      /* as in redact(): one bad rule must not cost the rest */
+    }
+  }
+  return [...found];
+}
+
+/**
+ * Replace every literal occurrence of each value. Longest first, so a value
+ * that contains another is removed whole.
+ */
+export function redactLiterals(text, values) {
+  if (typeof text !== 'string' || text === '') return '';
+  const ordered = [...new Set(values)]
+    .filter((value) => typeof value === 'string' && value.length >= MIN_LITERAL_SECRET_CHARS)
+    .sort((a, b) => b.length - a.length);
+  return ordered.reduce((out, value) => out.split(value).join(LITERAL_MARKER), text);
 }
 
 /**

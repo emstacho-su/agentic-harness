@@ -9,6 +9,23 @@ export function toPosix(value) {
   return typeof value === 'string' ? value.replace(/\\/g, '/') : '';
 }
 
+/** CRLF, a bare CR, U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR. Built from char codes: neither separator may appear literally inside a regex literal. */
+const LINE_BREAKS = new RegExp(`\\r\\n|[\\r${String.fromCharCode(0x2028, 0x2029)}]`, 'g');
+
+/**
+ * Every kind of line break to `\n`.
+ *
+ * A note is built and re-read line by line, and "line" has three definitions
+ * that disagree: this code splits on `\n`; CommonMark (so Obsidian) also breaks
+ * on a bare `\r`; and a JS regex with the `m` flag breaks on `\r`, U+2028 and
+ * U+2029 as well. Text that is about to be quoted or indented line by line goes
+ * through here first, or a pasted carriage return starts a line that never got
+ * its prefix — and `## Session facts` at the start of a line is a heading.
+ */
+export function normalizeLineBreaks(value) {
+  return String(value ?? '').replace(LINE_BREAKS, '\n');
+}
+
 /**
  * Single-quoted YAML.
  *

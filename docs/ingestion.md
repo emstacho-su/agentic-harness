@@ -2,7 +2,8 @@
 
 > **Status: live.** `ingest/` has loaded the full claude-mem export and the
 > vault into `harness-memory`: 1,324 documents and 2,360 chunks across 27
-> collections as of 2026-09-15. 413 tests, run with `uv run pytest`.
+> collections as of 2026-09-15 (before short prompts and SDK worker sessions were
+> pruned on 2026-09-21). Tests run with `uv run pytest`.
 
 Ingestion turns source artifacts into rows the retrieval function can rank. It
 runs as a batch job, not a service — you point it at a source and it reconciles
@@ -408,7 +409,8 @@ the path `~/.claude/settings.json` registers.
 3. Writes **one note per session**,
    `vault/<projects|classes>/<collection>/sessions/<session_id>.md`, named by the
    full session id and rewritten on every `SessionEnd`.
-4. Copies only user prompts and tool *inputs*, both run through redaction (env
+4. Copies only user prompts, tool *inputs* and the session's closing assistant
+   message (`## Outcome`, verbatim, capped), all run through redaction (env
    assignments, connection-string passwords, JWTs, vendor key formats). Raw tool
    output is never copied, with two narrow exceptions that keep one capture group
    each: a pull request number from `gh pr` output and an artifact URL.

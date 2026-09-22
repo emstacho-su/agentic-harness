@@ -16,8 +16,9 @@
  *      and the elapsed milliseconds are logged on every run.
  *   2. NEVER fail loudly. Every path exits 0. A capture hook that throws on the
  *      way out of a session is worse than no capture hook at all.
- *   3. NEVER write a credential. Only user prompts and tool *inputs* are copied,
- *      both through redaction; raw tool output is never copied.
+ *   3. NEVER write a credential. Only user prompts, tool *inputs* and the closing
+ *      assistant message are copied, all through redaction; raw tool output is
+ *      never copied.
  *   4. NEVER write an empty note. Zero user prompts means nothing to remember.
  *
  * This file is the deployed copy's source of truth. It lives in the repo at

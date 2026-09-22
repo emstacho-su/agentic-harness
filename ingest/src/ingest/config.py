@@ -110,6 +110,22 @@ SOURCE_OBSIDIAN = "obsidian"
 SOURCE_CLAUDE_MEM = "claude-mem"
 DEFAULT_AGENT = "claude-code"
 
+# --------------------------------------------------------------------------
+# What is worth indexing
+# --------------------------------------------------------------------------
+
+# A raw claude-mem prompt shorter than this is a fragment — "yes", a project
+# name, a pasted path. A fragment embeds close to anything sharing a word with it
+# (a bare "quant-edge-tracker" scored 0.83 against a question about that project,
+# above every real document), so it is left out of the index. Observations and
+# summaries are model-written prose and are not subject to it.
+MIN_PROMPT_CHARS = 80
+
+# Session notes whose frontmatter `origin` starts with this were started by the
+# Agent SDK, not by a person: /code-review and /security-review workers, workflow
+# agents. Their single prompt is a pasted diff, frequently in identical copies.
+SDK_ORIGIN_PREFIX = "sdk"
+
 
 # Canonical env var names. These are the names actually on disk in the repo's
 # .env — see CONTEXT.md "Credentials".

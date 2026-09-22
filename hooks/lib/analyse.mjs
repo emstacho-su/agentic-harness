@@ -74,8 +74,17 @@ export function analyseTranscript({
     maxRepos: MAX_REPOS_TOUCHED,
   });
 
+  const readPaths = classifyPaths(sortedEntries(accumulator.filesRead), {
+    repoFor: makeRepoResolver(),
+    maxFiles: MAX_FILES_LISTED,
+    maxDocs: MAX_DOCS_TOUCHED,
+    maxMemory: MAX_MEMORY_FILES,
+    maxRepos: MAX_REPOS_TOUCHED,
+  });
+
   const { tags, phase } = classify({
     files: paths.files,
+    filesRead: readPaths.files,
     docsTouched: paths.docsTouched,
     commandTexts: accumulator.commandTexts,
     promptTexts: prompts.map((prompt) => prompt.text),
@@ -153,7 +162,12 @@ function deriveCommits({ repo, timing, runGit, deadlineAt }) {
 }
 
 function sortedFiles(accumulator) {
-  return [...accumulator.files.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  return sortedEntries(accumulator.files);
+}
+
+/** Most-touched first; ties by path, never by chance. Tolerates an accumulator built before `filesRead` existed. */
+function sortedEntries(counts) {
+  return [...(counts ?? new Map()).entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
 
 function sortedToolCounts(accumulator) {

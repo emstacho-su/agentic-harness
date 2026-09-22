@@ -47,6 +47,12 @@ Applied from the repo-relative paths the session edited. One path can raise
 more than one tag; `web/src/lib/queries.sync.ts` is `gui`, and
 `db/migrations/035_transform_driver.sql` is `db`.
 
+When the edits raise no area — a research or review worker edits nothing — the
+same rules are applied to the paths the session **read** (`Read`, `Grep`, `Glob`
+inputs). Reads never override edits and never raise an activity tag: reading a
+phase brief is not writing one. Read paths are used for classification only and
+are not listed in the note.
+
 | Tag | Raised by a touched path that… |
 | --- | --- |
 | `ingest` | starts `ingest/` |

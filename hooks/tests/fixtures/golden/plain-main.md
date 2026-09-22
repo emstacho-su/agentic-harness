@@ -94,6 +94,12 @@ Working directory `__SANDBOX__/repos/bb2dash`. Ran 1h 0m, 2 prompts, 2 shell com
 
 - Agent: Verify migration ordering (general-purpose)
 
+## Outcome
+
+_The assistant's closing message, verbatim._
+
+> Phase 7 work is in and the PR is open.
+
 ## Session facts
 
 | Field | Value |

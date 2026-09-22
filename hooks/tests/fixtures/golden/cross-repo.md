@@ -79,6 +79,12 @@ Working directory `__SANDBOX__/repos/bb2dash`. Ran 45m, 1 prompt, 1 shell comman
 
 - Run the ingest suite
 
+## Outcome
+
+_The assistant's closing message, verbatim._
+
+> Both repos are consistent again.
+
 ## Session facts
 
 | Field | Value |

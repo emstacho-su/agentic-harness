@@ -63,6 +63,12 @@ Working directory `__SANDBOX__/repos/bb2dash`. Ran 15m, 1 prompt, 0 shell comman
 
 - `db/migrations/035_transform_driver.sql`
 
+## Outcome
+
+_The assistant's closing message, verbatim._
+
+> One ordering problem, fixed in place.
+
 ## Session facts
 
 | Field | Value |
