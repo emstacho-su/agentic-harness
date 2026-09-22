@@ -23,6 +23,17 @@ log = logging.getLogger(__name__)
 
 ENV_FILENAME = ".env"
 
+# `~/.harness/machine.env`: what this machine is — vault root, realms, name.
+# Read after the repo `.env`, so it fills gaps and never overrides a secret
+# the repo file or the shell already set. `HARNESS_MACHINE_ENV` relocates it.
+MACHINE_ENV_VAR = "HARNESS_MACHINE_ENV"
+MACHINE_ENV_SEGMENTS = (".harness", "machine.env")
+
+
+def machine_env_file() -> Path:
+    override = os.environ.get(MACHINE_ENV_VAR, "").strip()
+    return Path(override) if override else Path.home().joinpath(*MACHINE_ENV_SEGMENTS)
+
 
 def find_env_file(start: Path | None = None) -> Path | None:
     """Walk up from ``start`` looking for a ``.env``. Returns None if absent."""
@@ -54,14 +65,27 @@ def parse_env_file(text: str, origin: str = "<env>") -> dict[str, str]:
 
 
 def load_env_file(path: Path | None = None, *, override: bool = False) -> list[str]:
-    """Load a ``.env`` into ``os.environ``. Returns the names that were applied."""
+    """Load the repo ``.env``, then the machine file, into ``os.environ``.
+
+    Returns the names that were applied. The repo file is the one named (or
+    found by walking up); the machine file is optional and only fills gaps.
+    """
     env_path = path or find_env_file()
+    applied: list[str] = []
     if env_path is None:
         log.debug("No .env found; relying on the process environment")
-        return []
-    if not env_path.is_file():
-        raise ConfigError(f"env file does not exist: {env_path}")
+    else:
+        if not env_path.is_file():
+            raise ConfigError(f"env file does not exist: {env_path}")
+        applied += _apply(env_path, override=override)
 
+    machine = machine_env_file()
+    if machine.is_file():
+        applied += _apply(machine, override=False)
+    return applied
+
+
+def _apply(env_path: Path, *, override: bool) -> list[str]:
     try:
         text = env_path.read_text(encoding="utf-8")
     except OSError as exc:

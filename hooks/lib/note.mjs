@@ -118,6 +118,7 @@ export function buildFields(ctx) {
     // Placeholders: `withLinks` derives both after the merge, at the write.
     up: '',
     related: [],
+    machine: ctx.machine ?? '',
   };
 }
 

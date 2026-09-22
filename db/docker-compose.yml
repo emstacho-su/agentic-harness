@@ -1,0 +1,36 @@
+# A local store for a machine that cannot, or should not, reach Supabase.
+#
+#   cd db && docker compose up -d
+#   cd ../ingest && DATABASE_URL=postgresql://harness:harness@localhost:5433/harness \
+#                   DATABASE_SSL=disable uv run ingest db migrate
+#
+# The data directory is a named volume: the store survives `docker compose
+# down` and container rebuilds, and is removed only by `docker compose down -v`.
+# Everything in it is rebuilt from the vault by one full ingest, so losing it
+# costs minutes, not notes.
+#
+# Port 5433, not 5432, so it never collides with a Postgres already installed.
+# The password is a local default; set POSTGRES_PASSWORD in the environment to
+# override it, and keep the port bound to localhost as it is here.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: harness-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: harness
+      POSTGRES_USER: harness
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-harness}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - harness-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harness -d harness"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  harness-postgres-data:

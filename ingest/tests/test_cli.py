@@ -20,6 +20,12 @@ CONNECTION_VARS = (
 )
 
 
+@pytest.fixture(autouse=True)
+def no_machine_env(monkeypatch, tmp_path):
+    """The real ~/.harness/machine.env must never reach a test process."""
+    monkeypatch.setenv("HARNESS_MACHINE_ENV", str(tmp_path / "no-machine.env"))
+
+
 @pytest.fixture
 def clean_env(monkeypatch, tmp_path):
     """No inherited credentials, and no repo .env picked up by the walk-up."""
@@ -141,12 +147,14 @@ def test_prune_dry_run_reports_the_sweep(clean_env, vault_path, capsys):
     main(["--source", "obsidian", "--path", str(vault_path), "--dry-run",
           "--prune", "--env-file", str(clean_env)])
     out = capsys.readouterr().out
-    # NullStore knows of no existing rows, so there is nothing stale to report.
-    assert "Orphan sweep: nothing stale" in out
+    # The fixture vault carries no .realm marker, so --prune alone has nothing it
+    # can safely scope: the legacy rows are unscoped and need --prune-legacy.
+    assert "no .realm marker" in out and "--prune-legacy" in out
+    assert "would delete" not in out
 
 
-def test_prune_declines_after_a_limited_run(clean_env, vault_path, capsys):
-    main(["--source", "obsidian", "--path", str(vault_path), "--dry-run",
+def test_prune_declines_after_a_limited_run(clean_env, tmp_path, capsys):
+    main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
           "--prune", "--limit", "1", "--env-file", str(clean_env)])
     out = capsys.readouterr().out
     assert "Orphan sweep skipped" in out
@@ -340,3 +348,92 @@ def test_a_dry_run_says_it_would_refresh_metadata(capsys):
 
     assert "would-update-metadata" in out
     assert "would refresh" in out
+
+
+# --------------------------------------------------------------------------
+# realms at the command line
+# --------------------------------------------------------------------------
+
+
+def realm_vault(tmp_path):
+    vault = tmp_path / "vault"
+    for name in ("projects", "classes"):
+        (vault / name).mkdir(parents=True)
+        (vault / name / ".realm").write_text(f"{name}\n", encoding="utf-8")
+        (vault / name / "a.md").write_text(f"---\nid: {name}-a\n---\n\nA note in {name}.\n", encoding="utf-8")
+    return vault
+
+
+def test_prune_sweeps_each_realm_the_run_walked(clean_env, tmp_path, capsys):
+    main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
+          "--prune", "--env-file", str(clean_env)])
+    out = capsys.readouterr().out
+    assert "realm 'projects'" in out and "realm 'classes'" in out
+    assert "legacy" not in out, "a realm run must not sweep the pre-realm rows without --prune-legacy"
+
+
+def test_prune_legacy_sweeps_the_pre_realm_rows_too(clean_env, tmp_path, capsys):
+    main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
+          "--prune", "--prune-legacy", "--env-file", str(clean_env)])
+    out = capsys.readouterr().out
+    assert "legacy" in out
+
+
+def test_prune_legacy_needs_a_full_pass(clean_env, tmp_path, capsys):
+    vault = realm_vault(tmp_path)
+    code = main(["--source", "obsidian", "--path", str(vault), "--only", "projects/a.md",
+                 "--prune-legacy", "--dry-run", "--env-file", str(clean_env)])
+    assert code == 2
+    assert "--prune-legacy" in capsys.readouterr().err
+
+
+def test_a_realm_missing_from_harness_realms_stops_the_run(monkeypatch, clean_env, tmp_path, capsys):
+    monkeypatch.setenv("HARNESS_REALMS", "projects:push")
+    code = main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
+                 "--env-file", str(clean_env)])
+    assert code == 1
+    assert "classes" in capsys.readouterr().err
+
+
+def test_harness_realms_that_covers_the_vault_lets_the_run_through(monkeypatch, clean_env, tmp_path, capsys):
+    monkeypatch.setenv("HARNESS_REALMS", "projects:push,classes:local,work-vm:push")
+    code = main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
+                 "--env-file", str(clean_env)])
+    assert code == 0
+
+
+# --------------------------------------------------------------------------
+# the machine file
+# --------------------------------------------------------------------------
+
+
+def test_machine_env_fills_what_the_repo_env_and_the_shell_lack(monkeypatch, tmp_path, capsys):
+    for name in ("HARNESS_MACHINE", "HARNESS_REALMS", "DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    repo_env = tmp_path / "repo.env"
+    repo_env.write_text("DATABASE_URL=postgresql://repo\n", encoding="utf-8")
+    machine = tmp_path / "machine.env"
+    machine.write_text("DATABASE_URL=postgresql://machine\nHARNESS_MACHINE=home-pc\n", encoding="utf-8")
+    monkeypatch.setenv("HARNESS_MACHINE_ENV", str(machine))
+
+    load_env_file(repo_env)
+
+    import os
+    assert os.environ["DATABASE_URL"] == "postgresql://repo", "the repo .env wins over the machine file"
+    assert os.environ["HARNESS_MACHINE"] == "home-pc", "the machine file fills the gap"
+
+
+def test_a_missing_machine_env_is_not_an_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_MACHINE_ENV", str(tmp_path / "absent.env"))
+    repo_env = tmp_path / "repo.env"
+    repo_env.write_text("# nothing\n", encoding="utf-8")
+    assert load_env_file(repo_env) == []
+
+
+def test_prune_on_a_realmless_vault_never_touches_the_legacy_rows(clean_env, vault_path, capsys):
+    # Machine B still runs the pre-realm layout; its rows are legacy rows in a
+    # shared store. Machine A's --prune must not reach them by accident.
+    main(["--source", "obsidian", "--path", str(vault_path), "--dry-run",
+          "--prune", "--env-file", str(clean_env)])
+    out = capsys.readouterr().out
+    assert "legacy rows (no realm)" not in out

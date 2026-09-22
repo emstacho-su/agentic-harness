@@ -52,6 +52,7 @@ tools_used:
   mcp__plugin_supabase_supabase__apply_migration: 1
 up: '[[projects/bb2dash/index|bb2dash]]'
 related: []
+machine: ''
 ---
 
 # Session 2026-09-12 — bb2dash

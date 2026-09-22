@@ -53,6 +53,7 @@ tools_used:
   Write: 1
 up: '[[88888888-8888-4888-8888-888888888888]]'
 related: []
+machine: ''
 ---
 
 # Subagent general-purpose 2026-09-16 — bb2dash

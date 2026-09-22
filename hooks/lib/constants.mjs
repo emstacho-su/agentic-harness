@@ -163,6 +163,14 @@ export const DISABLE_VALUES = new Set(['0', 'off', 'false', 'no']);
 export const PARENT_SESSION_ENV_VAR = 'HARNESS_PARENT_SESSION';
 
 /**
+ * `machine:` — which machine wrote the note. Provenance only: prune and dedupe
+ * key on the realm, never on this. Set in ~/.harness/machine.env; never the
+ * hostname, which would leak into a shared realm.
+ */
+export const MACHINE_NAME_VAR = 'HARNESS_MACHINE';
+export const MACHINE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/**
  * `captured_by:` — which entry point wrote the note. The hook runs at session
  * exit; the sweep runs nightly over transcripts the hook never saw.
  */

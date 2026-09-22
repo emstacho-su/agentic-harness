@@ -212,6 +212,7 @@ export function migrateNote({ note, plan, backfill, repoFor }) {
     captured_by: CAPTURED_BY_MIGRATION,
     generator: `session-capture.mjs ${GENERATOR_VERSION} (migrated)`,
     tools_used: old.tools_used && typeof old.tools_used === 'object' ? old.tools_used : {},
+    machine: '',
   };
 
   const emptied = ['branch', 'commits', 'prs', 'phase', 'parent_session', 'child_sessions', 'artifacts'].filter(

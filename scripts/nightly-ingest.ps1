@@ -46,8 +46,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $VaultPath = "C:/Users/$env:USERNAME/OneDrive - Syracuse University/vault",
-    [string] $ProjectDir = "C:/Users/$env:USERNAME/agentic-harness/ingest",
+    [string] $VaultPath = '',
+    [string] $ProjectDir = '',
     [string] $UvPath = '',
     [string] $LogPath = "C:/Users/$env:USERNAME/.claude/hooks/nightly-ingest.log",
     [ValidateSet('Apply', 'DryRun', 'Skip')]
@@ -57,7 +57,7 @@ param(
     [string] $EnvFile = '',
     # Step 0: the transcript sweep (hooks/sweep-transcripts.mjs), which writes a
     # note for every idle transcript the SessionEnd hook never saw.
-    [string] $HooksDir = "C:/Users/$env:USERNAME/agentic-harness/hooks",
+    [string] $HooksDir = '',
     [string] $NodePath = '',
     [ValidateSet('Apply', 'DryRun', 'Skip')]
     [string] $TranscriptSweep = 'Apply',
@@ -67,7 +67,11 @@ param(
     # (hooks/collect-checkpoints.mjs). Empty means the collector's own defaults.
     [string[]] $CheckpointRepos = @(),
     [ValidateSet('Apply', 'DryRun', 'Skip')]
-    [string] $Checkpoints = 'Apply'
+    [string] $Checkpoints = 'Apply',
+    # Steps -1 and 3: pull every realm before the night's work, push the
+    # push-policy realms after it (hooks/sync-realms.mjs). Nothing is forced.
+    [ValidateSet('Apply', 'DryRun', 'Skip')]
+    [string] $RealmSync = 'Apply'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,6 +79,43 @@ $ErrorActionPreference = 'Stop'
 # Keep one night's worth of detail without letting the file grow forever.
 $LogMaxBytes = 1MB
 $LogKeepLines = 2000
+
+# ~/.harness/machine.env: what this machine is. KEY=value, the same file the
+# hook and ingest read. A parameter passed explicitly still wins; the file only
+# replaces the defaults that used to name one machine's paths.
+function Read-MachineEnv {
+    $file = if ($env:HARNESS_MACHINE_ENV) { $env:HARNESS_MACHINE_ENV } else { Join-Path $env:USERPROFILE '.harness\machine.env' }
+    $values = @{}
+    if (-not (Test-Path $file)) { return $values }
+    foreach ($raw in Get-Content $file -Encoding UTF8) {
+        $line = $raw.Trim()
+        if (-not $line -or $line.StartsWith('#')) { continue }
+        if ($line.StartsWith('export ')) { $line = $line.Substring(7).Trim() }
+        $at = $line.IndexOf('=')
+        if ($at -lt 1) { continue }
+        $key = $line.Substring(0, $at).Trim()
+        $value = $line.Substring($at + 1).Trim()
+        if ($value.Length -ge 2 -and (($value[0] -eq '"' -and $value[-1] -eq '"') -or ($value[0] -eq "'" -and $value[-1] -eq "'"))) {
+            $value = $value.Substring(1, $value.Length - 2)
+        }
+        $values[$key] = $value
+    }
+    return $values
+}
+
+function Get-MachineSetting {
+    param([hashtable] $Machine, [string] $Key, [string] $Default)
+    $fromEnv = [Environment]::GetEnvironmentVariable($Key)
+    if ($fromEnv) { return $fromEnv }
+    if ($Machine.ContainsKey($Key) -and $Machine[$Key]) { return $Machine[$Key] }
+    return $Default
+}
+
+$machine = Read-MachineEnv
+if (-not $VaultPath)  { $VaultPath  = Get-MachineSetting $machine 'HARNESS_VAULT' "C:/Users/$env:USERNAME/OneDrive - Syracuse University/vault" }
+if (-not $ProjectDir) { $ProjectDir = Get-MachineSetting $machine 'HARNESS_INGEST_PROJECT' "C:/Users/$env:USERNAME/agentic-harness/ingest" }
+if (-not $HooksDir)   { $HooksDir   = Get-MachineSetting $machine 'HARNESS_HOOKS_DIR' "C:/Users/$env:USERNAME/agentic-harness/hooks" }
+if (-not $NodePath)   { $NodePath   = Get-MachineSetting $machine 'HARNESS_NODE' '' }
 
 function Write-Log {
     param([string] $Message)
@@ -119,6 +160,7 @@ function Resolve-Uv {
 }
 
 function Resolve-Node {
+    # Explicit wins; then the machine file; then the standard install; then PATH.
     param([string] $Explicit)
 
     if ($Explicit) {
@@ -214,6 +256,28 @@ if ($EnvFile) { $envArgs = @('--env-file', $EnvFile) }
 
 # Step 0: transcripts the hook never saw become notes now, so the ingest below
 # embeds them tonight. Runs from the checkout, like the ingest project does.
+# Step -1: pull every realm this machine holds, so the night's work starts from
+# what the other machines pushed. A conflict is exit 2 and never fatal: the
+# realm is left exactly as it was, and the rest of the night still runs.
+function Invoke-RealmSync {
+    param([string] $Mode, [string] $Label)
+    if ($RealmSync -eq 'Skip') { Write-Log "$Label : skipped by -RealmSync Skip"; return 0 }
+    $syncScript = Join-Path $HooksDir 'sync-realms.mjs'
+    if (-not (Test-Path $syncScript)) { Write-Log "$Label : no sync script at $syncScript"; return 2 }
+    try {
+        $node = Resolve-Node -Explicit $NodePath
+        $syncArgs = @("--$Mode", '--vault', $VaultPath)
+        if ($RealmSync -eq 'DryRun') { $syncArgs += '--dry-run' }
+        return Invoke-TranscriptSweep -Node $node -Script $syncScript -SweepArgs $syncArgs -Label $Label
+    } catch {
+        Write-Log "$Label : $($_.Exception.Message)"
+        return 2
+    }
+}
+
+$pullCode = Invoke-RealmSync -Mode 'pull' -Label 'realms-pull'
+if ($pullCode -ne 0) { Write-Log "realm pull ended with $pullCode; continuing with what is on disk" }
+
 $transcriptCode = 0
 if ($TranscriptSweep -eq 'Skip') {
     Write-Log 'transcripts: skipped by -TranscriptSweep Skip'
@@ -281,7 +345,12 @@ if ($sweepCode -ne 0) { Write-Log "sweep failed with $sweepCode; continuing to t
 $ingestArgs = @('--source', 'obsidian', '--path', $VaultPath, '--prune') + $envArgs
 $ingestCode = Invoke-Ingest -Uv $uv -Project $ProjectDir -IngestArgs $ingestArgs -Label 'ingest'
 
-Write-Log "=== nightly reconcile finished (transcripts $transcriptCode, checkpoints $checkpointCode, sweep $sweepCode, ingest $ingestCode) ==="
+# Step 3: commit the night's notes and push the realms whose policy allows it.
+# Last, so a machine that fails earlier pushes nothing half-reconciled.
+$pushCode = Invoke-RealmSync -Mode 'push' -Label 'realms-push'
+if ($pushCode -ne 0) { Write-Log "realm push ended with $pushCode; the notes are on disk and will go next time" }
+
+Write-Log "=== nightly reconcile finished (realms-pull $pullCode, transcripts $transcriptCode, checkpoints $checkpointCode, sweep $sweepCode, ingest $ingestCode, realms-push $pushCode) ==="
 
 # Task Scheduler shows this as the last result, so it has to mean "the reconcile
 # worked". Only the ingest decides that.

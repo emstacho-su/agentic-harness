@@ -44,17 +44,30 @@ import {
   VAULT_ENV_VAR,
 } from './lib/constants.mjs';
 import { createLogger } from './lib/logger.mjs';
+import { loadMachineEnv } from './lib/machine-env.mjs';
 import { enqueueIngest } from './lib/enqueue-ingest.mjs';
 import { parseHookInput, readStdin } from './lib/stdin.mjs';
 
 const STARTED_AT_MS = Date.now();
 const DEADLINE_AT = STARTED_AT_MS + BUDGET_MS;
 
+// The machine file behaves like exported variables for this process and the
+// detached ingest it spawns. Read after the clock starts, so its cost is in
+// the logged milliseconds, and inside its own guard: a machine file that
+// somehow throws must not cost the note. Problems are logged once the logger exists.
+const MACHINE_ENV_PROBLEMS = [];
+try {
+  Object.assign(process.env, loadMachineEnv(process.env, os.homedir(), (message) => MACHINE_ENV_PROBLEMS.push(message)));
+} catch (err) {
+  MACHINE_ENV_PROBLEMS.push(`machine.env: ${err?.message || err}`);
+}
+
 const HOOKS_DIR = path.join(os.homedir(), '.claude', 'hooks');
 const LOG_PATH = process.env[LOG_ENV_VAR] || path.join(HOOKS_DIR, 'session-capture.log');
 
 function main() {
   const log = createLogger(LOG_PATH);
+  for (const problem of MACHINE_ENV_PROBLEMS) log(problem);
 
   if (DISABLE_VALUES.has(String(process.env[DISABLE_ENV_VAR] ?? '').toLowerCase())) return;
 

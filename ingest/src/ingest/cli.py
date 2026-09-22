@@ -7,6 +7,7 @@
     uv run ingest --source obsidian   --path C:/Users/you/vault --only a.md --only b.md
     uv run ingest sweep-concluded     --path C:/Users/you/vault [--apply]
     uv run ingest eval                [--json] [--min-hit-rate 0.8]
+    uv run ingest db migrate          [--dry-run]
     uv run ingest --health
 
 Windows note: always pass ``C:/Users/...``. An MSYS-style ``/c/Users/...`` path
@@ -17,11 +18,21 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
 from .chunking import MarkdownChunker
-from .config import CHUNKING, EMBEDDING, SOURCE_CLAUDE_MEM, SOURCE_OBSIDIAN, load_db_settings
+from .db_cli import SUBCOMMAND as DB_SUBCOMMAND, run_db
+from .config import (
+    CHUNKING,
+    EMBEDDING,
+    ENV_REALMS,
+    SOURCE_CLAUDE_MEM,
+    SOURCE_OBSIDIAN,
+    load_db_settings,
+    parse_realm_policies,
+)
 from .embedding import FastEmbedEmbedder
 from .envfile import load_env_file
 from .errors import IngestError
@@ -40,7 +51,11 @@ SOURCES = (SOURCE_OBSIDIAN, SOURCE_CLAUDE_MEM)
 
 # Subcommands are dispatched before argparse sees anything, so the flag-only
 # parser above keeps working exactly as it did.
-SUBCOMMANDS = {SWEEP_SUBCOMMAND: run_sweep, EVAL_SUBCOMMAND: run_eval_command}
+SUBCOMMANDS = {
+    SWEEP_SUBCOMMAND: run_sweep,
+    EVAL_SUBCOMMAND: run_eval_command,
+    DB_SUBCOMMAND: run_db,
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -93,7 +108,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="DESTRUCTIVE: after a full pass, delete documents of this source "
         "whose external_id was not produced by the loader. Off by default; "
-        "refused after --limit or any failure.",
+        "refused after --limit or any failure. Scoped to the realms this run "
+        "walked; a realm not on this machine is never touched.",
+    )
+    parser.add_argument(
+        "--prune-legacy",
+        action="store_true",
+        help="DESTRUCTIVE and UNSCOPED: also sweep the rows ingested before realms "
+        "existed (no _ingest.realm), whichever machine wrote them. Only the one "
+        "machine that owned the store before realms may pass this. Needs a full pass.",
     )
     parser.add_argument(
         "--check-env",
@@ -170,11 +193,12 @@ def _refuse_bad_combination(args: argparse.Namespace) -> str | None:
         return None
     if args.source != SOURCE_OBSIDIAN:
         return f"--only applies to --source {SOURCE_OBSIDIAN} only"
-    if args.prune:
+    if args.prune or args.prune_legacy:
         # The orphan sweep deletes every document the run did not produce. After
         # a one-note run that is the entire vault.
+        flag = "--prune" if args.prune else "--prune-legacy"
         return (
-            "--only and --prune contradict each other: naming the notes to "
+            f"--only and {flag} contradict each other: naming the notes to "
             "ingest is not a full pass"
         )
     return None
@@ -197,39 +221,82 @@ def _run(args: argparse.Namespace) -> int:
         return 0
 
     store, embedder, chunker = _build_components(args)
-    prune_result = None
+    prune_results: list[PruneResult] = []
     try:
         pipeline = IngestPipeline(
             store, embedder, chunker, dry_run=args.dry_run, force=args.force
         )
         stats = pipeline.run(documents)
 
-        if args.prune:
-            prune_result = prune_orphans(
-                store,
-                args.source,
-                (doc.external_id for doc in documents),
-                dry_run=args.dry_run,
-                document_count=len(documents),
-                failure_count=len(stats.failures),
-                limited=args.limit is not None,
-            )
+        if args.prune or args.prune_legacy:
+            prune_results = _sweep(args, store, documents, stats)
     finally:
         store.close()
 
     _report_stats(stats, dry_run=args.dry_run)
-    if prune_result is not None:
+    for prune_result in prune_results:
         _report_prune(prune_result, dry_run=args.dry_run)
     if _reconciled_everything(args, stats):
         _record_success(args, stats, len(documents))
     return 1 if stats.failures else 0
 
 
+def _sweep(
+    args: argparse.Namespace, store: ChunkStore, documents, stats: IngestStats
+) -> list[PruneResult]:
+    """One orphan sweep per realm the run walked, plus the legacy rows on request.
+
+    The legacy rows — no ``_ingest.realm`` — have no scope at all: they are every
+    pre-realm row in the store, whichever machine wrote them. So they are swept
+    only behind the explicit ``--prune-legacy``, never as a side effect of
+    ``--prune`` on a vault that happens to carry no markers, and the flag's help
+    says which machine may pass it.
+    """
+    by_realm: dict[str | None, list[str]] = {}
+    for doc in documents:
+        by_realm.setdefault(_realm_of(doc), []).append(doc.external_id)
+    realms = [realm for realm in by_realm if realm is not None]
+    sweep_legacy = args.prune_legacy
+    if args.prune and not realms and not sweep_legacy:
+        print(
+            "\nOrphan sweep: this vault has no .realm marker, so --prune has nothing it can "
+            "safely scope; pass --prune-legacy on the one machine that owned the store before realms."
+        )
+
+    common = dict(
+        dry_run=args.dry_run,
+        failure_count=len(stats.failures),
+        limited=args.limit is not None,
+    )
+    results = []
+    if args.prune:
+        for realm in realms:
+            results.append(prune_orphans(
+                store, args.source, by_realm[realm], document_count=len(by_realm[realm]), realm=realm, **common
+            ))
+    if sweep_legacy:
+        results.append(prune_orphans(
+            store, args.source, (doc.external_id for doc in documents),
+            document_count=len(documents), realm=None, **common,
+        ))
+    return results
+
+
+def _realm_of(document) -> str | None:
+    ingest_meta = document.metadata.get("_ingest")
+    return ingest_meta.get("realm") if isinstance(ingest_meta, dict) else None
+
+
+def _allowed_realms() -> list[str] | None:
+    policies = parse_realm_policies(os.environ.get(ENV_REALMS))
+    return list(policies) if policies else None
+
+
 def _load(args: argparse.Namespace, path: Path) -> LoadedSource:
     if args.source == SOURCE_OBSIDIAN:
         if args.only:
-            return load_vault_notes(path, args.only)
-        return load_vault(path)
+            return load_vault_notes(path, args.only, allowed_realms=_allowed_realms())
+        return load_vault(path, allowed_realms=_allowed_realms())
     return load_claude_mem(
         path,
         include_summaries=not args.no_summaries,
@@ -364,15 +431,16 @@ def _report_stats(stats: IngestStats, *, dry_run: bool) -> None:
 
 
 def _report_prune(result: PruneResult, *, dry_run: bool) -> None:
+    scope = f"realm '{result.realm}'" if result.realm else "legacy rows (no realm)"
     if result.declined:
-        print(f"\nOrphan sweep skipped: {result.declined_reason}")
+        print(f"\nOrphan sweep skipped for {scope}: {result.declined_reason}")
         return
     if not result.orphans:
-        print(f"\nOrphan sweep: nothing stale in source '{result.source}'.")
+        print(f"\nOrphan sweep: nothing stale in source '{result.source}', {scope}.")
         return
 
     verb = "would delete" if dry_run else "deleted"
-    print(f"\nOrphan sweep {verb} {len(result.orphans)} document(s) from '{result.source}':")
+    print(f"\nOrphan sweep {verb} {len(result.orphans)} document(s) from '{result.source}', {scope}:")
     for external_id in result.orphans[:20]:
         print(f"  {external_id}")
     if len(result.orphans) > 20:

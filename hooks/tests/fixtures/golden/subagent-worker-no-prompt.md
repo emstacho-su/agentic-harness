@@ -49,6 +49,7 @@ tools_used:
   Read: 1
 up: '[[88888888-8888-4888-8888-888888888888]]'
 related: []
+machine: ''
 ---
 
 # Subagent feature-dev:code-reviewer 2026-09-16 — bb2dash

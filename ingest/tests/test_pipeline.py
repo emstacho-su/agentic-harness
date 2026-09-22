@@ -376,3 +376,33 @@ def test_invalid_documents_are_rejected_on_construction(kwargs):
 
     with pytest.raises(DocumentError):
         SourceDocument(**kwargs)
+
+
+# --------------------------------------------------------------------------
+# volatile ingest metadata: two machines, one store
+# --------------------------------------------------------------------------
+
+
+def with_ingest(**ingest_keys) -> dict:
+    return {"tags": ["rag"], "_ingest": {"loader": "obsidian", "path": "notes/a.md", **ingest_keys}}
+
+
+def test_mtime_and_size_changes_alone_are_unchanged(fake_store, fake_embedder):
+    # A second checkout has different mtimes, and a CRLF checkout a different
+    # byte count, for a note whose hash is identical. Without this, two machines
+    # rewrite each other's metadata on every run, forever.
+    first = document(metadata=with_ingest(modified_at="2026-09-01T00:00:00+00:00", bytes=100))
+    pipeline(fake_store, fake_embedder).run([first])
+
+    second = document(metadata=with_ingest(modified_at="2026-09-22T00:00:00+00:00", bytes=104))
+    stats = pipeline(fake_store, fake_embedder).run([second])
+
+    assert stats.count(Action.UNCHANGED) == 1
+    assert fake_store.metadata_writes == 0
+
+
+def test_a_realm_change_is_still_a_metadata_update(fake_store, fake_embedder):
+    pipeline(fake_store, fake_embedder).run([document(metadata=with_ingest(realm="projects"))])
+    stats = pipeline(fake_store, fake_embedder).run([document(metadata=with_ingest(realm="work-vm"))])
+    assert stats.count(Action.METADATA_UPDATED) == 1
+    assert fake_store.metadata_writes == 1

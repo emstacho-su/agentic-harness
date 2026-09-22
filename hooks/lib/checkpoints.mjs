@@ -190,6 +190,8 @@ export function normalizeFields(fields) {
     resumed_from: '',
     captured_by: CAPTURED_BY_SKILL,
     agent: 'claude-code',
+    // A cloud sandbox is not a machine of Stack's; `origin: cloud` says where it ran.
+    machine: '',
   };
 }
 

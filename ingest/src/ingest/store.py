@@ -126,12 +126,23 @@ WHERE id = %s
 
 _DELETE_CHUNKS = f"DELETE FROM {CHUNKS_TABLE} WHERE document_id = %s"
 
-_SELECT_EXTERNAL_IDS = f"SELECT external_id FROM {DOCUMENTS_TABLE} WHERE source = %s"
+# Realm scoping. A named realm is a jsonb containment match, which the
+# documents_metadata_idx GIN index serves; "no realm" matches only rows whose
+# `_ingest` carries no `realm` key — the rows written before realms existed.
+_IN_REALM = "metadata @> %s::jsonb"
+_NO_REALM = "NOT (metadata ? '_ingest' AND metadata->'_ingest' ? 'realm')"
+
+_SELECT_EXTERNAL_IDS = f"SELECT external_id FROM {DOCUMENTS_TABLE} WHERE source = %s AND "
 
 # rag.chunks cascades from rag.documents, so deleting the parent is enough.
-_DELETE_DOCUMENTS = (
-    f"DELETE FROM {DOCUMENTS_TABLE} WHERE source = %s AND external_id = ANY(%s)"
-)
+_DELETE_DOCUMENTS = f"DELETE FROM {DOCUMENTS_TABLE} WHERE source = %s AND external_id = ANY(%s) AND "
+
+
+def _realm_clause(realm: str | None) -> tuple[str, tuple[Any, ...]]:
+    """The SQL predicate and its parameters for one realm, or for the legacy rows."""
+    if realm is None:
+        return _NO_REALM, ()
+    return _IN_REALM, (json.dumps({"_ingest": {"realm": realm}}),)
 
 _INSERT_CHUNK = f"""
 INSERT INTO {CHUNKS_TABLE}
@@ -159,9 +170,19 @@ class ChunkStore(Protocol):
         self, document_id: int, document: SourceDocument
     ) -> None: ...
 
-    def list_external_ids(self, source: str) -> set[str]: ...
+    def list_external_ids(self, source: str, realm: str | None = None) -> set[str]:
+        """Ids of ``source`` inside ``realm``.
 
-    def delete_documents(self, source: str, external_ids: Sequence[str]) -> int: ...
+        ``realm=None`` is not "every realm": it means the rows that carry no
+        ``_ingest.realm`` at all — rows ingested before realms existed. A realm
+        this machine never walked is never listed, which is what keeps two vaults
+        sharing one store from pruning each other.
+        """
+        ...
+
+    def delete_documents(
+        self, source: str, external_ids: Sequence[str], realm: str | None = None
+    ) -> int: ...
 
     def close(self) -> None: ...
 
@@ -415,10 +436,11 @@ class PostgresStore:
 
     # -- orphan sweep ------------------------------------------------------
 
-    def list_external_ids(self, source: str) -> set[str]:
+    def list_external_ids(self, source: str, realm: str | None = None) -> set[str]:
+        clause, params = _realm_clause(realm)
         try:
             with self._conn.cursor() as cur:
-                cur.execute(_SELECT_EXTERNAL_IDS, (source,))
+                cur.execute(_SELECT_EXTERNAL_IDS + clause, (source, *params))
                 rows = cur.fetchall()
             self._conn.rollback()
         except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
@@ -426,13 +448,16 @@ class PostgresStore:
             raise StoreError(f"Listing external ids for {source} failed: {exc}") from exc
         return {str(row[0]) for row in rows}
 
-    def delete_documents(self, source: str, external_ids: Sequence[str]) -> int:
+    def delete_documents(
+        self, source: str, external_ids: Sequence[str], realm: str | None = None
+    ) -> int:
         ids = list(external_ids)
         if not ids:
             return 0
+        clause, params = _realm_clause(realm)
         try:
             with self._conn.cursor() as cur:
-                cur.execute(_DELETE_DOCUMENTS, (source, ids))
+                cur.execute(_DELETE_DOCUMENTS + clause, (source, ids, *params))
                 deleted = cur.rowcount
             self._conn.commit()
         except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
@@ -471,10 +496,10 @@ class NullStore:
     def update_document_metadata(self, *args, **kwargs) -> None:
         raise StoreError("NullStore cannot write. This is a --dry-run store.")
 
-    def list_external_ids(self, source: str) -> set[str]:
+    def list_external_ids(self, source: str, realm: str | None = None) -> set[str]:
         return set()
 
-    def delete_documents(self, source: str, external_ids) -> int:
+    def delete_documents(self, source: str, external_ids, realm: str | None = None) -> int:
         raise StoreError("NullStore cannot delete. This is a --dry-run store.")
 
     def close(self) -> None:

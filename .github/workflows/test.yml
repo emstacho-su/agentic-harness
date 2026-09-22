@@ -1,8 +1,9 @@
 name: test
 
 # The three suites, each self-contained: no database, no network, no model
-# download. Windows because that is the platform the harness runs on and the
-# hooks suite exercises Windows path handling.
+# download. Windows is the platform the harness has run on; the Linux leg is
+# the portability work (docs/portable.md) and is informational until it is
+# green on its own — a Linux failure does not fail the run yet.
 
 on:
   push:
@@ -14,7 +15,12 @@ permissions:
 
 jobs:
   hooks:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: hooks
@@ -26,7 +32,12 @@ jobs:
       - run: npm test
 
   ingest:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: ingest
@@ -37,7 +48,12 @@ jobs:
       - run: uv run pytest
 
   mcp-server:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: mcp-server

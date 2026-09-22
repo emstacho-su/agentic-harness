@@ -132,3 +132,47 @@ def test_null_store_refuses_to_delete():
 
     with pytest.raises(StoreError):
         NullStore().delete_documents("obsidian", ["a.md"])
+
+
+# --------------------------------------------------------------------------
+# realms: two vaults, one store
+# --------------------------------------------------------------------------
+
+
+def realm_document(external_id: str, realm: str | None) -> SourceDocument:
+    ingest_meta = {"loader": "obsidian", "path": external_id}
+    if realm is not None:
+        ingest_meta["realm"] = realm
+    return SourceDocument(
+        source="obsidian",
+        external_id=external_id,
+        body=f"Body for {external_id}, with enough words to make a chunk.",
+        title=external_id,
+        agent="claude-code",
+        metadata={"_ingest": ingest_meta},
+    )
+
+
+def test_sweep_never_touches_another_realm(fake_store, fake_embedder):
+    # Machine A walked `projects`; machine B's `work-vm` rows are not orphans.
+    ingest(fake_store, fake_embedder, [realm_document("projects/a.md", "projects"), realm_document("work-vm/b.md", "work-vm")])
+    result = prune_orphans(fake_store, "obsidian", [], document_count=1, realm="projects")
+    assert result.realm == "projects"
+    assert result.orphans == ("projects/a.md",)
+    assert fake_store.list_external_ids("obsidian", realm="work-vm") == {"work-vm/b.md"}
+
+
+def test_a_realm_this_machine_did_not_walk_is_never_listed(fake_store):
+    assert fake_store.list_external_ids("obsidian", realm="work-vm") == set()
+    assert fake_store.delete_documents("obsidian", ["work-vm/b.md"], realm="work-vm") == 0
+
+
+def test_realm_none_means_legacy_rows_only(fake_store, fake_embedder):
+    # Rows ingested before realms existed carry no `_ingest.realm`. They are the
+    # only rows a realm-less sweep may see, and only behind the explicit flag.
+    ingest(fake_store, fake_embedder, [realm_document("old.md", None), realm_document("projects/a.md", "projects")])
+    assert fake_store.list_external_ids("obsidian", realm=None) == {"old.md"}
+    result = prune_orphans(fake_store, "obsidian", ["projects/a.md"], document_count=1, realm=None)
+    assert result.orphans == ("old.md",)
+    assert fake_store.list_external_ids("obsidian", realm=None) == set()
+    assert fake_store.list_external_ids("obsidian", realm="projects") == {"projects/a.md"}

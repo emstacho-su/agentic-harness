@@ -61,7 +61,7 @@ def _metadata_difference(
     ]
 
     try:
-        if canonical(document.metadata) != canonical(state.metadata):
+        if canonical(_comparable(document.metadata)) != canonical(_comparable(state.metadata)):
             reasons.append("metadata")
     except IngestError as exc:
         # canonical() can refuse a value (metadata nested past its depth cap).
@@ -78,6 +78,22 @@ def _metadata_difference(
         reasons.append("metadata")
 
     return " and ".join(reasons) + " changed" if reasons else None
+
+
+# `_ingest` keys that describe the file on *this* machine, not the note: a second
+# checkout has different mtimes, and a CRLF checkout a different byte count, for
+# a note whose hash is identical. Stored, because they are useful, but never
+# compared, or two machines sharing a store would rewrite each other's metadata
+# on every run.
+VOLATILE_INGEST_KEYS = frozenset({"modified_at", "bytes"})
+
+
+def _comparable(metadata: dict | None) -> dict:
+    """The metadata with its machine-volatile `_ingest` keys removed."""
+    if not metadata or not isinstance(metadata.get("_ingest"), dict):
+        return dict(metadata or {})
+    ingest_meta = {k: v for k, v in metadata["_ingest"].items() if k not in VOLATILE_INGEST_KEYS}
+    return {**metadata, "_ingest": ingest_meta}
 
 
 class Action(str, Enum):

@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-from ingest.errors import SourceError
 from ingest.loaders.obsidian import SDK_SESSION_REASON, load_vault, load_vault_notes
 
 

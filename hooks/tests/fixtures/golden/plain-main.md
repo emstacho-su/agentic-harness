@@ -63,6 +63,7 @@ tools_used:
   Agent: 1
 up: '[[projects/bb2dash/index|bb2dash]]'
 related: []
+machine: ''
 ---
 
 # Session 2026-09-11 — bb2dash

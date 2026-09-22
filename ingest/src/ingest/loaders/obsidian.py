@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from ..config import DEFAULT_AGENT, SDK_ORIGIN_PREFIX, SOURCE_OBSIDIAN
+from ..config import DEFAULT_AGENT, ENV_REALMS, REALM_NAME, SDK_ORIGIN_PREFIX, SOURCE_OBSIDIAN
 from ..errors import SourceError
 from ..jsonutil import json_safe
 from ..models import SourceDocument
@@ -65,6 +65,13 @@ OPT_OUT_REASON = "frontmatter ingest: false"
 # Session notes the Agent SDK started stay in the vault and out of the index.
 SESSION_TYPE = "session"
 SDK_SESSION_REASON = "session started by the Agent SDK (origin: sdk-*)"
+
+# A realm is one git repo of notes, marked by a committed `.realm` file holding
+# its name. Either the vault root is one realm, or each top-level folder with a
+# marker is one; the folder must be named after the realm, because external_id
+# is the vault-relative path and a rename would re-key every note.
+REALM_MARKER = ".realm"
+OUTSIDE_REALM_REASON = "not inside a realm"
 
 
 def vault_root(vault_path: str | Path) -> Path:
@@ -102,9 +109,79 @@ def _is_file(path: Path) -> bool:
         return False
 
 
-def load_vault(vault_path: str | Path) -> LoadedSource:
+def discover_realms(root: Path) -> dict[str, str]:
+    """Map each realm's top-level folder (``""`` for the root) to its name.
+
+    Empty when the vault carries no marker at all: the pre-realm layout, whose
+    rows are the "legacy" rows prune treats separately. Raises on a marker that
+    is not a name, a folder not named after its realm, or a root marker beside
+    folder markers — each of those is a vault that means two things at once.
+    """
+    root_marker = root / REALM_MARKER
+    folder_markers = sorted(
+        child
+        for child in root.iterdir()
+        if _is_dir(child) and child.name not in SKIP_DIRECTORIES and _is_file(child / REALM_MARKER)
+    )
+    if _is_file(root_marker):
+        if folder_markers:
+            names = ", ".join(child.name for child in folder_markers)
+            raise SourceError(
+                f"{REALM_MARKER} at the vault root and inside {names}: a vault is either one realm or several"
+            )
+        return {"": _read_realm_name(root_marker)}
+
+    realms: dict[str, str] = {}
+    for folder in folder_markers:
+        name = _read_realm_name(folder / REALM_MARKER)
+        if name != folder.name:
+            raise SourceError(
+                f"folder '{folder.name}' holds {REALM_MARKER} '{name}': a realm's folder must be "
+                "named after it, or every note in it would change external_id"
+            )
+        realms[folder.name] = name
+    return realms
+
+
+def _read_realm_name(marker: Path) -> str:
+    try:
+        name = marker.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise SourceError(f"{marker.as_posix()}: unreadable ({exc})") from exc
+    if not REALM_NAME.match(name):
+        raise SourceError(
+            f"{marker.as_posix()}: '{name}' is not a realm name (lowercase letters, digits, dashes; 1-32 chars)"
+        )
+    return name
+
+
+def _check_allowed(realms: dict[str, str], allowed_realms: Sequence[str] | None) -> None:
+    """Refuse a realm on disk that this machine's policy does not list."""
+    if allowed_realms is None:
+        return
+    unlisted = sorted(set(realms.values()) - set(allowed_realms))
+    if unlisted:
+        raise SourceError(
+            f"realm(s) on disk but not in this machine's {ENV_REALMS}: {', '.join(unlisted)}. "
+            "A realm cloned by mistake must not enter this store; list it, or remove it."
+        )
+
+
+def _realm_for(relative: str, realms: dict[str, str]) -> str | None:
+    if "" in realms:
+        return realms[""]
+    return realms.get(relative.split("/", 1)[0])
+
+
+def load_vault(
+    vault_path: str | Path, *, allowed_realms: Sequence[str] | None = None
+) -> LoadedSource:
     """Load every markdown note under ``vault_path``."""
     root = vault_root(vault_path)
+    realms = discover_realms(root)
+    _check_allowed(realms, allowed_realms)
+    if not realms:
+        log.warning("No %s marker in %s: notes are ingested without a realm (legacy layout)", REALM_MARKER, root)
 
     documents: list[SourceDocument] = []
     skipped: list[SkippedRecord] = []
@@ -112,8 +189,12 @@ def load_vault(vault_path: str | Path) -> LoadedSource:
 
     for path in sorted(_iter_markdown(root)):
         relative = path.relative_to(root).as_posix()
+        realm = _realm_for(relative, realms)
+        if realms and realm is None:
+            skipped.append(SkippedRecord(relative, OUTSIDE_REALM_REASON))
+            continue
         try:
-            loaded = _load_note(path, relative)
+            loaded = _load_note(path, relative, realm)
         except SourceError as exc:
             log.warning("Skipping %s: %s", relative, exc)
             skipped.append(SkippedRecord(relative, str(exc)))
@@ -162,7 +243,10 @@ def load_vault_note(vault_path: str | Path, note_path: str | Path) -> LoadedSour
 
 
 def load_vault_notes(
-    vault_path: str | Path, note_paths: Sequence[str | Path]
+    vault_path: str | Path,
+    note_paths: Sequence[str | Path],
+    *,
+    allowed_realms: Sequence[str] | None = None,
 ) -> LoadedSource:
     """Load the named notes, the way a full walk would load them.
 
@@ -190,6 +274,8 @@ def load_vault_notes(
     requested = list(note_paths or ())
     if not requested:
         raise SourceError("--only needs at least one markdown note")
+    realms = discover_realms(root)
+    _check_allowed(realms, allowed_realms)
 
     documents: list[SourceDocument] = []
     skipped: list[SkippedRecord] = []
@@ -205,9 +291,13 @@ def load_vault_notes(
             continue
         seen.add(relative)
         notes.append(f"only: {relative}")
+        realm = _realm_for(relative, realms)
+        if realms and realm is None:
+            skipped.append(SkippedRecord(relative, OUTSIDE_REALM_REASON))
+            continue
 
         try:
-            loaded = _load_note(note, relative)
+            loaded = _load_note(note, relative, realm)
         except SourceError as exc:
             # Exactly as in the full walk: a note that will not parse or will
             # not read is one skipped note, not a dead run. Losing the other
@@ -307,7 +397,7 @@ def _iter_markdown(root: Path):
         yield path
 
 
-def _load_note(path: Path, relative: str) -> SourceDocument | SkippedRecord:
+def _load_note(path: Path, relative: str, realm: str | None = None) -> SourceDocument | SkippedRecord:
     try:
         raw = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
@@ -337,6 +427,8 @@ def _load_note(path: Path, relative: str) -> SourceDocument | SkippedRecord:
         ).isoformat(),
         "bytes": stat.st_size,
     }
+    if realm is not None:
+        ingest_meta["realm"] = realm
 
     metadata = {**json_safe(frontmatter), "_ingest": ingest_meta}
     return SourceDocument(
