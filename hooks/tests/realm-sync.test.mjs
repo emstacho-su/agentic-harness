@@ -208,9 +208,7 @@ test('end to end with real git: machine A pushes a note, machine B pulls it', ()
 
     const pulled = pullRealms({ vaultRoot: b, policies, runGit });
     assert.equal(pulled[0].action, 'pulled', pulled[0].error);
-    assert.equal(fs.readFileSync(path.join(b, 'projects', 'note.md'), 'utf8').replace(/\r\n/g, '\n').replace(/
-/g, '
-'), '# from a\n');
+    assert.equal(fs.readFileSync(path.join(b, 'projects', 'note.md'), 'utf8').replace(/\r\n/g, '\n'), '# from a\n');
 
     // B edits the same file without pulling first: a real conflict, aborted cleanly.
     fs.writeFileSync(path.join(a, 'projects', 'note.md'), '# from a, again\n');
@@ -219,9 +217,7 @@ test('end to end with real git: machine A pushes a note, machine B pulls it', ()
     pushRealms({ vaultRoot: b, policies: parseRealmPolicies('projects:local'), machine: 'b', runGit });
     const conflict = pullRealms({ vaultRoot: b, policies, runGit });
     assert.equal(conflict[0].action, 'conflict');
-    assert.equal(fs.readFileSync(path.join(b, 'projects', 'note.md'), 'utf8').replace(/\r\n/g, '\n').replace(/
-/g, '
-'), '# from b\n', "B's tree is untouched");
+    assert.equal(fs.readFileSync(path.join(b, 'projects', 'note.md'), 'utf8').replace(/\r\n/g, '\n'), '# from b\n', "B's tree is untouched");
     assert.ok(!fs.existsSync(path.join(b, 'projects', '.git', 'rebase-merge')), 'no rebase left in progress');
   } finally {
     cleanup();
