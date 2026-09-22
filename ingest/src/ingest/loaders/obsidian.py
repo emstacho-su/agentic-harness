@@ -121,7 +121,7 @@ def discover_realms(root: Path) -> dict[str, str]:
     folder_markers = sorted(
         child
         for child in root.iterdir()
-        if child.is_dir() and child.name not in SKIP_DIRECTORIES and _is_file(child / REALM_MARKER)
+        if _is_dir(child) and child.name not in SKIP_DIRECTORIES and _is_file(child / REALM_MARKER)
     )
     if _is_file(root_marker):
         if folder_markers:

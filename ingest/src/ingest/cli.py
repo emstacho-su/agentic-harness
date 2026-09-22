@@ -114,8 +114,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prune-legacy",
         action="store_true",
-        help="DESTRUCTIVE: also sweep the rows ingested before realms existed "
-        "(no _ingest.realm). Needs a full pass, like --prune.",
+        help="DESTRUCTIVE and UNSCOPED: also sweep the rows ingested before realms "
+        "existed (no _ingest.realm), whichever machine wrote them. Only the one "
+        "machine that owned the store before realms may pass this. Needs a full pass.",
     )
     parser.add_argument(
         "--check-env",
@@ -245,16 +246,22 @@ def _sweep(
 ) -> list[PruneResult]:
     """One orphan sweep per realm the run walked, plus the legacy rows on request.
 
-    A vault with no realms is all legacy: ``--prune`` alone sweeps it, exactly
-    as before realms existed. Once realms exist, the legacy rows are swept only
-    behind ``--prune-legacy``, because a realm run cannot know which of them
-    still have a note on some other machine.
+    The legacy rows — no ``_ingest.realm`` — have no scope at all: they are every
+    pre-realm row in the store, whichever machine wrote them. So they are swept
+    only behind the explicit ``--prune-legacy``, never as a side effect of
+    ``--prune`` on a vault that happens to carry no markers, and the flag's help
+    says which machine may pass it.
     """
     by_realm: dict[str | None, list[str]] = {}
     for doc in documents:
         by_realm.setdefault(_realm_of(doc), []).append(doc.external_id)
     realms = [realm for realm in by_realm if realm is not None]
-    sweep_legacy = args.prune_legacy or (args.prune and not realms)
+    sweep_legacy = args.prune_legacy
+    if args.prune and not realms and not sweep_legacy:
+        print(
+            "\nOrphan sweep: this vault has no .realm marker, so --prune has nothing it can "
+            "safely scope; pass --prune-legacy on the one machine that owned the store before realms."
+        )
 
     common = dict(
         dry_run=args.dry_run,
