@@ -7,7 +7,7 @@
  * worktree — a worktree gets deleted, and a hook that vanishes with it takes
  * every future session's note with it.
  *
- *   node hooks/install.mjs [--dry-run] [--target <dir>] [--settings <file>]
+ *   node hooks/install.mjs [--dry-run] [--register-mcp] [--target <dir>] [--settings <file>]
  *                          [--node <path to node.exe>] [--skip-settings]
  *
  * The existing deployment is backed up first, and every copied file is read
@@ -27,7 +27,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { loadMachineEnv, loadRepoEnv } from './lib/machine-env.mjs';
+import { SCOPE, SERVER_NAME, buildRagServerConfig, registerRagServer } from './lib/mcp-registration.mjs';
 import { hookCommand, withHookRegistered } from './lib/settings.mjs';
+
+// `--register-mcp` builds the server entry from the environment: the repo's
+// .env (secrets) and the machine file (paths), the shell winning over both.
+const HERE_EARLY = path.dirname(fileURLToPath(import.meta.url));
+const report = (problem) => console.error(problem);
+Object.assign(
+  process.env,
+  loadMachineEnv(loadRepoEnv(process.env, path.resolve(HERE_EARLY, '..'), report), os.homedir(), report),
+);
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -67,6 +78,7 @@ function parseArgs(argv) {
   const args = {
     dryRun: false,
     skipSettings: false,
+    registerMcp: false,
     target: path.join(os.homedir(), '.claude', 'hooks'),
     settings: path.join(os.homedir(), '.claude', 'settings.json'),
     node: process.execPath,
@@ -76,6 +88,7 @@ function parseArgs(argv) {
     const value = argv[index + 1];
     if (arg === '--dry-run') args.dryRun = true;
     else if (arg === '--skip-settings') args.skipSettings = true;
+    else if (arg === '--register-mcp') args.registerMcp = true;
     else if (arg === '--target' || arg === '--settings' || arg === '--node') {
       if (!value) throw new Error(`${arg} needs a value`);
       args[arg === '--target' ? 'target' : arg === '--settings' ? 'settings' : 'node'] = value;
@@ -151,6 +164,37 @@ function registerHook(args) {
 }
 
 /** Are these the same directory, separators and case aside? */
+/**
+ * `--register-mcp`: the rag server's user-scope entry, from this machine's
+ * environment (the machine file is loaded at the top of this script). Needs
+ * DATABASE_URL and a built `mcp-server/dist/index.js`; refuses otherwise.
+ */
+function registerMcp(args) {
+  const distIndex = path.resolve(HERE, '..', 'mcp-server', 'dist', 'index.js');
+  if (!fs.existsSync(distIndex)) {
+    console.error(`  mcp: refused — ${distIndex} is not built; run \`npm run build\` in mcp-server/ first`);
+    return false;
+  }
+  let config;
+  try {
+    config = buildRagServerConfig({ node: args.node, distIndex, env: process.env });
+  } catch (err) {
+    console.error(`  mcp: refused — ${err.message}`);
+    return false;
+  }
+  if (args.dryRun) {
+    console.log(`  mcp: would register ${SERVER_NAME} (${SCOPE} scope) with ${Object.keys(config.env).join(', ')}`);
+    return true;
+  }
+  const result = registerRagServer({ config });
+  if (!result.ok) {
+    console.error(`  mcp: ${result.error}`);
+    return false;
+  }
+  console.log(`  mcp: registered ${SERVER_NAME} (${SCOPE} scope) with ${Object.keys(config.env).join(', ')}`);
+  return true;
+}
+
 function sameDirectory(a, b) {
   const normalise = (value) => path.resolve(value).replace(/\\/g, '/').toLowerCase();
   return normalise(a) === normalise(b);
@@ -192,6 +236,7 @@ function main() {
   if (toWrite.length === 0) {
     console.log(`already current: ${args.target} matches ${PAYLOAD.length} source files`);
     if (!args.skipSettings && !registerHook(args).ok) process.exitCode = 1;
+    if (args.registerMcp && !registerMcp(args)) process.exitCode = 1;
     return;
   }
 
@@ -200,6 +245,7 @@ function main() {
   if (args.dryRun) {
     console.log(`dry run: ${toWrite.length} file(s) would change, nothing written`);
     if (!args.skipSettings) registerHook(args);
+    if (args.registerMcp) registerMcp(args);
     return;
   }
 
@@ -221,6 +267,7 @@ function main() {
 
   console.log(`installed ${toWrite.length} file(s); all ${PAYLOAD.length} verified byte-identical`);
   if (!args.skipSettings && !registerHook(args).ok) process.exitCode = 1;
+  if (args.registerMcp && !registerMcp(args)) process.exitCode = 1;
 }
 
 try {

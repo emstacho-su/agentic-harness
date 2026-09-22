@@ -46,8 +46,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $VaultPath = "C:/Users/$env:USERNAME/OneDrive - Syracuse University/vault",
-    [string] $ProjectDir = "C:/Users/$env:USERNAME/agentic-harness/ingest",
+    [string] $VaultPath = '',
+    [string] $ProjectDir = '',
     [string] $UvPath = '',
     [string] $LogPath = "C:/Users/$env:USERNAME/.claude/hooks/nightly-ingest.log",
     [ValidateSet('Apply', 'DryRun', 'Skip')]
@@ -57,7 +57,7 @@ param(
     [string] $EnvFile = '',
     # Step 0: the transcript sweep (hooks/sweep-transcripts.mjs), which writes a
     # note for every idle transcript the SessionEnd hook never saw.
-    [string] $HooksDir = "C:/Users/$env:USERNAME/agentic-harness/hooks",
+    [string] $HooksDir = '',
     [string] $NodePath = '',
     [ValidateSet('Apply', 'DryRun', 'Skip')]
     [string] $TranscriptSweep = 'Apply',
@@ -75,6 +75,43 @@ $ErrorActionPreference = 'Stop'
 # Keep one night's worth of detail without letting the file grow forever.
 $LogMaxBytes = 1MB
 $LogKeepLines = 2000
+
+# ~/.harness/machine.env: what this machine is. KEY=value, the same file the
+# hook and ingest read. A parameter passed explicitly still wins; the file only
+# replaces the defaults that used to name one machine's paths.
+function Read-MachineEnv {
+    $file = if ($env:HARNESS_MACHINE_ENV) { $env:HARNESS_MACHINE_ENV } else { Join-Path $env:USERPROFILE '.harness\machine.env' }
+    $values = @{}
+    if (-not (Test-Path $file)) { return $values }
+    foreach ($raw in Get-Content $file -Encoding UTF8) {
+        $line = $raw.Trim()
+        if (-not $line -or $line.StartsWith('#')) { continue }
+        if ($line.StartsWith('export ')) { $line = $line.Substring(7).Trim() }
+        $at = $line.IndexOf('=')
+        if ($at -lt 1) { continue }
+        $key = $line.Substring(0, $at).Trim()
+        $value = $line.Substring($at + 1).Trim()
+        if ($value.Length -ge 2 -and (($value[0] -eq '"' -and $value[-1] -eq '"') -or ($value[0] -eq "'" -and $value[-1] -eq "'"))) {
+            $value = $value.Substring(1, $value.Length - 2)
+        }
+        $values[$key] = $value
+    }
+    return $values
+}
+
+function Get-MachineSetting {
+    param([hashtable] $Machine, [string] $Key, [string] $Default)
+    $fromEnv = [Environment]::GetEnvironmentVariable($Key)
+    if ($fromEnv) { return $fromEnv }
+    if ($Machine.ContainsKey($Key) -and $Machine[$Key]) { return $Machine[$Key] }
+    return $Default
+}
+
+$machine = Read-MachineEnv
+if (-not $VaultPath)  { $VaultPath  = Get-MachineSetting $machine 'HARNESS_VAULT' "C:/Users/$env:USERNAME/OneDrive - Syracuse University/vault" }
+if (-not $ProjectDir) { $ProjectDir = Get-MachineSetting $machine 'HARNESS_INGEST_PROJECT' "C:/Users/$env:USERNAME/agentic-harness/ingest" }
+if (-not $HooksDir)   { $HooksDir   = Get-MachineSetting $machine 'HARNESS_HOOKS_DIR' "C:/Users/$env:USERNAME/agentic-harness/hooks" }
+if (-not $NodePath)   { $NodePath   = Get-MachineSetting $machine 'HARNESS_NODE' '' }
 
 function Write-Log {
     param([string] $Message)
@@ -119,6 +156,7 @@ function Resolve-Uv {
 }
 
 function Resolve-Node {
+    # Explicit wins; then the machine file; then the standard install; then PATH.
     param([string] $Explicit)
 
     if ($Explicit) {

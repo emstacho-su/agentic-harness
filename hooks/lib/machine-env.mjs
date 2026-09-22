@@ -50,6 +50,29 @@ export function machineName(env = process.env) {
 }
 
 /**
+ * The environment with the repo's `.env` filled in underneath it.
+ *
+ * For the installer and the doctor only: the hook never loads secrets, and the
+ * detached ingest reads the same file itself. Same rules as the machine file.
+ */
+export function loadRepoEnv(env = process.env, repoRoot, report = () => {}) {
+  const file = path.join(repoRoot, '.env');
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if (err?.code !== 'ENOENT') report(`.env unreadable (${err?.code || err?.message}): ${file}`);
+    return { ...env };
+  }
+  try {
+    return { ...parseEnvText(text), ...env };
+  } catch (err) {
+    report(`${err.message} (${file})`);
+    return { ...env };
+  }
+}
+
+/**
  * The environment with the machine file's values filled in underneath it.
  *
  * Returns a new object; `env` is not touched. A missing file is the ordinary
