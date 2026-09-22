@@ -7,6 +7,7 @@
     uv run ingest --source obsidian   --path C:/Users/you/vault --only a.md --only b.md
     uv run ingest sweep-concluded     --path C:/Users/you/vault [--apply]
     uv run ingest eval                [--json] [--min-hit-rate 0.8]
+    uv run ingest db migrate          [--dry-run]
     uv run ingest --health
 
 Windows note: always pass ``C:/Users/...``. An MSYS-style ``/c/Users/...`` path
@@ -22,6 +23,7 @@ import sys
 from pathlib import Path
 
 from .chunking import MarkdownChunker
+from .db_cli import SUBCOMMAND as DB_SUBCOMMAND, run_db
 from .config import (
     CHUNKING,
     EMBEDDING,
@@ -49,7 +51,11 @@ SOURCES = (SOURCE_OBSIDIAN, SOURCE_CLAUDE_MEM)
 
 # Subcommands are dispatched before argparse sees anything, so the flag-only
 # parser above keeps working exactly as it did.
-SUBCOMMANDS = {SWEEP_SUBCOMMAND: run_sweep, EVAL_SUBCOMMAND: run_eval_command}
+SUBCOMMANDS = {
+    SWEEP_SUBCOMMAND: run_sweep,
+    EVAL_SUBCOMMAND: run_eval_command,
+    DB_SUBCOMMAND: run_db,
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
