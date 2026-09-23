@@ -145,7 +145,8 @@ unrelated layout.
 - **Requirement.** `~/vault/projects` and `~/vault/classes` each get `.realm`, R-A1/R-A2
   files, `git init -b main`, one commit, and a **new** private remote
   (`emstacho-su/vault-projects`, `emstacho-su/vault-classes`). `emstacho-su/vault` (May
-  2026, old layout) is archived, not reused.
+  2026, old layout) is archived, not reused. Both realms are `push` (decision 3), so both
+  remotes are created and pushed in this phase.
 - **Why.** Reusing the old repo would mix two histories and two layouts under one name.
 - **Tests.** Dry run: `hooks/init-realm.mjs --dry-run` lists the files it would write and
   the commit it would make. Live: `git log --oneline | wc -l` is 1 in each; `gh repo view`
@@ -155,7 +156,7 @@ unrelated layout.
 
 ### R-C3 The machine file and the tools point at the new vault
 - **Requirement.** `~/.harness/machine.env` names `HARNESS_VAULT=C:/Users/estac/vault`,
-  `HARNESS_REALMS=projects:push,classes:local`, `HARNESS_MACHINE=home-pc`; the hook is
+  `HARNESS_REALMS=projects:push,classes:push`, `HARNESS_MACHINE=home-pc`; the hook is
   reinstalled; both scheduled tasks are re-registered; Obsidian opens the new path.
 - **Why.** Every tier resolves the vault from the machine file now; the tasks captured the
   old path at registration time.
@@ -285,8 +286,13 @@ unrelated layout.
   `scripts/backup-store.*`, `ingest embed-check`, `HARNESS_REDACT_EXTRA` (R-C2, R-C1, R-F1,
   R-D3, R-D2, R-E3).
 
-## Open decisions for Stack
-1. Archive `emstacho-su/vault` (recommended) or leave it untouched.
-2. The email to stamp on unattended commits (`emstacho@syr.edu` is the local git identity).
-3. Whether `classes` is `local` (never leaves the home PC) or `push` (backed up to GitHub);
-   the requirements assume `local`.
+## Decisions (Stack, 2026-09-22)
+1. `emstacho-su/vault` is **archived** in Phase C, not reused.
+2. Unattended commits are stamped `<machine> <emstacho@syr.edu>` (the local git identity).
+3. `classes` is a **push** realm, backed up to `emstacho-su/vault-classes`; classes and
+   courses are the same thing, and the realm keeps the name `classes`.
+   `HARNESS_REALMS=projects:push,classes:push` wherever this document said `classes:local`.
+
+Open for Phase C: the one non-markdown file today (`classes/ist466/ethics-case/Group 3
+IST466.pptx`, 4.9 MB) is not under `attachments/`; R-A4's guard reports it, and R-B2's
+pathspecs would not stage it. Move it to `classes/attachments/` at cutover, or widen the rule.
