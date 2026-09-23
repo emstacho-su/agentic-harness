@@ -56,6 +56,9 @@ log "vault: $VAULT"
 [ -n "$NODE_BIN" ] || { log "FATAL node not found; set HARNESS_NODE"; exit 2; }
 [ -n "$UV_BIN" ] || { log "FATAL uv not found; set HARNESS_UV"; exit 2; }
 
+# Step -1: commit and merge-pull every realm, so the night starts from what the
+# other machines pushed. Exit 2 (conflict, lock held, refused) is never fatal: a
+# conflicting merge is aborted with the local commit kept, and the night runs on.
 pull_code=0
 if [ "$REALM_SYNC" != "skip" ]; then
   sync_args=(--pull --vault "$VAULT"); [ "$REALM_SYNC" = "dryrun" ] && sync_args+=(--dry-run)
@@ -67,6 +70,8 @@ run_step checkpoints "$NODE_BIN" "$HOOKS/collect-checkpoints.mjs" --vault "$VAUL
 run_step sweep "$UV_BIN" --directory "$PROJECT" run ingest sweep-concluded --path "$VAULT" --stale-after-hours "$STALE_AFTER_HOURS" --apply; sweep_code=$?
 run_step ingest "$UV_BIN" --directory "$PROJECT" run ingest --source obsidian --path "$VAULT" --prune; ingest_code=$?
 
+# Step 3: commit the night's notes, merge-pull, and push the push-policy realms.
+# Nothing is forced, rebased or stashed; what cannot go now goes next time.
 push_code=0
 if [ "$REALM_SYNC" != "skip" ]; then
   sync_args=(--push --vault "$VAULT"); [ "$REALM_SYNC" = "dryrun" ] && sync_args+=(--dry-run)
