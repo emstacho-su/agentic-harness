@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import test from 'node:test';
 
-import { collectCommits, runGitSync } from '../lib/git-log.mjs';
+import { collectCommits, runGitSync, tailStderr } from '../lib/git-log.mjs';
 import { branchContaining, pullRequestsInWindow, runGhSync } from '../lib/backfill.mjs';
 import { repoArgs, trustedSpawnOptions } from '../lib/spawn.mjs';
 
@@ -38,6 +38,59 @@ test('the environment is inherited, not replaced', () => {
     if (name === 'NoDefaultCurrentDirectoryInExePath') continue;
     assert.equal(options.env[name], process.env[name], `${name} was dropped`);
   }
+});
+
+test('extra environment is merged in, and the hardening key always wins', () => {
+  // The realm sync sets git identity per call; a caller must not be able to
+  // switch the search-path hardening back off by passing it in extraEnv.
+  const extraEnv = { GIT_AUTHOR_NAME: 'm', NoDefaultCurrentDirectoryInExePath: '0' };
+  const snapshot = { ...extraEnv };
+  const options = trustedSpawnOptions(1000, 1024, { extraEnv });
+  assert.equal(options.env.GIT_AUTHOR_NAME, 'm');
+  assert.equal(options.env.NoDefaultCurrentDirectoryInExePath, '1');
+  for (const name of Object.keys(process.env)) {
+    if (name === 'NoDefaultCurrentDirectoryInExePath' || name === 'GIT_AUTHOR_NAME') continue;
+    assert.equal(options.env[name], process.env[name], `${name} was dropped`);
+  }
+  assert.deepEqual(extraEnv, snapshot, 'the caller object was mutated');
+});
+
+test('stderr is piped only when a caller asks for it', () => {
+  assert.equal(trustedSpawnOptions(1000, 1024, { captureStderr: true }).stdio[2], 'pipe');
+  assert.equal(trustedSpawnOptions(1000, 1024, {}).stdio[2], 'ignore');
+  assert.deepEqual(trustedSpawnOptions(1000, 1024), trustedSpawnOptions(1000, 1024, {}));
+  assert.deepEqual(trustedSpawnOptions(1000, 1024).stdio, ['ignore', 'pipe', 'ignore']);
+});
+
+test('runGitSync hands per-call environment to git', () => {
+  const result = runGitSync(['var', 'GIT_AUTHOR_IDENT'], {
+    cwd: process.cwd(),
+    timeoutMs: 10_000,
+    env: { GIT_AUTHOR_NAME: 'm', GIT_AUTHOR_EMAIL: 'm@example.com' },
+  });
+  assert.equal(result.ok, true, `git failed: ${result.error}`);
+  assert.ok(result.stdout.startsWith('m <m@example.com>'), result.stdout);
+});
+
+test('a failing git reports its exit status, and stderr only when captured', () => {
+  const args = ['rev-parse', '--verify', 'refs/heads/definitely-not-a-branch-xyz'];
+  const captured = runGitSync(args, { cwd: process.cwd(), timeoutMs: 10_000, captureStderr: true });
+  assert.equal(captured.ok, false);
+  assert.equal(captured.status, 128);
+  assert.match(captured.stderr, /fatal|needed a single revision/i);
+
+  const silent = runGitSync(args, { cwd: process.cwd(), timeoutMs: 10_000 });
+  assert.equal(silent.ok, false);
+  assert.equal(silent.status, 128);
+  assert.equal(silent.stderr, '');
+});
+
+test('tailStderr keeps the last 300 characters, trimmed', () => {
+  assert.equal(tailStderr('abc'), 'abc');
+  assert.equal(tailStderr('x'.repeat(400)).length, 300);
+  assert.equal(tailStderr(`${'a'.repeat(100)}${'b'.repeat(300)}`), 'b'.repeat(300));
+  assert.equal(tailStderr('  fatal: bad\n'), 'fatal: bad');
+  assert.equal(tailStderr(''), '');
 });
 
 test('a repository travels as -C, in argument position', () => {

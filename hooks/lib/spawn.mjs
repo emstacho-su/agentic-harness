@@ -18,25 +18,37 @@
  * and version-dependent, and a trusted cwd would not help if a future caller
  * passed a repository path back in. Both together mean program resolution never
  * consults a directory anybody else can write to.
+ *
+ * A caller may add environment for one spawn (`extraEnv`): the realm sync sets
+ * git's identity and turns off credential prompts per call rather than touching
+ * the user's global config. The hardening key is merged after it, so no caller
+ * can switch the search-path rule back off by passing it in.
  */
 
 import os from 'node:os';
+
+/** The Windows switch that drops the current directory from program search. */
+const HARDENED_ENV = Object.freeze({ NoDefaultCurrentDirectoryInExePath: '1' });
 
 /**
  * Base options for `execFileSync`: a trusted working directory, a hardened
  * search path, no inherited stdin, no console window, bounded output.
  *
+ * stderr is discarded unless `captureStderr` asks for it, so a caller that
+ * wants git's error line can have it without every other spawn buffering noise.
+ *
  * @param {number} timeoutMs
  * @param {number} maxBuffer
+ * @param {{ extraEnv?: Record<string, string>, captureStderr?: boolean }} [options]
  */
-export function trustedSpawnOptions(timeoutMs, maxBuffer) {
+export function trustedSpawnOptions(timeoutMs, maxBuffer, { extraEnv = {}, captureStderr = false } = {}) {
   return {
     cwd: os.homedir(),
-    env: { ...process.env, NoDefaultCurrentDirectoryInExePath: '1' },
+    env: { ...process.env, ...extraEnv, ...HARDENED_ENV },
     timeout: timeoutMs,
     encoding: 'utf8',
     maxBuffer,
-    stdio: ['ignore', 'pipe', 'ignore'],
+    stdio: ['ignore', 'pipe', captureStderr ? 'pipe' : 'ignore'],
     windowsHide: true,
   };
 }
