@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { MACHINE_ENV_VAR, MACHINE_ENV_SEGMENTS, loadMachineEnv, parseEnvText } from '../lib/machine-env.mjs';
+import { GIT_EMAIL_VAR, MACHINE_ENV_VAR, MACHINE_ENV_SEGMENTS, gitEmail, loadMachineEnv, parseEnvText } from '../lib/machine-env.mjs';
 
 function scratchHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'machine-env-'));
@@ -98,4 +98,26 @@ test('machineName accepts a realm-shaped name and nothing else', async () => {
   assert.equal(machineName({ HARNESS_MACHINE: 'Home PC' }), '');
   assert.equal(machineName({ HARNESS_MACHINE: 'DESKTOP-ABC123' }), '', 'a hostname shape is refused');
   assert.equal(machineName({}), '');
+});
+
+test(`${GIT_EMAIL_VAR} is the realm commit email when it looks like one, else ''`, () => {
+  assert.equal(GIT_EMAIL_VAR, 'HARNESS_GIT_EMAIL');
+  assert.equal(gitEmail({ HARNESS_GIT_EMAIL: '  me@example.com ' }), 'me@example.com');
+  assert.equal(gitEmail({}), '');
+  assert.equal(gitEmail({ HARNESS_GIT_EMAIL: 'not an email' }), '');
+  assert.equal(gitEmail({ HARNESS_GIT_EMAIL: 'a@b <x>' }), '');
+  assert.equal(gitEmail({ HARNESS_GIT_EMAIL: 'a@b@c' }), '');
+});
+
+test('gitEmail reads the machine file, and the process environment wins over it', () => {
+  const { home, cleanup } = scratchHome();
+  try {
+    const file = path.join(home, ...MACHINE_ENV_SEGMENTS);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'HARNESS_GIT_EMAIL=file@example.com\n');
+    assert.equal(gitEmail(loadMachineEnv({}, home)), 'file@example.com');
+    assert.equal(gitEmail(loadMachineEnv({ HARNESS_GIT_EMAIL: 'shell@example.com' }, home)), 'shell@example.com');
+  } finally {
+    cleanup();
+  }
 });

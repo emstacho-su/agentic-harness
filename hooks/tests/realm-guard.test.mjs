@@ -7,6 +7,10 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -14,8 +18,12 @@ import {
   ATTACHMENT_REFUSE_BYTES,
   ATTACHMENT_REPORT_BYTES,
   PATH_REPORT_CHARS,
+  SYNC_PATHSPECS,
   checkName,
   checkSize,
+  isSyncPath,
+  livePathspecs,
+  matchesPathspec,
   scanRealm,
 } from '../lib/realm-guard.mjs';
 
@@ -135,4 +143,53 @@ test('a path too long for a default Windows checkout is reported, not refused', 
   assert.deepEqual(result.refused, []);
   assert.equal(result.reported.length, 1);
   assert.match(result.reported[0].reason, /201 chars.*260/);
+});
+
+// -------------------------------------------------------------- sync set (R-B2)
+
+test('R-B2: SYNC_PATHSPECS is exactly the set that travels, with :(glob) so * never crosses a /', () => {
+  assert.deepEqual([...SYNC_PATHSPECS], [':(glob)**/*.md', ':(glob).obsidian/*.json', 'attachments/', '.realm', '.gitignore', '.gitattributes']);
+  assert.ok(Object.isFrozen(SYNC_PATHSPECS));
+});
+
+test('R-B2: isSyncPath takes markdown, top-level Obsidian settings, root attachments and the policy files', () => {
+  const yes = ['a.md', 'x/y/z.md', '.obsidian/app.json', 'attachments/a/b.png', '.realm', '.gitignore', '.gitattributes'];
+  const no = ['A.MD', '.obsidian/plugins/x/data.json', 'sub/attachments/x.png', 'sub/.gitignore', '.env', 'attachments', '.obsidian/app.json5'];
+  for (const relPath of yes) assert.equal(isSyncPath(relPath), true, relPath);
+  for (const relPath of no) assert.equal(isSyncPath(relPath), false, relPath);
+});
+
+test('R-B2: livePathspecs keeps only the specs some path matches, in declared order, frozen', () => {
+  const input = Object.freeze(['.realm', 'a.md']);
+  const live = livePathspecs(input);
+  assert.deepEqual([...live], [':(glob)**/*.md', '.realm']);
+  assert.ok(Object.isFrozen(live));
+  assert.deepEqual([...input], ['.realm', 'a.md'], 'input untouched');
+  assert.deepEqual([...livePathspecs([])], []);
+  assert.deepEqual([...livePathspecs(['.env', 'stray.bin'])], []);
+  assert.deepEqual(
+    [...livePathspecs(['.gitattributes', 'attachments/x.png', '.obsidian/app.json', '.gitignore', 'n/a.md', '.realm'])],
+    [...SYNC_PATHSPECS],
+  );
+});
+
+test('R-B2: every spec picks out the same files in real git as in JS', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'realm-guard-git-'));
+  // `B.MD` rather than `A.MD`: next to `a.md` it would be the same file on Windows and macOS.
+  const fixture = ['a.md', 'sub/b.md', 'B.MD', '.obsidian/app.json', '.obsidian/plugins/x/data.json', 'attachments/x.png', 'sub/attachments/y.png', '.realm', '.gitignore', '.gitattributes', '.env', 'stray.bin'];
+  try {
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+    for (const relPath of fixture) {
+      fs.mkdirSync(path.dirname(path.join(repo, relPath)), { recursive: true });
+      fs.writeFileSync(path.join(repo, relPath), relPath.startsWith('.git') ? '' : 'x');
+    }
+    for (const spec of SYNC_PATHSPECS) {
+      const out = execFileSync('git', ['ls-files', '-z', '--others', '--exclude-standard', '--', spec], { cwd: repo, encoding: 'utf8' });
+      const fromGit = out.split('\0').filter(Boolean).sort();
+      const fromJs = fixture.filter((relPath) => matchesPathspec(spec, relPath)).sort();
+      assert.deepEqual(fromGit, fromJs, spec);
+    }
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
 });

@@ -27,6 +27,51 @@ export const ATTACHMENTS_DIR = 'attachments';
 const POLICY_FILES = new Set(['.realm', '.gitignore', '.gitattributes']);
 const OBSIDIAN_SETTING = /^\.obsidian\/[^/]+\.json$/;
 const MARKDOWN = /\.md$/i;
+/** Case-sensitive, like git's `:(glob)` magic: `A.MD` is not staged by `**\/*.md`. */
+const SYNC_MARKDOWN = /\.md$/;
+
+/**
+ * Each pathspec the sync stages, with the JS test that picks out the same
+ * files. One table so `isSyncPath` and `livePathspecs` cannot drift apart;
+ * a real-git test pins each predicate to its spec.
+ */
+const SYNC_SPEC_TABLE = Object.freeze([
+  Object.freeze({ spec: ':(glob)**/*.md', matches: (relPath) => SYNC_MARKDOWN.test(relPath) }),
+  Object.freeze({ spec: ':(glob).obsidian/*.json', matches: (relPath) => OBSIDIAN_SETTING.test(relPath) }),
+  Object.freeze({ spec: `${ATTACHMENTS_DIR}/`, matches: (relPath) => relPath.startsWith(`${ATTACHMENTS_DIR}/`) }),
+  ...[...POLICY_FILES].map((name) => Object.freeze({ spec: name, matches: (relPath) => relPath === name })),
+]);
+
+/**
+ * The exact set that travels between machines (R-B2) — the same set
+ * `checkSize` already treats as allowed. `:(glob)` so `*` never crosses a
+ * `/`: plugin state under `.obsidian/plugins/` stays home.
+ */
+export const SYNC_PATHSPECS = Object.freeze(SYNC_SPEC_TABLE.map((entry) => entry.spec));
+
+/** Whether `spec` (one of SYNC_PATHSPECS) picks out `relPath`; false for any other spec. */
+export function matchesPathspec(spec, relPath) {
+  const entry = SYNC_SPEC_TABLE.find((candidate) => candidate.spec === spec);
+  return entry ? entry.matches(String(relPath)) : false;
+}
+
+/** Whether `relPath` (relative to the realm root, `/`-separated) is one the sync stages. */
+export function isSyncPath(relPath) {
+  return SYNC_SPEC_TABLE.some((entry) => entry.matches(String(relPath)));
+}
+
+/**
+ * The SYNC_PATHSPECS entries, in declared order, that match at least one of
+ * `relPaths`. `git add --all` exits 128 on a pathspec that matches nothing,
+ * so the sync passes only these.
+ *
+ * @param {readonly string[]} relPaths
+ * @returns {readonly string[]}
+ */
+export function livePathspecs(relPaths) {
+  const paths = [...relPaths].map(String);
+  return Object.freeze(SYNC_SPEC_TABLE.filter((entry) => paths.some(entry.matches)).map((entry) => entry.spec));
+}
 
 /**
  * `< > : " | ? * \` and every control character: NTFS refuses them all. A
