@@ -128,8 +128,9 @@ test('push commits every dirty realm but pushes only the push realms', () => {
     assert.deepEqual(results.map((r) => [r.name, r.action]), [['projects', 'committed-and-pushed'], ['classes', 'committed']]);
 
     const ops = (dir) => calls.filter((c) => c.cwd === dir).map((c) => c.args[0]);
-    assert.deepEqual(ops(projects), ['status', 'add', 'commit', 'push']);
-    assert.deepEqual(ops(classes), ['status', 'add', 'commit']);
+    // The guard lists what is about to be staged before anything is staged.
+    assert.deepEqual(ops(projects), ['status', 'ls-files', 'add', 'commit', 'push']);
+    assert.deepEqual(ops(classes), ['status', 'ls-files', 'add', 'commit']);
     const commit = calls.find((c) => c.args[0] === 'commit');
     assert.equal(commit.args.at(-1), 'harness: sync from home-pc 2026-09-22T03:00:00.000Z');
   } finally {
@@ -150,6 +151,79 @@ test('a clean push realm still pushes (commits made by hand), and a failed push 
   }
 });
 
+// ------------------------------------------------------------ guard (R-A3/4)
+
+/** NUL-separated, the way `git ls-files -z` answers. */
+const listing = (...paths) => ({ ok: true, stdout: paths.map((p) => `${p}\0`).join('') });
+
+test('a name one platform rejects is refused before anything is staged, and a dry run says so', () => {
+  const { vault, cleanup } = scratchVault();
+  try {
+    const dir = realm(vault, 'projects');
+    const { runGit, calls } = fakeGit({
+      'status --porcelain': { ok: true, stdout: '?? CON.md\n' },
+      'ls-files -z': listing('a.md', 'CON.md'),
+    });
+    const stat = () => 10;
+    const [result] = pushRealms({ vaultRoot: vault, policies: parseRealmPolicies('projects:push'), runGit, stat });
+
+    assert.equal(result.action, 'refused');
+    assert.match(result.error, /1 path\(s\) refused/);
+    assert.match(result.error, /CON\.md.*device name/);
+    const ops = calls.filter((c) => c.cwd === dir).map((c) => c.args[0]);
+    assert.deepEqual(ops, ['status', 'ls-files'], 'no add, no commit, no push');
+    const list = calls.find((c) => c.args[0] === 'ls-files');
+    assert.deepEqual(list.args, ['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
+
+    const [dry] = pushRealms({ vaultRoot: vault, policies: parseRealmPolicies('projects:push'), runGit, stat, dryRun: true });
+    assert.equal(dry.action, 'would-refuse');
+  } finally {
+    cleanup();
+  }
+});
+
+test('a file over the ceiling is refused; one over the report line is committed and noted', () => {
+  const { vault, cleanup } = scratchVault();
+  try {
+    realm(vault, 'projects');
+    const MIB = 1024 * 1024;
+    const answers = { 'status --porcelain': { ok: true, stdout: '?? attachments/deck.pptx\n' }, 'ls-files -z': listing('a.md', 'attachments/deck.pptx') };
+
+    const big = fakeGit(answers);
+    const [refused] = pushRealms({ vaultRoot: vault, policies: parseRealmPolicies('projects:local'), runGit: big.runGit, stat: (p) => (p.endsWith('.pptx') ? 25 * MIB + 1 : 10) });
+    assert.equal(refused.action, 'refused');
+    assert.match(refused.error, /over 25 MiB/);
+    assert.ok(!big.calls.some((c) => c.args[0] === 'add'));
+
+    const large = fakeGit(answers);
+    const [noted] = pushRealms({ vaultRoot: vault, policies: parseRealmPolicies('projects:local'), runGit: large.runGit, stat: (p) => (p.endsWith('.pptx') ? 5 * MIB + 1 : 10) });
+    assert.equal(noted.action, 'committed');
+    assert.match(noted.notes, /attachments\/deck\.pptx: 5\.0 MiB is over 5 MiB/);
+    assert.ok(large.calls.some((c) => c.args[0] === 'commit'));
+
+    const clean = fakeGit({ 'status --porcelain': { ok: true, stdout: '' } });
+    const [untouched] = pushRealms({ vaultRoot: vault, policies: parseRealmPolicies('projects:local'), runGit: clean.runGit });
+    assert.equal(untouched.action, 'clean');
+    assert.ok(!clean.calls.some((c) => c.args[0] === 'ls-files'), 'nothing to commit, nothing to scan');
+  } finally {
+    cleanup();
+  }
+});
+
+test('a listing that fails is an error, not a commit of whatever is there', () => {
+  const { vault, cleanup } = scratchVault();
+  try {
+    realm(vault, 'projects');
+    const { runGit, calls } = fakeGit({ 'status --porcelain': { ok: true, stdout: ' M a.md\n' }, 'ls-files -z': { ok: false, error: 'ETIMEDOUT' } });
+    const [result] = pushRealms({ vaultRoot: vault, policies: parseRealmPolicies('projects:push'), runGit });
+    assert.equal(result.action, 'error');
+    assert.match(result.error, /ls-files failed/);
+    assert.ok(!calls.some((c) => c.args[0] === 'add'));
+  } finally {
+    cleanup();
+  }
+});
+
 // -------------------------------------------------------------- command line
 
 test('the command needs exactly one of --pull and --push, and no realms means nothing to do', () => {
@@ -161,6 +235,28 @@ test('the command needs exactly one of --pull and --push, and no realms means no
   const code = run(['--pull'], { env: { HARNESS_REALMS: '', HARNESS_MACHINE_ENV: path.join(os.tmpdir(), 'absent.env') }, out: (l) => lines.push(l), err: () => {} });
   assert.equal(code, 0);
   assert.match(lines[0], /nothing to sync/);
+});
+
+test('the command exits 2 on a refusal and prints the reported paths on their own line', () => {
+  const { vault, cleanup } = scratchVault();
+  try {
+    const dir = realm(vault, 'projects');
+    fs.rmSync(path.join(dir, '.git'), { recursive: true });
+    git(['init', '--quiet', '-b', 'main'], dir);
+    // NFD on disk: the one bad name every filesystem will actually let us create.
+    fs.writeFileSync(path.join(dir, 'café.md'), '# nfd\n');
+    const env = { HARNESS_REALMS: 'projects:local', HARNESS_MACHINE_ENV: path.join(os.tmpdir(), 'absent.env') };
+    const lines = [];
+    const code = run(['--push', '--vault', vault, '--dry-run'], { env, out: (l) => lines.push(l), err: () => {} });
+    assert.equal(code, 2);
+    assert.match(lines[0], /^projects: would-refuse \(1 path\(s\) refused: .*not in Unicode NFC/);
+
+    const live = run(['--push', '--vault', vault], { env, out: (l) => lines.push(l), err: () => {} });
+    assert.equal(live, 2);
+    assert.match(git(['status', '--porcelain'], dir), /^\?\? /m, 'still untracked: nothing was staged');
+  } finally {
+    cleanup();
+  }
 });
 
 // ----------------------------------------------------------------- real git
@@ -219,6 +315,41 @@ test('end to end with real git: machine A pushes a note, machine B pulls it', ()
     assert.equal(conflict[0].action, 'conflict');
     assert.equal(fs.readFileSync(path.join(b, 'projects', 'note.md'), 'utf8').replace(/\r\n/g, '\n'), '# from b\n', "B's tree is untouched");
     assert.ok(!fs.existsSync(path.join(b, 'projects', '.git', 'rebase-merge')), 'no rebase left in progress');
+  } finally {
+    cleanup();
+  }
+});
+
+test('end to end with real git: a large attachment is committed with a note, an NFD name is refused untouched', () => {
+  const { root, cleanup } = scratchVault();
+  try {
+    const identity = ['-c', 'user.name=t', '-c', 'user.email=t@example.com'];
+    const runGit = (args, { cwd, timeoutMs }) => {
+      try {
+        const stdout = execFileSync('git', [...identity, ...args], { cwd, encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
+        return { ok: true, stdout };
+      } catch (err) {
+        return { ok: false, stdout: '', error: `${err?.code || err?.message}: ${String(err?.stderr ?? '').trim()}` };
+      }
+    };
+    const vault = path.join(root, 'vault');
+    const dir = path.join(vault, 'projects');
+    fs.mkdirSync(path.join(dir, 'attachments'), { recursive: true });
+    git(['init', '--quiet', '-b', 'main'], dir);
+    fs.writeFileSync(path.join(dir, '.realm'), 'projects\n');
+    fs.writeFileSync(path.join(dir, 'attachments', 'deck.pptx'), Buffer.alloc(5 * 1024 * 1024 + 1));
+    const policies = parseRealmPolicies('projects:local');
+
+    const [noted] = pushRealms({ vaultRoot: vault, policies, machine: 'a', runGit });
+    assert.equal(noted.action, 'committed', noted.error);
+    assert.match(noted.notes, /attachments\/deck\.pptx: 5\.0 MiB is over 5 MiB/);
+    assert.match(git(['show', '--stat', '--oneline', 'HEAD'], dir), /attachments\/deck\.pptx/);
+
+    fs.writeFileSync(path.join(dir, 'café.md'), '# nfd\n');
+    const [refused] = pushRealms({ vaultRoot: vault, policies, machine: 'a', runGit });
+    assert.equal(refused.action, 'refused');
+    assert.equal(git(['rev-list', '--count', 'HEAD'], dir).trim(), '1', 'no second commit');
+    assert.match(git(['status', '--porcelain'], dir), /^\?\? /m);
   } finally {
     cleanup();
   }
