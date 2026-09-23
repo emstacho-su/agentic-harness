@@ -76,7 +76,7 @@ unrelated layout.
 
 ### R-B1 Commit first, then merge-pull, then push; never rebase, never autostash
 - **Requirement.** `sync-realms.mjs` runs, per realm: stage → commit → `git pull --no-rebase
-  --no-edit` → push. A merge that conflicts is `git merge --abort`ed and reported (exit 2);
+  --ff --no-autostash --no-edit` → push. A merge that conflicts is `git merge --abort`ed and reported (exit 2);
   the local commit stays; nothing is forced. `--pull` alone is the same sequence without push.
 - **Why.** git's own docs mark `--autostash` "use with care: the final stash application …
   might result in non-trivial conflicts", leaving a rebased HEAD plus a stash to pop by hand
@@ -85,13 +85,18 @@ unrelated layout.
 - **Tests.** Unit: scripted git asserts the exact sequence and that no `rebase`, `--force`
   or `stash` argument ever appears. Real git: A and B both commit to the same file; B's pull
   aborts, B's commit and tree survive, `.git/MERGE_HEAD` is absent afterwards.
-- **Done when.** Both tests pass and the nightly log on this machine shows one
-  `committed → pulled → pushed` line per realm for three consecutive nights.
+- **Done when.** Both tests pass. The nightly check, one `committed -> pulled -> pushed`
+  line per realm in this machine's log for three consecutive nights, is made after R-C3 and
+  before Phase D (decision 4). The arrow is ASCII because the PowerShell job decodes node's
+  output as the OEM code page.
 
 ### R-B2 Stage explicit paths, never `-A`
-- **Requirement.** The commit step stages `-- '*.md' '.obsidian/*.json' attachments/
-  .realm .gitignore .gitattributes` and nothing else; deletions of those paths are staged
-  too (`git add --all -- <pathspecs>`).
+- **Requirement.** The commit step stages `-- ':(glob)**/*.md' ':(glob).obsidian/*.json'
+  attachments/ .realm .gitignore .gitattributes` and nothing else; deletions of those paths
+  are staged too (`git add --all -- <pathspecs>`). `:(glob)` keeps `.obsidian/*.json` from
+  reaching `.obsidian/plugins/x/data.json`. Only the pathspecs that match at least one path
+  are passed, because `git add` exits 128 and stages nothing when any pathspec matches
+  nothing (a realm without `attachments/`, say).
 - **Why.** `git add -A` cannot tell whose changes it is taking when Obsidian or the hook
   writes during the run ([write-up](https://picklog.cc/blog/git-auto-commit-cron)); a stray
   file dropped into the vault must not travel.
@@ -101,7 +106,8 @@ unrelated layout.
 ### R-B3 One writer at a time per realm
 - **Requirement.** `sync-realms.mjs` takes a lock file (`.git/harness-sync.lock` with the PID
   and a timestamp; stale after 30 min) and exits 2 if it is held; the nightly script never
-  overlaps with the twice-daily checkpoint collector on the same realm.
+  overlaps with the twice-daily checkpoint collector on the same realm. The checkpoint
+  collector takes the same lock per realm and defers that realm's notes when it is held.
 - **Why.** Overlapping scheduled runs interleave stage/commit and corrupt the index
   ([git-dirsync design](https://github.com/deweysasser/git-dirsync)).
 - **Tests.** Unit: second invocation with a fresh lock exits 2; a 31-minute-old lock is taken
@@ -120,7 +126,8 @@ unrelated layout.
   On the VM: a fine-grained PAT scoped to the two realm repos with an expiry, not a deploy key.
 - **Tests.** Unit: the spawn env passed to git carries the four variables and
   `GCM_INTERACTIVE`. Live: unregister the machine's stored credential, run `--push`, observe
-  exit 2 within 30 s and a clear log line; restore and observe a push.
+  exit 2 within 30 s and a clear log line; restore and observe a push. The live test moves
+  with the nightly check, after R-C3 and before Phase D (decision 4).
 - **Done when.** The nightly log shows the commit author as `<machine> <email>` and a
   credential-less run terminates in under 30 s.
 
@@ -272,7 +279,7 @@ unrelated layout.
 | Phase | Blocks | Gate |
 | --- | --- | --- |
 | A | B | R-A1–A4 done in code and tests, on `main` |
-| B | C | R-B1–B4 done; three clean nightly runs on the **current** vault (sync in dry-run mode) |
+| B | C | R-B1–B4 done in code, unit and real-git tests, on `main`; the three-night nightly check moves after Phase C (decision 4, 2026-09-23) |
 | C | D | R-C1 identical copy, R-C2 remotes, R-C3 doctor clean, R-C4 rehearsed |
 | D | E | R-D1 query returns 0, eval unchanged, R-D2 references committed |
 | E | F | R-E1 green on the VM, R-E2 round trip |
@@ -292,6 +299,19 @@ unrelated layout.
 3. `classes` is a **push** realm, backed up to `emstacho-su/vault-classes`; classes and
    courses are the same thing, and the realm keeps the name `classes`.
    `HARNESS_REALMS=projects:push,classes:push` wherever this document said `classes:local`.
+4. (2026-09-23) The Phase B gate is code, unit and real-git tests only: the current vault
+   has no realms and no machine file, so a nightly run has nothing to sync. The three-night
+   nightly check (R-B1 "done when") and R-B4's live credential test move to after Phase C,
+   before Phase D. The sync and the checkpoint collector share one lock per realm, because
+   the two tasks overlapped on a catch-up run on 2026-09-23 and the collector writes notes
+   into realm folders. The commit email is the machine-file variable `HARNESS_GIT_EMAIL`
+   (`emstacho@syr.edu` on the home PC).
+
+Follow-ups, not in Phase B:
+- `session-capture.mjs` and `sweep-transcripts.mjs` write into realms without taking the
+  lock.
+- `commit.gpgsign` is not overridden by the sync; a machine that signs commits needs its
+  key usable without a prompt.
 
 Open for Phase C: the one non-markdown file today (`classes/ist466/ethics-case/Group 3
 IST466.pptx`, 4.9 MB) is not under `attachments/`; R-A4's guard reports it, and R-B2's
