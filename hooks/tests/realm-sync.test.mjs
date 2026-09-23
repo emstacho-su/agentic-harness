@@ -14,7 +14,8 @@ import test from 'node:test';
 
 import { SYNC_PATHSPECS } from '../lib/realm-guard.mjs';
 import { REALM_LOCK_FILENAME } from '../lib/realm-lock.mjs';
-import { parseRealmPolicies, realmDir, syncGitEnv, syncRealms } from '../lib/realm-sync.mjs';
+import { parseRealmPolicies, realmDir, realmRootFor, syncGitEnv, syncRealms } from '../lib/realm-sync.mjs';
+import { classifyPullFailure, classifyPushFailure } from '../lib/realm-steps.mjs';
 import { parseArgs, run } from '../sync-realms.mjs';
 
 const NOW = new Date('2026-09-22T03:00:00Z');
@@ -87,7 +88,8 @@ function sync(vault, realms, { mode = 'push', answers, ...rest } = {}) {
     email: 'home@example.com',
     runGit: git.runGit,
     stat: () => 10,
-    now: NOW,
+    clock: () => NOW,
+    baseEnv: {},
     ...rest,
   });
   return { ...git, results, result: results[0] };
@@ -104,7 +106,7 @@ function withRealm(fn, options) {
 }
 
 const STATUS = ['status', '--porcelain=v1', '-z', '--untracked-files=all'];
-const PREFLIGHT = [['symbolic-ref', '-q', '--short', 'HEAD'], ['remote', 'get-url', 'origin'], ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']];
+const PREFLIGHT = [['symbolic-ref', '-q', '--short', 'HEAD'], ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], ['remote', 'get-url', 'origin']];
 const LIST = ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...SYNC_PATHSPECS];
 const ADD = ['add', '--all', '--', ':(glob)**/*.md', '.realm'];
 const STAGED = ['diff', '--cached', '--name-only', '-z'];
@@ -127,6 +129,19 @@ test('parseRealmPolicies mirrors the Python side', () => {
   assert.deepEqual(parseRealmPolicies(''), []);
   for (const bad of ['projects', 'projects:sync', 'Projects:push', 'a:push,a:local']) {
     assert.throws(() => parseRealmPolicies(bad), /HARNESS_REALMS/);
+  }
+});
+
+test('realmRootFor is the vault root whenever the root carries a marker, else the folder realm', () => {
+  const { vault, cleanup } = scratchVault();
+  try {
+    const dir = realm(vault, 'projects');
+    assert.equal(realmRootFor(vault, 'projects'), dir);
+    assert.equal(realmRootFor(vault, 'classes'), '');
+    fs.writeFileSync(path.join(vault, '.realm'), 'personal\n');
+    assert.equal(realmRootFor(vault, 'projects'), vault, 'an area under a root realm lives in the root realm');
+  } finally {
+    cleanup();
   }
 });
 
@@ -224,11 +239,36 @@ test('a merge that would overwrite local changes outside the sync paths is an er
 
 test('no origin remote: commit only, and the night is still in order', () =>
   withRealm((vault) => {
-    const { result, argv } = sync(vault, 'projects:push', { answers: { 'remote get-url': fail(2, "error: No such remote 'origin'") } });
+    const answers = { 'rev-parse --abbrev-ref': fail(128, 'fatal: no upstream configured for branch'), 'remote get-url': fail(2, "error: No such remote 'origin'") };
+    const { result, argv } = sync(vault, 'projects:push', { answers });
     assert.deepEqual(result.steps, ['committed', 'no-remote', 'no-remote']);
     assert.equal(result.outcome, 'ok');
+    assert.deepEqual(argv().slice(0, 3), PREFLIGHT);
     assert.ok(!commands(argv()).some((c) => ['pull', 'push', 'rev-list'].includes(c)));
-    assert.ok(!argv().some((a) => a.includes('@{u}')));
+  }));
+
+test('the push goes to the upstream branch, not to the local branch name', () =>
+  withRealm((vault) => {
+    const { result, argv } = sync(vault, 'projects:push', { answers: { 'rev-parse --abbrev-ref': ok('origin/master\n') } });
+    assert.equal(result.outcome, 'ok', result.error);
+    assert.deepEqual(argv().at(-1), ['push', '--quiet', 'origin', 'HEAD:refs/heads/master']);
+  }));
+
+test('an upstream on another remote: that remote is checked and pushed to, and a branch may hold a slash', () =>
+  withRealm((vault) => {
+    const { result, argv } = sync(vault, 'projects:push', { answers: { 'rev-parse --abbrev-ref': ok('hub/notes/main\n') } });
+    assert.equal(result.outcome, 'ok', result.error);
+    assert.deepEqual(argv()[2], ['remote', 'get-url', 'hub']);
+    assert.ok(!argv().some((a) => a.join(' ') === 'remote get-url origin'));
+    assert.deepEqual(argv().at(-1), ['push', '--quiet', 'hub', 'HEAD:refs/heads/notes/main']);
+  }));
+
+test('an upstream that is a local branch is an error before anything is staged', () =>
+  withRealm((vault) => {
+    const { result, argv } = sync(vault, 'projects:push', { answers: { 'rev-parse --abbrev-ref': ok('main\n') } });
+    assert.equal(result.outcome, 'error');
+    assert.match(result.error, /upstream 'main' is not a remote branch/);
+    assert.ok(!commands(argv()).includes('status'));
   }));
 
 test('no upstream is an error before anything is staged', () =>
@@ -294,6 +334,14 @@ test('R-B2: a file staged by hand outside the sync paths refuses the realm, noth
     assert.deepEqual(argv(), [...PREFLIGHT, STATUS]);
   }));
 
+test('R-B2: a hand-staged rename from outside the sync paths refuses the realm and names both ends', () =>
+  withRealm((vault) => {
+    const { result, argv } = sync(vault, 'projects:push', { answers: { 'status --porcelain=v1': ok('R  notes/n.md\0drafts/n.txt\0') } });
+    assert.equal(result.outcome, 'refused');
+    assert.equal(result.error, 'staged by hand outside the sync paths: drafts/n.txt -> notes/n.md; run git restore --staged');
+    assert.deepEqual(argv(), [...PREFLIGHT, STATUS]);
+  }));
+
 test('R-B2: the add arguments are exactly the pathspecs that match something', () =>
   withRealm((vault) => {
     const listed = ok('a.md\0.obsidian/app.json\0attachments/x.png\0.gitignore\0');
@@ -339,6 +387,25 @@ test('a large attachment is committed and reported', () =>
     assert.ok(result.notes.includes('reported: attachments/deck.pptx: 5.0 MiB is over 5 MiB'));
   }));
 
+test('a symlink is sized as git commits it: the link, not the file it points at', (t) => {
+  const { vault, cleanup } = scratchVault();
+  t.after(cleanup);
+  const dir = realm(vault, 'projects');
+  const target = path.join(dir, 'big.bin');
+  fs.writeFileSync(target, Buffer.alloc(5 * 1024 * 1024 + 1));
+  fs.mkdirSync(path.join(dir, 'attachments'));
+  try {
+    fs.symlinkSync(target, path.join(dir, 'attachments', 'link.bin'));
+  } catch (err) {
+    if (process.platform === 'win32' && err?.code === 'EPERM') return t.skip('creating a symlink needs Developer Mode or admin on Windows');
+    throw err;
+  }
+  const answers = { 'status --porcelain=v1': ok('?? attachments/link.bin\0'), 'ls-files -z': ok('attachments/link.bin\0'), 'diff --cached': ok('attachments/link.bin\0') };
+  const { result } = sync(vault, 'projects:local', { answers, stat: undefined });
+  assert.deepEqual(result.steps, ['committed', 'pulled', 'kept-local'], result.error);
+  assert.ok(!result.notes.some((n) => n.startsWith('reported:')), result.notes.join('\n'));
+});
+
 test('a listing that fails is an error, not a commit of whatever is there', () =>
   withRealm((vault) => {
     const { result, argv } = sync(vault, 'projects:push', { answers: { 'ls-files -z': { ok: false, stdout: '', error: 'ETIMEDOUT', status: null, stderr: '' } } });
@@ -380,6 +447,7 @@ test('R-B4: every git call carries the identity, no prompts, stderr capture and 
     const expected = {
       GCM_INTERACTIVE: 'never',
       GIT_TERMINAL_PROMPT: '0',
+      GIT_SSH_COMMAND: 'ssh -o BatchMode=yes',
       GIT_AUTHOR_NAME: 'home-pc',
       GIT_AUTHOR_EMAIL: 'home@example.com',
       GIT_COMMITTER_NAME: 'home-pc',
@@ -393,14 +461,33 @@ test('R-B4: every git call carries the identity, no prompts, stderr capture and 
   }));
 
 test('R-B4: without an email git config applies and the realm says so', () => {
-  const env = syncGitEnv({ machine: 'home-pc', email: '' });
-  assert.deepEqual({ ...env }, { GCM_INTERACTIVE: 'never', GIT_TERMINAL_PROMPT: '0' });
+  const env = syncGitEnv({ machine: 'home-pc', email: '', baseEnv: {} });
+  assert.deepEqual({ ...env }, { GCM_INTERACTIVE: 'never', GIT_TERMINAL_PROMPT: '0', GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' });
   assert.ok(Object.isFrozen(env));
   withRealm((vault) => {
     const { result, calls } = sync(vault, 'projects:push', { email: '' });
     assert.ok(result.notes.includes('identity: git config (set HARNESS_MACHINE and HARNESS_GIT_EMAIL)'));
     assert.ok(calls.every((c) => !('GIT_AUTHOR_NAME' in c.options.env)));
   });
+});
+
+test('R-B4: ssh runs in batch mode unless the user already chose an ssh command', () => {
+  assert.equal(syncGitEnv({ baseEnv: {} }).GIT_SSH_COMMAND, 'ssh -o BatchMode=yes');
+  assert.ok(!('GIT_SSH_COMMAND' in syncGitEnv({ baseEnv: { GIT_SSH_COMMAND: 'ssh -i ~/.ssh/vault' } })), "the user's GIT_SSH_COMMAND is left to flow through");
+  assert.ok(!('GIT_SSH_COMMAND' in syncGitEnv({ baseEnv: { GIT_SSH: 'plink.exe' } })), 'GIT_SSH is left alone too');
+});
+
+test('R-B4: ssh refusals under batch mode read as a credential failure', () => {
+  const stderrs = [
+    'Host key verification failed.\nfatal: Could not read from remote repository.',
+    'git@github.com: Permission denied (publickey,password).',
+    'Permission denied (publickey).',
+    'ssh: BatchMode: passphrase prompt refused',
+  ];
+  for (const stderr of stderrs) {
+    assert.match(classifyPullFailure(fail(128, stderr)), /^credential missing or rejected for origin: /, stderr);
+    assert.match(classifyPushFailure(fail(128, stderr)), /^credential missing or rejected for origin: /, stderr);
+  }
 });
 
 // ------------------------------------------------------------------ dry run
@@ -418,6 +505,18 @@ test('a dry run asks git only questions: no add, commit, pull, push, merge, and 
     assert.deepEqual(seen, [[]], 'no lock file while it ran');
   }));
 
+test('a dry run with nothing to commit counts what is ahead: 0 is up to date, more would push', () => {
+  for (const [count, word] of [['0\n', 'up-to-date'], ['2\n', 'would-push']]) {
+    withRealm((vault) => {
+      const answers = { 'status --porcelain=v1': ok(''), 'rev-list --count': ok(count) };
+      const { result, argv } = sync(vault, 'projects:push', { dryRun: true, answers });
+      assert.deepEqual(result.steps, ['clean', 'would-pull', word], count);
+      assert.deepEqual(argv().at(-1), AHEAD, 'rev-list is local and read-only, so a dry run asks it');
+      assert.ok(!commands(argv()).includes('push'));
+    });
+  }
+});
+
 // --------------------------------------------------------------- lock (R-B3)
 
 function writeLock(dir, { pid, ageMinutes }) {
@@ -428,7 +527,7 @@ function writeLock(dir, { pid, ageMinutes }) {
 function cli(vault, realms, { runGit, argv = ['--push'] }) {
   const lines = [];
   const env = { HARNESS_REALMS: realms, HARNESS_MACHINE: 'home-pc', HARNESS_GIT_EMAIL: 'home@example.com', HARNESS_MACHINE_ENV: ABSENT_MACHINE_ENV };
-  const code = run([...argv, '--vault', vault], { env, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`), runGit, stat: () => 10, now: NOW });
+  const code = run([...argv, '--vault', vault], { env, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`), runGit, stat: () => 10, clock: () => NOW });
   return { code, lines };
 }
 
@@ -455,9 +554,37 @@ test('R-B3: a 31-minute-old lock is taken over, said so, and gone afterwards', (
     writeLock(dir, { pid: 4242, ageMinutes: 31 });
     const { code, lines } = cli(vault, 'projects:push', { runGit: scriptedGit().runGit });
     assert.equal(code, 0);
-    assert.deepEqual(lines, ['projects: committed -> pulled -> pushed', 'projects: lock: taken over from pid 4242 (sync --push), 31 min old']);
+    assert.deepEqual(lines, ['projects: committed -> pulled -> pushed', 'projects: lock: taken over from sync --push, pid 4242, since 2026-09-22T02:29:00.000Z (31 min old)']);
     assert.ok(!fs.existsSync(path.join(dir, '.git', REALM_LOCK_FILENAME)));
   }));
+
+test('R-B3: each realm reads the clock for its own lock and its own commit, so a late realm is not born old', () => {
+  const { vault, cleanup } = scratchVault();
+  try {
+    realm(vault, 'projects');
+    realm(vault, 'classes');
+    const readings = [];
+    const clock = () => {
+      const reading = new Date(NOW.getTime() + readings.length * 7 * MINUTE_MS);
+      readings.push(reading.toISOString());
+      return reading;
+    };
+    const lockStarts = [];
+    const readLockStart = (args, options) => {
+      const lock = JSON.parse(fs.readFileSync(path.join(options.cwd, '.git', REALM_LOCK_FILENAME), 'utf8'));
+      lockStarts.push(lock.startedAt);
+      return ok(' M a.md\0');
+    };
+    const { argv } = sync(vault, 'projects:push,classes:push', { clock, answers: { 'status --porcelain=v1': readLockStart } });
+    const messages = argv().filter((args) => args[0] === 'commit').map((args) => args.at(-1));
+    assert.equal(readings.length, 4, 'one reading per lock and one per commit');
+    assert.deepEqual(lockStarts, [readings[0], readings[2]]);
+    assert.notEqual(lockStarts[0], lockStarts[1]);
+    assert.deepEqual(messages, [`harness: sync from home-pc ${readings[1]}`, `harness: sync from home-pc ${readings[3]}`]);
+  } finally {
+    cleanup();
+  }
+});
 
 test('R-B3: a git runner that throws mid-sequence still gives the lock back', () =>
   withRealm((vault, dir) => {

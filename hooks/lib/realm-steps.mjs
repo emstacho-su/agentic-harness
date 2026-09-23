@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { isSyncPath, livePathspecs, scanRealm, SYNC_PATHSPECS } from './realm-guard.mjs';
-import { parsePorcelainZ, splitBySyncPath, stagedOutsideSync } from './realm-status.mjs';
+import { isStaged, parsePorcelainZ, splitBySyncPath } from './realm-status.mjs';
 
 /** `git pull` and `git push` reach the network; the rest does not. */
 export const SYNC_FETCH_TIMEOUT_MS = 120_000;
@@ -27,6 +27,8 @@ const PATHS_SHOWN = 3;
 
 /** `git remote get-url` exits 2 when the remote does not exist; anything else is a real failure. */
 const NO_SUCH_REMOTE_STATUS = 2;
+/** The remote a branch without an upstream is checked against: the name `git clone` gives. */
+const DEFAULT_REMOTE = 'origin';
 /** `git symbolic-ref -q` exits 1, quietly, when HEAD is detached. */
 const DETACHED_HEAD_STATUS = 1;
 
@@ -34,11 +36,13 @@ const PULL_ARGS = Object.freeze(['pull', '--no-rebase', '--ff', '--no-autostash'
 const MERGE_HEAD_ARGS = Object.freeze(['rev-parse', '-q', '--verify', 'MERGE_HEAD']);
 
 /**
- * What git and the credential helpers print when a credential is missing or
- * refused, with prompts turned off. Matched over the stderr tail.
+ * What git, the credential helpers and ssh (in BatchMode) print when a
+ * credential is missing or refused, with prompts turned off. Matched over the
+ * stderr tail. `(publickey` is left open: ssh lists every method it tried,
+ * as in `(publickey,password)`.
  */
 export const CREDENTIAL_FAILURE =
-  /terminal prompts disabled|could not read (username|password)|authentication failed|interactivity has been disabled|permission denied \(publickey\)|invalid username or (password|token)|returned error: 40[13]/i;
+  /terminal prompts disabled|could not read (username|password)|authentication failed|interactivity has been disabled|permission denied \(publickey|host key verification failed|batchmode|invalid username or (password|token)|returned error: 40[13]/i;
 const OVERWRITTEN_BY_MERGE = /would be overwritten by merge/;
 const PUSH_REJECTED = /rejected|fetch first|non-fast-forward/;
 
@@ -98,27 +102,53 @@ export function inProgress(dir) {
 }
 
 /**
- * The branch, and whether there is an origin to pull from. A remote without
- * an upstream is an error here, before anything is staged: the pull would
- * fail after the commit and leave the night half done.
- *
- * @returns {{branch: string, hasRemote: boolean} | {stop: {outcome: string, error: string}}}
+ * `origin/main` → `{ remote: 'origin', branch: 'main' }`, split at the first
+ * `/`: a remote name holds none, a branch may (`hub/notes/main`). Null when
+ * there is no remote part, as for an upstream that is a local branch.
  */
-export function preflight(ctx) {
+export function parseUpstream(text) {
+  const name = String(text ?? '').trim();
+  const slash = name.indexOf('/');
+  if (slash <= 0 || slash === name.length - 1) return null;
+  return Object.freeze({ remote: name.slice(0, slash), branch: name.slice(slash + 1) });
+}
+
+/** The checked-out branch, or a stop for a detached HEAD or a failed call. */
+function currentBranch(ctx) {
   const head = git(ctx, ['symbolic-ref', '-q', '--short', 'HEAD']);
   const branch = head.ok ? head.stdout.trim() : '';
-  if (!branch) {
-    if (!head.ok && head.status !== DETACHED_HEAD_STATUS) return halt('error', `git symbolic-ref failed (${describe(head)})`);
-    return halt('error', 'detached HEAD; check out a branch by hand');
-  }
-  const remote = git(ctx, ['remote', 'get-url', 'origin']);
-  if (!remote.ok) {
-    if (remote.status === NO_SUCH_REMOTE_STATUS) return Object.freeze({ branch, hasRemote: false });
-    return halt('error', `git remote get-url failed (${describe(remote)})`);
-  }
-  const upstream = git(ctx, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
-  if (!upstream.ok) return halt('error', `no upstream on origin; run git push -u origin ${branch} once by hand`);
-  return Object.freeze({ branch, hasRemote: true });
+  if (branch) return Object.freeze({ branch });
+  if (!head.ok && head.status !== DETACHED_HEAD_STATUS) return halt('error', `git symbolic-ref failed (${describe(head)})`);
+  return halt('error', 'detached HEAD; check out a branch by hand');
+}
+
+/** No upstream: in order when there is no origin at all (a realm kept on one machine), an error when there is. */
+function withoutUpstream(ctx, branch) {
+  const origin = git(ctx, ['remote', 'get-url', DEFAULT_REMOTE]);
+  if (origin.ok) return halt('error', `no upstream on ${DEFAULT_REMOTE}; run git push -u ${DEFAULT_REMOTE} ${branch} once by hand`);
+  if (origin.status === NO_SUCH_REMOTE_STATUS) return Object.freeze({ branch, hasRemote: false, upstream: null });
+  return halt('error', `git remote get-url failed (${describe(origin)})`);
+}
+
+/**
+ * The branch, its upstream `{ remote, branch }`, and whether there is a
+ * remote to pull from. The upstream is asked first, because it names the
+ * remote to check and to push to. A remote without an upstream is an error
+ * here, before anything is staged: the pull would fail after the commit and
+ * leave the night half done.
+ *
+ * @returns {{branch: string, hasRemote: boolean, upstream: {remote: string, branch: string} | null} | {stop: {outcome: string, error: string}}}
+ */
+export function preflight(ctx) {
+  const head = currentBranch(ctx);
+  if (head.stop) return head;
+  const answer = git(ctx, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+  if (!answer.ok) return withoutUpstream(ctx, head.branch);
+  const upstream = parseUpstream(answer.stdout);
+  if (!upstream) return halt('error', `upstream '${answer.stdout.trim()}' is not a remote branch; set one with git branch -u <remote>/<branch>`);
+  const remote = git(ctx, ['remote', 'get-url', upstream.remote]);
+  if (!remote.ok) return halt('error', `git remote get-url ${upstream.remote} failed (${describe(remote)})`);
+  return Object.freeze({ branch: head.branch, hasRemote: true, upstream });
 }
 
 // ------------------------------------------------------------ stage, commit
@@ -137,13 +167,18 @@ function readStatus(ctx) {
   } catch (err) {
     return halt('error', err.message);
   }
-  const handStaged = stagedOutsideSync(records, isSyncPath);
-  if (handStaged.length > 0) {
-    return halt('refused', `staged by hand outside the sync paths: ${namePaths(handStaged.map((r) => r.path))}; run git restore --staged`);
-  }
   const { sync, leftover } = splitBySyncPath(records, isSyncPath);
-  const notes = leftover.length > 0 ? [`not staged: ${namePaths(leftover.map((r) => r.path))}`] : [];
+  const handStaged = leftover.filter(isStaged);
+  if (handStaged.length > 0) {
+    return halt('refused', `staged by hand outside the sync paths: ${namePaths(handStaged.map(recordName))}; run git restore --staged`);
+  }
+  const notes = leftover.length > 0 ? [`not staged: ${namePaths(leftover.map(recordName))}`] : [];
   return Object.freeze({ changed: sync.length > 0, notes: Object.freeze(notes) });
+}
+
+/** `from -> to` for a rename or copy (ASCII, like the step separator), the path otherwise. */
+function recordName(record) {
+  return record.from ? `${record.from} -> ${record.path}` : record.path;
 }
 
 /**
@@ -195,7 +230,7 @@ export function stageAndCommit(ctx) {
   const staged = stageScanned(ctx, guard.candidates, notes);
   if (staged.stop) return staged;
   if (staged.staged.length === 0) return step('clean', notes);
-  const message = `harness: sync${ctx.machine ? ` from ${ctx.machine}` : ''} ${ctx.now.toISOString()}`;
+  const message = `harness: sync${ctx.machine ? ` from ${ctx.machine}` : ''} ${ctx.clock().toISOString()}`;
   const committed = git(ctx, ['commit', '--quiet', '-m', message]);
   if (!committed.ok) return halt('error', `git commit failed (${describe(committed)})`, notes);
   return step('committed', notes);
@@ -207,18 +242,18 @@ function mergeHeadPresent(ctx) {
   return git(ctx, MERGE_HEAD_ARGS).ok;
 }
 
-/** Why a pull failed that left no merge behind. */
-export function classifyPullFailure(result) {
+/** Why a pull from `remote` failed that left no merge behind. */
+export function classifyPullFailure(result, remote = DEFAULT_REMOTE) {
   const tail = result.stderr ?? '';
-  if (CREDENTIAL_FAILURE.test(tail)) return `credential missing or rejected for origin: ${tail}`;
+  if (CREDENTIAL_FAILURE.test(tail)) return `credential missing or rejected for ${remote}: ${tail}`;
   if (OVERWRITTEN_BY_MERGE.test(tail)) return 'local changes outside the sync paths block the merge';
   return `pull failed (${result.error || `exit ${result.status}`}): ${tail}`;
 }
 
-/** Why a push failed. A rejection is ordinary: someone pushed between our pull and our push. */
-export function classifyPushFailure(result) {
+/** Why a push to `remote` failed. A rejection is ordinary: someone pushed between our pull and our push. */
+export function classifyPushFailure(result, remote = DEFAULT_REMOTE) {
   const tail = result.stderr ?? '';
-  if (CREDENTIAL_FAILURE.test(tail)) return `credential missing or rejected for origin: ${tail}`;
+  if (CREDENTIAL_FAILURE.test(tail)) return `credential missing or rejected for ${remote}: ${tail}`;
   if (PUSH_REJECTED.test(tail)) return 'push rejected: the remote moved since the pull; the next run merges it';
   return `push failed (${result.error || `exit ${result.status}`}): ${tail}`;
 }
@@ -246,32 +281,40 @@ export function pullMerge(ctx) {
   const pulled = git(ctx, PULL_ARGS, SYNC_FETCH_TIMEOUT_MS);
   if (pulled.ok) return step('pulled');
   if (mergeHeadPresent(ctx)) return abortConflict(ctx);
-  return halt('error', classifyPullFailure(pulled));
+  return halt('error', classifyPullFailure(pulled, ctx.upstream.remote));
 }
 
 // --------------------------------------------------------------------- push
 
 /**
- * Push what the remote does not have yet, to the branch's own name. Step
- * word: `pushed`, `up-to-date`, `kept-local`, `no-remote`, or `would-push`.
+ * Push what the remote does not have yet, to the upstream branch (which may
+ * be named differently from the local one). `stepsSoFar` are the words the
+ * earlier steps added. Step word: `pushed`, `up-to-date`, `kept-local`,
+ * `no-remote`, or `would-push`.
+ *
+ * A dry run counts too: `rev-list` is local and read-only. It cannot count a
+ * commit the dry run only said it would make, so that one is `would-push`.
  */
-export function pushAhead(ctx) {
+export function pushAhead(ctx, stepsSoFar = []) {
   if (!ctx.hasRemote) return step('no-remote');
   if (ctx.policy !== 'push') return step('kept-local');
-  if (ctx.dryRun) return step('would-push');
+  if (ctx.dryRun && stepsSoFar.includes('would-commit')) return step('would-push');
   const ahead = git(ctx, ['rev-list', '--count', '@{u}..HEAD']);
   const count = ahead.ok ? Number.parseInt(ahead.stdout.trim(), 10) : Number.NaN;
   if (!Number.isInteger(count)) return halt('error', `git rev-list failed (${ahead.ok ? `unreadable count '${ahead.stdout.trim()}'` : describe(ahead)})`);
   if (count === 0) return step('up-to-date');
-  const pushed = git(ctx, ['push', '--quiet', 'origin', `HEAD:refs/heads/${ctx.branch}`], SYNC_FETCH_TIMEOUT_MS);
-  return pushed.ok ? step('pushed') : halt('error', classifyPushFailure(pushed));
+  if (ctx.dryRun) return step('would-push');
+  const { remote, branch } = ctx.upstream;
+  const pushed = git(ctx, ['push', '--quiet', remote, `HEAD:refs/heads/${branch}`], SYNC_FETCH_TIMEOUT_MS);
+  return pushed.ok ? step('pushed') : halt('error', classifyPushFailure(pushed, remote));
 }
 
 // ----------------------------------------------------------------- sequence
 
 /**
  * Run one realm's steps. `ctx` is `{ dir, mode, policy, dryRun, machine,
- * now, env, runGit, stat }`; it is never changed.
+ * clock, env, runGit, stat }`; it is never changed. `clock()` is read when
+ * the commit message is written, not before.
  *
  * @returns {{steps: readonly string[], outcome: string, error: string, notes: readonly string[]}}
  */
@@ -280,12 +323,12 @@ export function runRealmSteps(ctx) {
   if (blocked) return draft([], blocked, []);
   const pre = preflight(ctx);
   if (pre.stop) return draft([], pre.stop, pre.notes);
-  const repo = { ...ctx, branch: pre.branch, hasRemote: pre.hasRemote };
+  const repo = Object.freeze({ ...ctx, branch: pre.branch, hasRemote: pre.hasRemote, upstream: pre.upstream });
   const sequence = ctx.mode === 'push' ? [stageAndCommit, pullMerge, pushAhead] : [stageAndCommit, pullMerge];
   let steps = [];
   let notes = [];
   for (const runStep of sequence) {
-    const done = runStep(repo);
+    const done = runStep(repo, steps);
     notes = [...notes, ...done.notes];
     if (done.stop) return draft(steps, done.stop, notes);
     steps = [...steps, done.step];

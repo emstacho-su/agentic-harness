@@ -369,7 +369,7 @@ test('a realm locked by the sync defers its notes: nothing written, the lock lef
     const held = writeSyncLock(realm, REALM_NOW);
 
     const lines = [];
-    const summary = runCollect({ repos: [fx.clone], vaultRoot: sandbox.vaultRoot, now: REALM_NOW, log: (l) => lines.push(l) });
+    const summary = runCollect({ repos: [fx.clone], vaultRoot: sandbox.vaultRoot, clock: () => REALM_NOW, log: (l) => lines.push(l) });
 
     const deferred = summary.results.find((r) => r.notePath === `projects/bb2dash/sessions/${B}.md`);
     assert.equal(deferred.action, 'defer');
@@ -377,7 +377,7 @@ test('a realm locked by the sync defers its notes: nothing written, the lock lef
     assert.equal(summary.deferred, 1);
     assert.equal(summary.created, 1, 'classes/ is not a realm here and is written as before');
     assert.ok(!fs.existsSync(path.join(realm, 'bb2dash', 'sessions', `${B}.md`)), 'the deferred note is not written');
-    assert.equal(lines.filter((l) => /realm projects is locked by sync --push pid 4242.*next run/.test(l)).length, 1);
+    assert.equal(lines.filter((l) => /realm projects is locked by sync --push, pid 4242, since .*next run/.test(l)).length, 1);
     assert.equal(fs.readFileSync(held.lockPath, 'utf8'), held.text, 'the holder lock is untouched');
   } finally {
     fx.cleanup();
@@ -392,7 +392,7 @@ test('a free realm is locked for the write and released afterwards', () => {
     fx.addNote('claude/two', `${B}.md`, note({ sessionId: B, collection: 'bb2dash', source: 'git' }));
     const realm = makeRealm(sandbox.vaultRoot, 'projects');
 
-    const summary = runCollect({ repos: [fx.clone], vaultRoot: sandbox.vaultRoot, now: REALM_NOW });
+    const summary = runCollect({ repos: [fx.clone], vaultRoot: sandbox.vaultRoot, clock: () => REALM_NOW });
 
     assert.equal(summary.results[0].action, 'create');
     assert.equal(summary.deferred, 0);
@@ -413,11 +413,11 @@ test('a lock older than 30 minutes is taken over, logged, and released', () => {
     writeSyncLock(realm, new Date(REALM_NOW.getTime() - 31 * MINUTE_MS));
 
     const lines = [];
-    const summary = runCollect({ repos: [fx.clone], vaultRoot: sandbox.vaultRoot, now: REALM_NOW, log: (l) => lines.push(l) });
+    const summary = runCollect({ repos: [fx.clone], vaultRoot: sandbox.vaultRoot, clock: () => REALM_NOW, log: (l) => lines.push(l) });
 
     assert.equal(summary.results[0].action, 'create');
     assert.ok(fs.existsSync(path.join(realm, 'bb2dash', 'sessions', `${B}.md`)));
-    assert.ok(lines.some((l) => /realm projects: took over a stale lock from pid 4242 \(sync --push\), 31 min old/.test(l)), lines.join('\n'));
+    assert.ok(lines.some((l) => /realm projects: took over a stale lock from sync --push, pid 4242, since \S+ \(31 min old\)/.test(l)), lines.join('\n'));
     assert.deepEqual(lockFilesUnder(sandbox.vaultRoot), [], 'no lock, and no stale copy, remains');
   } finally {
     fx.cleanup();
@@ -432,7 +432,7 @@ test('a legacy vault (no .realm anywhere) never gets a lock file', () => {
     fx.addNote('claude/one', `${A}.md`, note({ sessionId: A, collection: 'ist323' }));
     fx.addNote('claude/two', `${B}.md`, note({ sessionId: B, collection: 'bb2dash', source: 'git' }));
 
-    const summary = runCollect({ repos: [fx.clone], vaultRoot: sandbox.vaultRoot, now: REALM_NOW });
+    const summary = runCollect({ repos: [fx.clone], vaultRoot: sandbox.vaultRoot, clock: () => REALM_NOW });
 
     assert.equal(summary.created, 2);
     assert.equal(summary.deferred, 0);
@@ -478,7 +478,7 @@ test('a dry run only peeks at the lock: nothing written, no lock created, the re
     const held = writeSyncLock(realm, REALM_NOW);
 
     const lines = [];
-    const summary = runCollect({ repos: [fx.clone], vaultRoot: sandbox.vaultRoot, dryRun: true, now: REALM_NOW, log: (l) => lines.push(l) });
+    const summary = runCollect({ repos: [fx.clone], vaultRoot: sandbox.vaultRoot, dryRun: true, clock: () => REALM_NOW, log: (l) => lines.push(l) });
 
     assert.equal(summary.results.length, 2);
     for (const result of summary.results) assert.match(result.reason, /realm locked/);
@@ -486,6 +486,61 @@ test('a dry run only peeks at the lock: nothing written, no lock created, the re
     assert.deepEqual(lockFilesUnder(sandbox.vaultRoot), ['projects/.git/harness-sync.lock'], 'only the holder lock exists');
     assert.equal(fs.readFileSync(held.lockPath, 'utf8'), held.text);
     assert.equal(lines.filter((l) => /realm projects is locked by/.test(l)).length, 1, 'logged once per realm');
+  } finally {
+    fx.cleanup();
+    sandbox.cleanup();
+  }
+});
+
+test('a vault whose root is the realm locks at the root: a held root lock defers a projects note', () => {
+  const fx = createFixture();
+  const sandbox = createSandbox();
+  try {
+    fx.addNote('claude/two', `${B}.md`, note({ sessionId: B, collection: 'bb2dash', source: 'git' }));
+    fs.writeFileSync(path.join(sandbox.vaultRoot, '.realm'), 'personal\n', 'utf8');
+    fs.mkdirSync(path.join(sandbox.vaultRoot, '.git'));
+    const held = writeSyncLock(sandbox.vaultRoot, REALM_NOW);
+
+    const summary = runCollect({ repos: [fx.clone], vaultRoot: sandbox.vaultRoot, clock: () => REALM_NOW });
+
+    assert.equal(summary.results[0].action, 'defer', summary.results[0].reason);
+    assert.equal(summary.deferred, 1);
+    assert.ok(!fs.existsSync(path.join(sandbox.vaultRoot, 'projects', 'bb2dash', 'sessions', `${B}.md`)));
+    assert.equal(fs.readFileSync(held.lockPath, 'utf8'), held.text);
+  } finally {
+    fx.cleanup();
+    sandbox.cleanup();
+  }
+});
+
+test('each realm the collector opens reads the clock when its lock is taken, so a later realm is not born old', () => {
+  const fx = createFixture();
+  const sandbox = createSandbox();
+  try {
+    fx.addNote('claude/one', `${A}.md`, note({ sessionId: A, collection: 'ist323' }));
+    fx.addNote('claude/two', `${B}.md`, note({ sessionId: B, collection: 'bb2dash', source: 'git' }));
+    const realms = { projects: makeRealm(sandbox.vaultRoot, 'projects'), classes: makeRealm(sandbox.vaultRoot, 'classes') };
+    const readings = [];
+    const clock = () => {
+      const reading = new Date(REALM_NOW.getTime() + readings.length * 7 * MINUTE_MS);
+      readings.push(reading.toISOString());
+      return reading;
+    };
+    // The log runs while the locks are held, so it can see each one's birth time.
+    const starts = {};
+    const log = () => {
+      for (const [name, dir] of Object.entries(realms)) {
+        const lockPath = path.join(dir, '.git', LOCK_NAME);
+        if (fs.existsSync(lockPath)) starts[name] = JSON.parse(fs.readFileSync(lockPath, 'utf8')).startedAt;
+      }
+    };
+
+    const summary = runCollect({ repos: [fx.clone], vaultRoot: sandbox.vaultRoot, clock, log });
+
+    assert.equal(summary.created, 2);
+    assert.equal(readings.length, 2, 'one reading per realm');
+    assert.deepEqual(Object.values(starts).sort(), [...readings].sort());
+    assert.notEqual(starts.projects, starts.classes);
   } finally {
     fx.cleanup();
     sandbox.cleanup();

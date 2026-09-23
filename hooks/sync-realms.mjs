@@ -73,7 +73,7 @@ export function formatResult({ name, steps, outcome, error, dryRun }) {
   return `${name}: ${words.join(STEP_SEPARATOR)}${error ? ` (${error})` : ''}`;
 }
 
-export function run(argv, { env = process.env, out = console.log, err = console.error, runGit, stat, now } = {}) {
+export function run(argv, { env = process.env, out = console.log, err = console.error, runGit, stat, clock } = {}) {
   const merged = loadMachineEnv(env, os.homedir(), err);
   const parsed = parseArgs(argv, merged);
   if (!parsed.ok) {
@@ -102,7 +102,7 @@ export function run(argv, { env = process.env, out = console.log, err = console.
     dryRun: options.dryRun,
     runGit,
     stat,
-    now,
+    clock,
   });
   for (const result of results) {
     out(formatResult(result));

@@ -12,7 +12,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { isSyncPath } from '../lib/realm-guard.mjs';
-import { parsePorcelainZ, splitBySyncPath, stagedOutsideSync } from '../lib/realm-status.mjs';
+import { isStaged, parsePorcelainZ, splitBySyncPath, stagedOutsideSync } from '../lib/realm-status.mjs';
 
 const SAMPLE = '?? .env\0 M a.md\0R  new.md\0old.md\0A  .env2\0';
 
@@ -44,7 +44,7 @@ test('a malformed record is refused by index, never skipped', () => {
   assert.throws(() => parsePorcelainZ('R  new.md\0'), /record 0.*original path/);
 });
 
-test('splitBySyncPath: a rename counts by its new path; strays are leftover', () => {
+test('splitBySyncPath: a rename with both ends on sync paths is sync; strays are leftover', () => {
   const split = splitBySyncPath(parsePorcelainZ(SAMPLE), isSyncPath);
   assert.deepEqual(split.sync.map((r) => r.path), ['a.md', 'new.md']);
   assert.deepEqual(split.leftover.map((r) => r.path), ['.env', '.env2']);
@@ -56,6 +56,27 @@ test('stagedOutsideSync returns only leftover records someone staged', () => {
   assert.deepEqual(staged.map((r) => r.path), ['.env2']);
   assert.equal(staged[0].x, 'A');
   assert.ok(Object.isFrozen(staged));
+});
+
+test('a rename from outside the sync set is leftover and hand-staged: its commit would delete a non-sync file', () => {
+  const records = parsePorcelainZ('R  notes/n.md\0drafts/n.txt\0');
+  const split = splitBySyncPath(records, isSyncPath);
+  assert.deepEqual(split.sync, []);
+  assert.deepEqual(split.leftover.map((r) => [r.path, r.from]), [['notes/n.md', 'drafts/n.txt']]);
+  assert.deepEqual(stagedOutsideSync(records, isSyncPath).map((r) => r.from), ['drafts/n.txt']);
+});
+
+test('a rename inside the sync set is sync', () => {
+  const records = parsePorcelainZ('R  a/new.md\0a/old.md\0');
+  assert.deepEqual(splitBySyncPath(records, isSyncPath).sync.map((r) => r.path), ['a/new.md']);
+  assert.deepEqual(stagedOutsideSync(records, isSyncPath), []);
+});
+
+test('isStaged is true when the index column holds a change, false for unmodified or untracked', () => {
+  const [staged, worktreeOnly, untracked] = parsePorcelainZ('A  .env\0 M a.md\0?? x.md\0');
+  assert.equal(isStaged(staged), true);
+  assert.equal(isStaged(worktreeOnly), false);
+  assert.equal(isStaged(untracked), false);
 });
 
 test('real git: untracked, modified and hand-staged files parse as expected', () => {

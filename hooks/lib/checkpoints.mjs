@@ -32,8 +32,8 @@ import { runGitSync } from './git-log.mjs';
 import { withLinks } from './links.mjs';
 import { renderNote } from './note.mjs';
 import { ensureIndex, persist, readNote, vaultAvailable } from './notes-io.mjs';
-import { acquireRealmLock, lockPathFor, peekRealmLock, REALM_LOCK_STALE_MS, releaseRealmLock } from './realm-lock.mjs';
-import { realmDir } from './realm-sync.mjs';
+import { acquireRealmLock, describeHolder, holderAgeMinutes, lockPathFor, peekRealmLock, REALM_LOCK_STALE_MS, releaseRealmLock } from './realm-lock.mjs';
+import { realmRootFor } from './realm-sync.mjs';
 import { redact } from './redact.mjs';
 import { isSafeFilenameSegment, slugify, toPosix } from './text.mjs';
 
@@ -289,15 +289,13 @@ function relativeNotePath(placement, sessionId) {
  * `{ open, name, lock }` — `lock` is `{ lockPath, token }` when we hold it.
  */
 
-/** The realm root for an area, or '' when there is nothing to lock (legacy vault, or not a checkout). */
+/**
+ * The realm root for an area, or '' when there is nothing to lock (legacy
+ * vault, or not a checkout). A vault whose root is the realm locks at the root.
+ */
 function lockableRealm(vaultRoot, area) {
-  const root = realmDir(vaultRoot, area);
+  const root = realmRootFor(vaultRoot, area);
   return root && lockPathFor(root) ? root : '';
-}
-
-function describeHolder(holder) {
-  if (!holder) return 'an unreadable lock';
-  return `${holder.owner || 'unknown owner'} pid ${holder.pid ?? 'unknown'} since ${holder.startedAt || 'unknown'}`;
 }
 
 function logHeld(log, name, holder) {
@@ -316,10 +314,7 @@ function acquireGate(realmRoot, name, { now, log }) {
   const acquired = acquireRealmLock(realmRoot, { owner: LOCK_OWNER, pid: process.pid, now });
   if (acquired.ok) {
     const stale = acquired.takenOver;
-    if (stale) {
-      const minutes = Math.floor(stale.ageMs / MS_PER_MINUTE);
-      log(`realm ${name}: took over a stale lock from pid ${stale.pid ?? 'unknown'} (${stale.owner || 'unknown owner'}), ${minutes} min old`);
-    }
+    if (stale) log(`realm ${name}: took over a stale lock from ${describeHolder(stale)} (${holderAgeMinutes(stale)} min old)`);
     return Object.freeze({ open: true, name, lock: Object.freeze({ lockPath: acquired.lockPath, token: acquired.token }) });
   }
   // A lock we could not take, for any reason, means we do not write there.
@@ -333,12 +328,13 @@ function acquireGate(realmRoot, name, { now, log }) {
  * iteration. Returns `{ gate, gates }`: `gate` is null when no lock applies,
  * and `gates` is a new Map when a realm was seen for the first time.
  */
-function gateFor(gates, { vaultRoot, area, dryRun, now, log }) {
+function gateFor(gates, { vaultRoot, area, dryRun, clock, log }) {
   const realmRoot = lockableRealm(vaultRoot, area);
   if (!realmRoot) return { gate: null, gates };
   if (gates.has(realmRoot)) return { gate: gates.get(realmRoot), gates };
   const open = dryRun ? peekGate : acquireGate;
-  const gate = open(realmRoot, area, { now, log });
+  // Read the clock as the lock is taken: a realm reached late in the run is not born old.
+  const gate = open(realmRoot, area, { now: clock(), log });
   return { gate, gates: new Map([...gates, [realmRoot, gate]]) };
 }
 
@@ -356,9 +352,10 @@ function releaseGates(gates, log) {
 /**
  * The whole collection: every repo, every ref, every note, into the vault.
  * Repos that are missing are reported and skipped; nothing here throws for
- * one repo's sake. `now` is the clock the realm lock is judged by.
+ * one repo's sake. `clock()` is read as each realm's lock is taken or peeked
+ * at, and that reading both stamps the lock and judges a holder's age.
  */
-export function runCollect({ repos, vaultRoot, dryRun = false, fetch = true, authors = [], runGit = runGitSync, log = () => {}, now = new Date() }) {
+export function runCollect({ repos, vaultRoot, dryRun = false, fetch = true, authors = [], runGit = runGitSync, log = () => {}, clock = () => new Date() }) {
   if (!vaultAvailable(vaultRoot)) throw new Error(`vaultRoot is not available: ${vaultRoot}`);
   const allowedAuthors = new Set(authors.map((email) => String(email).trim().toLowerCase()).filter(Boolean));
 
@@ -377,7 +374,7 @@ export function runCollect({ repos, vaultRoot, dryRun = false, fetch = true, aut
     summary.errors += gathered.errors;
     summary.found += gathered.notes.length;
 
-    collectRepoNotes({ repoRoot, notes: gathered.notes, vaultRoot, dryRun, allowedAuthors, now, log, summary });
+    collectRepoNotes({ repoRoot, notes: gathered.notes, vaultRoot, dryRun, allowedAuthors, clock, log, summary });
   }
 
   return summary;
@@ -388,7 +385,7 @@ export function runCollect({ repos, vaultRoot, dryRun = false, fetch = true, aut
  * released before this returns, so none is held across the next repo's fetch
  * (up to 120 s).
  */
-function collectRepoNotes({ repoRoot, notes, vaultRoot, dryRun, allowedAuthors, now, log, summary }) {
+function collectRepoNotes({ repoRoot, notes, vaultRoot, dryRun, allowedAuthors, clock, log, summary }) {
   let gates = new Map();
   try {
     for (const note of notes) {
@@ -401,7 +398,7 @@ function collectRepoNotes({ repoRoot, notes, vaultRoot, dryRun, allowedAuthors, 
       }
 
       const placement = resolvePlacement(vaultRoot, checked.fields);
-      const opened = gateFor(gates, { vaultRoot, area: placement.area, dryRun, now, log });
+      const opened = gateFor(gates, { vaultRoot, area: placement.area, dryRun, clock, log });
       gates = opened.gates;
       const filed = fileThroughGate({ gate: opened.gate, vaultRoot, checked, placement, dryRun });
       recordFiled(summary, { repoRoot, note, filed });

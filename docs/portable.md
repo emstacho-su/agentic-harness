@@ -128,7 +128,7 @@ projects: committed -> conflict (merge with origin/main conflicts in note.md; ab
 projects: locked (held by sync --push, pid 4242, since 2026-09-23T03:00:05.000Z)
 projects: reported: …
 projects: not staged: …
-projects: lock: taken over from pid …
+projects: lock: taken over from sync --push, pid 4242, since … (31 min old)
 projects: identity: git config (set HARNESS_MACHINE and HARNESS_GIT_EMAIL)
 ```
 
@@ -147,7 +147,11 @@ Exit 2 on a conflict, an error, a refusal or a held lock.
   `HARNESS_MACHINE` and `HARNESS_GIT_EMAIL`; if either is unset, git's own config applies
   and the `identity:` note says so. Every git call runs with `GCM_INTERACTIVE=never` and
   `GIT_TERMINAL_PROMPT=0`, so a missing or expired credential is an exit-2 line
-  containing the word `credential`, never a prompt nobody sees.
+  containing the word `credential`, never a prompt nobody sees. An SSH remote gets
+  `GIT_SSH_COMMAND=ssh -o BatchMode=yes` unless `GIT_SSH_COMMAND` or `GIT_SSH` is already
+  set in the environment (that variable overrides a `core.sshCommand` in git config, so a
+  machine that picks its ssh through git config should set it in the environment too).
+  The push goes to the branch's configured upstream, not to a branch of the local name.
 
 ## Runbook: a second machine (the Windows dev VM)
 

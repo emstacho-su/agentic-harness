@@ -17,8 +17,12 @@ import {
   REALM_LOCK_FILENAME,
   REALM_LOCK_STALE_MS,
   acquireRealmLock,
+  describeHolder,
+  gitDirKind,
+  holderAgeMinutes,
   lockPathFor,
   peekRealmLock,
+  putBackOutcome,
   releaseRealmLock,
 } from '../lib/realm-lock.mjs';
 
@@ -133,6 +137,44 @@ test('lockPathFor needs .git to be a directory', (t) => {
   assert.equal(lockPathFor(s.realm), s.lockPath);
   const refused = acquireRealmLock(bare, { owner: 'a' });
   assert.deepEqual({ ...refused }, { ok: false, reason: 'error', error: 'not a git checkout' });
+});
+
+test('gitDirKind tells a .git directory from a .git file from nothing', (t) => {
+  const s = scratch();
+  t.after(s.cleanup);
+  const bare = path.join(s.root, 'no-git');
+  fs.mkdirSync(bare);
+  const worktree = path.join(s.root, 'worktree');
+  fs.mkdirSync(worktree);
+  fs.writeFileSync(path.join(worktree, '.git'), 'gitdir: elsewhere\n');
+  assert.equal(gitDirKind(s.realm), 'directory');
+  assert.equal(gitDirKind(worktree), 'file');
+  assert.equal(gitDirKind(bare), 'none');
+  assert.equal(gitDirKind(path.join(s.root, 'missing')), 'none');
+});
+
+test('putBackOutcome: a put-back that lost to a third contender keeps the aside copy and says contended', () => {
+  const holder = Object.freeze({ pid: 7, owner: 'collector', startedAt: '2026-09-23T03:00:00.000Z', ageMs: 0 });
+  const restored = putBackOutcome({ wrote: true, holder });
+  assert.equal(restored.keepAside, false, 'the fresh lock is back in place; the copy is redundant');
+  assert.deepEqual({ ...restored.result }, { ok: false, reason: 'held', holder });
+
+  const contended = putBackOutcome({ wrote: false, code: 'EEXIST', holder });
+  assert.equal(contended.keepAside, true, "the aside file is the only copy of the fresh holder's lock");
+  assert.deepEqual({ ...contended.result }, { ok: false, reason: 'error', error: 'lock contended' });
+
+  const broken = putBackOutcome({ wrote: false, code: 'EACCES', holder });
+  assert.equal(broken.keepAside, true);
+  assert.deepEqual({ ...broken.result }, { ok: false, reason: 'error', error: 'EACCES' });
+  for (const outcome of [restored, contended, broken]) assert.ok(Object.isFrozen(outcome) && Object.isFrozen(outcome.result));
+});
+
+test('describeHolder and holderAgeMinutes: one wording for a lock holder, unknowns spelled out', () => {
+  const known = { pid: 4242, owner: 'sync --push', startedAt: '2026-09-23T02:29:00.000Z', ageMs: 31 * MINUTE_MS - 20_000 };
+  assert.equal(describeHolder(known), 'sync --push, pid 4242, since 2026-09-23T02:29:00.000Z');
+  assert.equal(describeHolder({ pid: null, owner: '', startedAt: '', ageMs: 0 }), 'unknown owner, pid unknown, since unknown');
+  assert.equal(describeHolder(null), 'an unreadable lock file');
+  assert.equal(holderAgeMinutes(known), 31, 'rounded, not floored');
 });
 
 test('peek reads without writing', (t) => {

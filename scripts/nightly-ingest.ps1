@@ -79,8 +79,10 @@ $ErrorActionPreference = 'Stop'
 
 # node prints UTF-8. Without this, PowerShell 5.1 decodes captured child output as
 # the OEM code page and `café.md` or `…` reach the log as mojibake.
-# A run with no console handle cannot set it; the log is then only less readable.
-try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+# A run with no console handle cannot set it; the log is then only less readable,
+# and says so once the logger exists (Write-Log is defined further down).
+$encodingNote = ''
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { $encodingNote = "console output encoding not set ($($_.Exception.Message)); non-ASCII in child output may log as mojibake" }
 
 # Keep one night's worth of detail without letting the file grow forever.
 $LogMaxBytes = 1MB
@@ -237,6 +239,7 @@ function Invoke-Ingest {
 # --------------------------------------------------------------------------
 
 Write-Log '=== nightly reconcile starting ==='
+if ($encodingNote) { Write-Log $encodingNote }
 
 if (-not (Test-Path $VaultPath)) {
     Write-Log "FATAL vault not found: $VaultPath"

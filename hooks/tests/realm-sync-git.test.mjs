@@ -136,6 +136,24 @@ test('real git: a conflict is aborted, B keeps its commit and tree, the remote i
   }
 });
 
+test('real git: a local branch with another name pushes to the branch it tracks', () => {
+  const s = scratch();
+  try {
+    const { remote, a } = twoMachines(s);
+    s.git(['checkout', '-q', '-b', 'work', '--track', 'origin/main'], a.dir);
+    const before = s.git(['rev-parse', 'main'], remote).trim();
+    fs.writeFileSync(path.join(a.dir, 'note.md'), '# from work\n');
+    const result = syncAs(s, 'a', a.vault);
+    assert.deepEqual([result.steps, result.outcome], [['committed', 'pulled', 'pushed'], 'ok'], result.error);
+    const after = s.git(['rev-parse', 'main'], remote).trim();
+    assert.notEqual(after, before, "the remote's main advanced");
+    assert.equal(after, s.git(['rev-parse', 'HEAD'], a.dir).trim());
+    assert.equal(s.git(['branch', '--list', 'work'], remote).trim(), '', 'no branch named work appeared on the remote');
+  } finally {
+    s.cleanup();
+  }
+});
+
 test('real git: a stray .env stays home, untracked, and is named', () => {
   const s = scratch();
   try {

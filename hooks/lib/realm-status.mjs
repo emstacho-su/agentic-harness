@@ -52,17 +52,28 @@ export function parsePorcelainZ(stdout) {
 }
 
 /**
- * The records the sync stages, and the rest. A rename counts by its new
- * path: that is the file that would land in the commit.
+ * Whether a record belongs to the sync set. Both ends of a rename or copy
+ * must: a rename from `drafts/n.txt` to `notes/n.md` commits the deletion of
+ * a file the sync never stages, so it is not the sync's to carry.
  */
+function isSyncRecord(record, isSyncPath) {
+  return isSyncPath(record.path) && (!record.from || isSyncPath(record.from));
+}
+
+/** The records the sync stages, and the rest. */
 export function splitBySyncPath(records, isSyncPath) {
-  const sync = records.filter((record) => isSyncPath(record.path));
-  const leftover = records.filter((record) => !isSyncPath(record.path));
+  const sync = records.filter((record) => isSyncRecord(record, isSyncPath));
+  const leftover = records.filter((record) => !isSyncRecord(record, isSyncPath));
   return Object.freeze({ sync: Object.freeze(sync), leftover: Object.freeze(leftover) });
+}
+
+/** Whether the index column holds a change: something is staged for this record. */
+export function isStaged(record) {
+  return !UNSTAGED_INDEX.has(record.x);
 }
 
 /** Leftover records with something in the index: staged by hand outside the sync set. */
 export function stagedOutsideSync(records, isSyncPath) {
   const { leftover } = splitBySyncPath(records, isSyncPath);
-  return Object.freeze(leftover.filter((record) => !UNSTAGED_INDEX.has(record.x)));
+  return Object.freeze(leftover.filter(isStaged));
 }

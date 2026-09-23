@@ -14,6 +14,16 @@
  *
  * There is no PID liveness check. Windows reuses PIDs quickly and a probe that
  * fails with EPERM says nothing either way; age is the only honest signal.
+ *
+ * One race is left. A taker renames the stale file aside, finds a fresh lock
+ * in its hands (written after it judged), and puts that lock back. Between the
+ * rename and the put-back the path is empty, and a third contender can create
+ * its own lock there. The put-back then fails with EEXIST and two writers
+ * believe they hold the realm. The taker keeps the aside copy — the only copy
+ * of the fresh holder's lock — and reports the lock as contended rather than
+ * held. The fresh holder's release will find a token that is not its own and
+ * leave the third one's lock alone. It needs three writers inside one rename,
+ * against a realm with two writers a night.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -38,18 +48,45 @@ const UNLINK_RETRIES = 3;
 const UNLINK_RETRY_DELAY_MS = 50;
 
 const NOT_A_CHECKOUT = 'not a git checkout';
+const CONTENDED = 'lock contended';
+
+const MINUTE_MS = 60_000;
+
+/**
+ * What `<realmRoot>/.git` is: 'directory' (a plain checkout), 'file' (a
+ * worktree or submodule pointer), or 'none'. Only a directory may be locked
+ * and synced.
+ *
+ * @returns {'directory'|'file'|'none'}
+ */
+export function gitDirKind(realmRoot) {
+  try {
+    return fs.statSync(path.join(realmRoot, '.git')).isDirectory() ? 'directory' : 'file';
+  } catch {
+    return 'none'; // No .git (or unreadable): not a checkout.
+  }
+}
 
 /**
  * `<realmRoot>/.git/harness-sync.lock`, or '' when `.git` is not a directory:
  * a `.git` file (worktree, submodule) or no `.git` at all means no lock applies.
  */
 export function lockPathFor(realmRoot) {
-  const gitDir = path.join(realmRoot, '.git');
-  try {
-    return fs.statSync(gitDir).isDirectory() ? path.join(gitDir, REALM_LOCK_FILENAME) : '';
-  } catch {
-    return ''; // No .git (or unreadable): not a checkout we may lock.
-  }
+  return gitDirKind(realmRoot) === 'directory' ? path.join(realmRoot, '.git', REALM_LOCK_FILENAME) : '';
+}
+
+/**
+ * `sync --push, pid 4242, since 2026-09-23T02:29:00.000Z`: the one way the
+ * sync and the collector name a lock holder. Unknown parts are spelled out.
+ */
+export function describeHolder(holder) {
+  if (!holder) return 'an unreadable lock file';
+  return `${holder.owner || 'unknown owner'}, pid ${holder.pid ?? 'unknown'}, since ${holder.startedAt || 'unknown'}`;
+}
+
+/** How old a holder's lock is, in whole minutes, rounded. */
+export function holderAgeMinutes(holder) {
+  return Math.round(holder.ageMs / MINUTE_MS);
 }
 
 function errorOf(err) {
@@ -111,6 +148,31 @@ function failed(error) {
 }
 
 /**
+ * What to do after putting a fresh lock back that we moved aside by mistake.
+ * `wrote` says whether the exclusive write succeeded; `code` is its error code
+ * when it did not. Only a successful put-back makes the aside copy redundant:
+ * on EEXIST a third contender took the empty path, and on any other failure
+ * the lock is nowhere else, so the copy stays either way (see the module note).
+ *
+ * @returns {{keepAside: boolean, result: object}} frozen
+ */
+export function putBackOutcome({ wrote, code = '', holder = null }) {
+  if (wrote) return Object.freeze({ keepAside: false, result: held(holder) });
+  const error = code === 'EEXIST' ? CONTENDED : code || 'unknown';
+  return Object.freeze({ keepAside: true, result: failed(error) });
+}
+
+/** Put a fresh lock's text back with an exclusive write; frozen `{ wrote, code }`. */
+function putBack(lockPath, text) {
+  try {
+    fs.writeFileSync(lockPath, text, { flag: 'wx' });
+    return Object.freeze({ wrote: true, code: '' });
+  } catch (err) {
+    return Object.freeze({ wrote: false, code: errorOf(err) });
+  }
+}
+
+/**
  * Move a stale lock aside and make sure it was the one we judged. Returns
  * `{ step: 'retry' }` to loop, `{ step: 'done', result }` to stop.
  */
@@ -125,13 +187,9 @@ function evictStale(lockPath, judged, { pid, now }) {
   const moved = readHolder(aside, now);
   if (moved.ok && moved.token !== judged.token) {
     // We grabbed a fresh lock someone wrote after we judged. Put it back.
-    try {
-      fs.writeFileSync(lockPath, moved.text, { flag: 'wx' });
-    } catch (err) {
-      if (err?.code !== 'EEXIST') return { step: 'done', result: failed(errorOf(err)) };
-    }
-    removeAside(aside);
-    return { step: 'done', result: held(moved.holder) };
+    const outcome = putBackOutcome({ ...putBack(lockPath, moved.text), holder: moved.holder });
+    if (!outcome.keepAside) removeAside(aside);
+    return { step: 'done', result: outcome.result };
   }
   removeAside(aside);
   return { step: 'retry' };
@@ -165,7 +223,7 @@ export function acquireRealmLock(realmRoot, { owner, pid = process.pid, now = ne
     if (evicted.step === 'done') return evicted.result;
     takenOver = current.holder;
   }
-  return failed('lock contended');
+  return failed(CONTENDED);
 }
 
 /** Unlink with a short retry for the transient Windows sharing errors. */
