@@ -5,10 +5,17 @@
  *   node hooks/sync-realms.mjs --pull [--dry-run]     # before the night's work
  *   node hooks/sync-realms.mjs --push [--dry-run]     # after it
  *
- * Reads HARNESS_VAULT and HARNESS_REALMS (from the environment or
- * ~/.harness/machine.env). Exit 0 when every realm is in order, 2 when one
- * needs a person (a conflict, a failed push, a path the guard refused), 1 on
- * a usage error. Nothing is ever forced; see lib/realm-sync.mjs.
+ * Per realm, under its lock: commit the sync paths, merge-pull, and (with
+ * `--push`, for a `push` realm) push. Never forced, rebased or stashed; a
+ * conflicting merge is aborted and reported. Author and committer are
+ * HARNESS_MACHINE and HARNESS_GIT_EMAIL; credential prompts are off, so a
+ * missing credential fails at once. See lib/realm-sync.mjs for the rules.
+ *
+ * Reads HARNESS_VAULT, HARNESS_REALMS, HARNESS_MACHINE and HARNESS_GIT_EMAIL
+ * (from the environment or ~/.harness/machine.env). Prints one line per realm,
+ * `projects: committed -> pulled -> pushed`, then one line per note. Exit 0
+ * when every realm is in order, 2 when one needs a person (a conflict, an
+ * error, a refused path, a lock someone else holds), 1 on a usage error.
  */
 
 import os from 'node:os';
@@ -16,15 +23,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { DEFAULT_VAULT_SEGMENTS, VAULT_ENV_VAR } from './lib/constants.mjs';
-import { loadMachineEnv, machineName } from './lib/machine-env.mjs';
-import { parseRealmPolicies, pullRealms, pushRealms } from './lib/realm-sync.mjs';
+import { gitEmail, loadMachineEnv, machineName } from './lib/machine-env.mjs';
+import { parseRealmPolicies, syncRealms } from './lib/realm-sync.mjs';
 
 const EXIT_OK = 0;
 const EXIT_USAGE = 1;
 const EXIT_ATTENTION = 2;
 
-/** Result actions that end the run with exit 2: a person has to look. */
-const NEEDS_A_PERSON = new Set(['conflict', 'error', 'refused', 'would-refuse']);
+/** Outcomes that end the run with exit 2: a person has to look. */
+const NEEDS_A_PERSON = new Set(['conflict', 'error', 'refused', 'locked']);
+
+/** ASCII on purpose: the PowerShell job decodes node's output in the OEM code page. */
+const STEP_SEPARATOR = ' -> ';
 
 const USAGE = `usage: node hooks/sync-realms.mjs (--pull | --push) [--vault <dir>] [--dry-run]`;
 
@@ -52,9 +62,20 @@ export function parseArgs(argv, env = process.env, home = os.homedir()) {
   return { ok: true, options };
 }
 
-export function run(argv, { env = process.env, out = console.log, err = console.error } = {}) {
-  env = loadMachineEnv(env, os.homedir(), err);
-  const parsed = parseArgs(argv, env);
+/**
+ * The realm's line: its steps, then the outcome when it is not `ok` (a dry
+ * run that would be refused says `would-refuse`), then the error.
+ */
+export function formatResult({ name, steps, outcome, error, dryRun }) {
+  if (outcome === 'skip') return `${name}: skip (${error})`;
+  const shownOutcome = outcome === 'refused' && dryRun ? 'would-refuse' : outcome;
+  const words = outcome === 'ok' ? [...steps] : [...steps, shownOutcome];
+  return `${name}: ${words.join(STEP_SEPARATOR)}${error ? ` (${error})` : ''}`;
+}
+
+export function run(argv, { env = process.env, out = console.log, err = console.error, runGit, stat, now } = {}) {
+  const merged = loadMachineEnv(env, os.homedir(), err);
+  const parsed = parseArgs(argv, merged);
   if (!parsed.ok) {
     err(`error: ${parsed.error}\n${USAGE}`);
     return EXIT_USAGE;
@@ -72,18 +93,22 @@ export function run(argv, { env = process.env, out = console.log, err = console.
     return EXIT_OK;
   }
 
-  const results =
-    options.mode === 'pull'
-      ? pullRealms({ vaultRoot: options.vaultRoot, policies, dryRun: options.dryRun })
-      : pushRealms({ vaultRoot: options.vaultRoot, policies, machine: machineName(env), dryRun: options.dryRun });
-
-  let attention = 0;
+  const results = syncRealms({
+    vaultRoot: options.vaultRoot,
+    policies,
+    mode: options.mode,
+    machine: machineName(merged),
+    email: gitEmail(merged),
+    dryRun: options.dryRun,
+    runGit,
+    stat,
+    now,
+  });
   for (const result of results) {
-    out(`${result.name}: ${result.action}${result.error ? ` (${result.error})` : ''}`);
-    if (result.notes) out(`${result.name}: reported: ${result.notes}`);
-    if (NEEDS_A_PERSON.has(result.action)) attention += 1;
+    out(formatResult(result));
+    for (const note of result.notes) out(`${result.name}: ${note}`);
   }
-  return attention ? EXIT_ATTENTION : EXIT_OK;
+  return results.some((result) => NEEDS_A_PERSON.has(result.outcome)) ? EXIT_ATTENTION : EXIT_OK;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
