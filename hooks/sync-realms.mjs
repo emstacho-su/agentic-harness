@@ -7,8 +7,8 @@
  *
  * Reads HARNESS_VAULT and HARNESS_REALMS (from the environment or
  * ~/.harness/machine.env). Exit 0 when every realm is in order, 2 when one
- * needs a person (a conflict, a failed push), 1 on a usage error. Nothing is
- * ever forced; see lib/realm-sync.mjs.
+ * needs a person (a conflict, a failed push, a path the guard refused), 1 on
+ * a usage error. Nothing is ever forced; see lib/realm-sync.mjs.
  */
 
 import os from 'node:os';
@@ -22,6 +22,9 @@ import { parseRealmPolicies, pullRealms, pushRealms } from './lib/realm-sync.mjs
 const EXIT_OK = 0;
 const EXIT_USAGE = 1;
 const EXIT_ATTENTION = 2;
+
+/** Result actions that end the run with exit 2: a person has to look. */
+const NEEDS_A_PERSON = new Set(['conflict', 'error', 'refused', 'would-refuse']);
 
 const USAGE = `usage: node hooks/sync-realms.mjs (--pull | --push) [--vault <dir>] [--dry-run]`;
 
@@ -77,7 +80,8 @@ export function run(argv, { env = process.env, out = console.log, err = console.
   let attention = 0;
   for (const result of results) {
     out(`${result.name}: ${result.action}${result.error ? ` (${result.error})` : ''}`);
-    if (result.action === 'conflict' || result.action === 'error') attention += 1;
+    if (result.notes) out(`${result.name}: reported: ${result.notes}`);
+    if (NEEDS_A_PERSON.has(result.action)) attention += 1;
   }
   return attention ? EXIT_ATTENTION : EXIT_OK;
 }

@@ -17,12 +17,16 @@
  *      and said so — it is the ordinary state of a machine that holds fewer
  *      realms than the policy names.
  *   4. Git is never run in a directory whose `.realm` does not name the realm.
+ *   5. Nothing is staged until every candidate path has passed the guard
+ *      (`realm-guard.mjs`): a name one platform rejects or a file over the
+ *      ceiling refuses the realm for the night, and says which path.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 
 import { runGitSync } from './git-log.mjs';
+import { scanRealm } from './realm-guard.mjs';
 
 export const REALM_MARKER = '.realm';
 export const REALM_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -100,12 +104,21 @@ export function pullRealms({ vaultRoot, policies, dryRun = false, runGit = runGi
   });
 }
 
+/** How many refused paths are named in the one-line error before `…`. */
+const REFUSALS_SHOWN = 3;
+
 /**
  * Commit every realm's changes; push the ones whose policy allows it.
  *
- * @returns {{name: string, action: string, error: string}[]}
+ * Before anything is staged, every path that *would* be staged (tracked and
+ * untracked-not-ignored) goes through the guard: a name one platform rejects
+ * or a file over the ceiling refuses the whole realm, with nothing staged, so
+ * a person fixes the name rather than every later pull failing (R-A3, R-A4).
+ * What the guard merely reports rides along in `notes`.
+ *
+ * @returns {{name: string, action: string, error: string, notes?: string}[]}
  */
-export function pushRealms({ vaultRoot, policies, machine = '', dryRun = false, runGit = runGitSync, now = new Date() }) {
+export function pushRealms({ vaultRoot, policies, machine = '', dryRun = false, runGit = runGitSync, stat = fileSize, now = new Date() }) {
   const message = `harness: sync${machine ? ` from ${machine}` : ''} ${now.toISOString()}`;
   return policies.map(({ name, policy }) => {
     const dir = realmDir(vaultRoot, name);
@@ -117,8 +130,14 @@ export function pushRealms({ vaultRoot, policies, machine = '', dryRun = false, 
     if (!status.ok) return { name, action: 'error', error: `git status failed (${status.error})` };
     const dirty = status.stdout.trim() !== '';
 
+    let notes = '';
+    if (dirty) {
+      const guard = guardRealm(dir, runGit, stat);
+      if (guard.action) return { name, action: dryRun && guard.action === 'refused' ? 'would-refuse' : guard.action, error: guard.error };
+      notes = guard.notes;
+    }
     if (dryRun) {
-      return { name, action: dirty ? (policy === 'push' ? 'would-commit-and-push' : 'would-commit') : 'clean', error: '' };
+      return { name, action: dirty ? (policy === 'push' ? 'would-commit-and-push' : 'would-commit') : 'clean', error: '', notes };
     }
     if (dirty) {
       const added = runGit(['add', '-A'], { cwd: dir, timeoutMs: SYNC_GIT_TIMEOUT_MS });
@@ -126,10 +145,33 @@ export function pushRealms({ vaultRoot, policies, machine = '', dryRun = false, 
       const committed = runGit(['commit', '--quiet', '-m', message], { cwd: dir, timeoutMs: SYNC_GIT_TIMEOUT_MS });
       if (!committed.ok) return { name, action: 'error', error: `git commit failed (${committed.error}); is user.name/user.email set?` };
     }
-    if (policy !== 'push') return { name, action: dirty ? 'committed' : 'clean', error: '' };
+    if (policy !== 'push') return { name, action: dirty ? 'committed' : 'clean', error: '', notes };
 
     const pushed = runGit(['push', '--quiet'], { cwd: dir, timeoutMs: SYNC_FETCH_TIMEOUT_MS });
     if (!pushed.ok) return { name, action: 'error', error: `git push failed (${pushed.error}); pull first, or check the remote` };
-    return { name, action: dirty ? 'committed-and-pushed' : 'pushed', error: '' };
+    return { name, action: dirty ? 'committed-and-pushed' : 'pushed', error: '', notes };
   });
+}
+
+/**
+ * Run the guard over what `git add` would take. `-z`: NUL-separated, so a
+ * name with a space, a quote or a non-ASCII letter comes back as it is on
+ * disk rather than C-quoted.
+ *
+ * @returns {{action: 'refused'|'error'|'', error: string, notes: string}}
+ */
+function guardRealm(dir, runGit, stat) {
+  const listed = runGit(['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: dir, timeoutMs: SYNC_GIT_TIMEOUT_MS });
+  if (!listed.ok) return { action: 'error', error: `git ls-files failed (${listed.error})`, notes: '' };
+  const relPaths = listed.stdout.split('\0').filter(Boolean);
+  const { refused, reported } = scanRealm(relPaths, (relPath) => stat(path.join(dir, relPath)));
+  const notes = reported.map((r) => `${r.path}: ${r.reason}`).join('; ');
+  if (refused.length === 0) return { action: '', error: '', notes };
+  const shown = refused.slice(0, REFUSALS_SHOWN).map((r) => `${r.path}: ${r.reason}`).join('; ');
+  const more = refused.length > REFUSALS_SHOWN ? `; …${refused.length - REFUSALS_SHOWN} more` : '';
+  return { action: 'refused', error: `${refused.length} path(s) refused: ${shown}${more}`, notes };
+}
+
+function fileSize(file) {
+  return fs.statSync(file).size;
 }
