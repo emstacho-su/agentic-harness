@@ -13,6 +13,7 @@ import {
   ATTACHMENTS_DIR,
   ATTACHMENT_REFUSE_BYTES,
   ATTACHMENT_REPORT_BYTES,
+  PATH_REPORT_CHARS,
   checkName,
   checkSize,
   scanRealm,
@@ -38,6 +39,10 @@ test('R-A3: names one platform rejects are refused with the reason', () => {
     ['com1.txt', /Windows device name 'COM1'/],
     ['lpt9/x.md', /Windows device name 'LPT9'/],
     ['Aux.tar.gz', /Windows device name 'AUX'/],
+    ['COM0.md', /Windows device name 'COM0'/],
+    ['lpt0', /Windows device name 'LPT0'/],
+    ['com¹.md', /Windows device name 'COM¹'/],
+    ['a\\b.md', /reserved character '\\'/],
     ['café.md', /not in Unicode NFC/],
     ['sub/résumé/x.md', /not in Unicode NFC/],
   ];
@@ -92,14 +97,42 @@ test('scanRealm sorts refusals and reports, keys them by path, and does not touc
   assert.ok(Object.isFrozen(result.refused) && Object.isFrozen(result.reported));
 });
 
-test('scanRealm: a path whose size cannot be read is refused, not skipped', () => {
-  const result = scanRealm(['gone.md'], () => {
-    throw new Error('ENOENT');
+test('scanRealm: a tracked file deleted from the tree is a deletion to stage, not a refusal', () => {
+  const enoent = Object.assign(new Error('no such file'), { code: 'ENOENT' });
+  const result = scanRealm(['gone.md', 'a/ok.md'], (p) => {
+    if (p === 'gone.md') throw enoent;
+    return 10;
+  });
+  assert.deepEqual(result, { refused: [], reported: [] });
+});
+
+test('scanRealm: any other size failure is refused, not skipped', () => {
+  const eacces = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+  const result = scanRealm(['locked.md'], () => {
+    throw eacces;
   });
   assert.equal(result.refused.length, 1);
-  assert.match(result.refused[0].reason, /size unreadable/);
+  assert.match(result.refused[0].reason, /size unreadable \(EACCES\)/);
 });
 
 test('scanRealm on an empty realm is empty', () => {
   assert.deepEqual(scanRealm([], () => 0), { refused: [], reported: [] });
+});
+
+test('R-A3: two names that differ only by case are one file on Windows and macOS, so the second is refused', () => {
+  const result = scanRealm(['note.md', 'Note.md', 'Sub/A.md', 'sub/a.md', 'other.md'], () => 10);
+  assert.deepEqual(result.refused.map((r) => r.path), ['Note.md', 'sub/a.md']);
+  assert.match(result.refused[0].reason, /collides with 'note\.md' on a case-insensitive filesystem/);
+  assert.match(result.refused[1].reason, /collides with 'Sub\/A\.md'/);
+  assert.deepEqual(result.reported, []);
+});
+
+test('a path too long for a default Windows checkout is reported, not refused', () => {
+  assert.equal(PATH_REPORT_CHARS, 200);
+  const long = `${'a'.repeat(PATH_REPORT_CHARS - 2)}.md`;
+  assert.equal(long.length, PATH_REPORT_CHARS + 1);
+  const result = scanRealm([long, long.slice(1)], () => 10);
+  assert.deepEqual(result.refused, []);
+  assert.equal(result.reported.length, 1);
+  assert.match(result.reported[0].reason, /201 chars.*260/);
 });

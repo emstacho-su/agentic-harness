@@ -74,9 +74,11 @@ preceded by `git add --renormalize .`:
   `git status --porcelain` empty in every realm.
 - **Names one platform rejects are refused before they are committed.** Before anything
   is staged, `sync-realms.mjs --push` lists what `git add` would take and refuses the
-  realm (exit 2, nothing staged, the path named) if any path contains `< > : " | ? *` or
-  a control character, has a segment ending in a space or a period, is a Windows device
-  name (`CON`, `NUL`, `COM1`…, with or without an extension), or is not in Unicode NFC.
+  realm (exit 2, nothing staged, the path named) if any path contains `< > : " | ? *`, a
+  backslash or a control character, has a segment ending in a space or a period, is a
+  Windows device name (`CON`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, with or without an
+  extension), is not in Unicode NFC, or differs only by case from another path in the
+  realm (one file on Windows and macOS, two on Linux).
   Git for Windows refuses such paths at checkout, which blocks the whole pull on the
   other machine; an NFD name committed from a Mac can only be fixed by removing and
   re-adding. A case-only rename is two steps, because Windows and macOS do not see the
@@ -84,8 +86,11 @@ preceded by `git add --renormalize .`:
 - **Attachments have a size ceiling and a home.** A file over 25 MiB is refused the same
   way; anything over 5 MiB, and any non-markdown outside `<realm>/attachments/` other than
   the three policy files and `.obsidian/*.json`, is reported on a `reported:` line but
-  still committed. GitHub rejects over 100 MB and one such commit blocks every later push
-  until history is rewritten. The rules live in `hooks/lib/realm-guard.mjs`.
+  still committed; so is a path over 200 characters, which a default Git for Windows
+  fails to check out once the vault prefix is added. GitHub rejects over 100 MB and one
+  such commit blocks every later push until history is rewritten. The rules live in
+  `hooks/lib/realm-guard.mjs`. Deleting a note is an ordinary edit: it is staged as a
+  deletion, never refused.
 
 ## Runbook: a second machine (the Windows dev VM)
 

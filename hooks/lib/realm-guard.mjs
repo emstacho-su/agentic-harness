@@ -28,12 +28,29 @@ const POLICY_FILES = new Set(['.realm', '.gitignore', '.gitattributes']);
 const OBSIDIAN_SETTING = /^\.obsidian\/[^/]+\.json$/;
 const MARKDOWN = /\.md$/i;
 
-/** `< > : " | ? *` and every control character: NTFS refuses them all. */
-const RESERVED_CHAR = /[<>:"|?*]/;
+/**
+ * `< > : " | ? * \` and every control character: NTFS refuses them all. A
+ * backslash inside a segment is a legal Linux/macOS name that Windows would
+ * read as a directory separator.
+ */
+const RESERVED_CHAR = /[<>:"|?*\\]/;
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHAR = /[\u0000-\u001f]/;
-/** Device names are reserved with or without an extension: `nul`, `NUL.md`, `Com1.tar.gz`. */
-const DEVICE_NAME = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)/i;
+/**
+ * Device names are reserved with or without an extension: `nul`, `NUL.md`,
+ * `Com1.tar.gz`. Microsoft's list runs COM0–COM9 and LPT0–LPT9 and the
+ * superscript digits ¹ ² ³ count as digits.
+ */
+const DEVICE_NAME = /^(CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])(\.|$)/i;
+
+/**
+ * Reported, not refused: Git for Windows fails checkout past MAX_PATH (260)
+ * unless `core.longpaths` is set, and the realm's own prefix
+ * (`C:/Users/<you>/vault/<realm>/`) takes some of that. Not in R-A3's list,
+ * so a report line rather than a refusal.
+ */
+export const PATH_REPORT_CHARS = 200;
+const WINDOWS_MAX_PATH = 260;
 
 const MIB = 1024 * 1024;
 
@@ -80,9 +97,10 @@ function mib(bytes) {
 }
 
 /**
- * Scan every candidate path once. `stat(relPath)` returns its size in bytes;
- * a size that cannot be read is a refusal, because a file that vanished
- * mid-run is exactly the race the commit step must not paper over.
+ * Scan every candidate path once. `stat(relPath)` returns its size in bytes.
+ * A path that is no longer on disk is a tracked file the user deleted — the
+ * ordinary case, staged as a deletion — so it has nothing to check; any
+ * other failure to read a size is a refusal, not something to paper over.
  *
  * @param {readonly string[]} relPaths
  * @param {(relPath: string) => number} stat
@@ -91,11 +109,16 @@ function mib(bytes) {
 export function scanRealm(relPaths, stat) {
   const refused = [];
   const reported = [];
+  /** Windows and macOS fold case: two names that differ only by case are one file there. */
+  const seenFolded = new Map();
   for (const relPath of relPaths) {
-    const badName = checkName(relPath);
+    const badName = checkName(relPath) || caseCollision(relPath, seenFolded);
     if (badName) {
       refused.push({ path: relPath, reason: badName });
       continue;
+    }
+    if (relPath.length > PATH_REPORT_CHARS) {
+      reported.push({ path: relPath, reason: `${relPath.length} chars; Windows fails checkout past ${WINDOWS_MAX_PATH} with the vault prefix` });
     }
     const verdict = sizeVerdict(relPath, stat);
     if (verdict.level === 'refuse') refused.push({ path: relPath, reason: verdict.reason });
@@ -105,11 +128,21 @@ export function scanRealm(relPaths, stat) {
   return { refused: Object.freeze([...refused].sort(byPath)), reported: Object.freeze([...reported].sort(byPath)) };
 }
 
+/** Records `relPath` under its case-folded form; the reason when another path already holds it. */
+function caseCollision(relPath, seenFolded) {
+  const folded = relPath.toLowerCase();
+  const earlier = seenFolded.get(folded);
+  if (earlier !== undefined) return `collides with '${earlier}' on a case-insensitive filesystem`;
+  seenFolded.set(folded, relPath);
+  return '';
+}
+
 function sizeVerdict(relPath, stat) {
   let bytes;
   try {
     bytes = stat(relPath);
   } catch (err) {
+    if (err?.code === 'ENOENT') return { level: '', reason: '' };
     return { level: 'refuse', reason: `size unreadable (${err?.code || err?.message || 'stat failed'})` };
   }
   return checkSize(relPath, bytes);

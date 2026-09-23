@@ -350,6 +350,15 @@ test('end to end with real git: a large attachment is committed with a note, an 
     assert.equal(refused.action, 'refused');
     assert.equal(git(['rev-list', '--count', 'HEAD'], dir).trim(), '1', 'no second commit');
     assert.match(git(['status', '--porcelain'], dir), /^\?\? /m);
+
+    // Deleting a tracked file is the ordinary case, not a race: it is staged as a deletion.
+    // unlinkSync, not rmSync: Node 24's rmSync silently leaves a non-NFC name in place on Windows.
+    fs.unlinkSync(path.join(dir, 'café.md'));
+    fs.unlinkSync(path.join(dir, 'attachments', 'deck.pptx'));
+    const [deleted] = pushRealms({ vaultRoot: vault, policies, machine: 'a', runGit });
+    assert.equal(deleted.action, 'committed', deleted.error);
+    assert.equal(git(['rev-list', '--count', 'HEAD'], dir).trim(), '2');
+    assert.equal(git(['ls-files'], dir).trim(), '.realm', 'the deletion travelled');
   } finally {
     cleanup();
   }

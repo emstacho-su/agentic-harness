@@ -153,3 +153,31 @@ test('R-A1 dry run with real git: after renormalize, every .md is LF in the inde
     cleanup();
   }
 });
+
+test('writeRealmFiles says when it replaces a file that differs, and a dry run says it would', () => {
+  const { root, cleanup } = scratch();
+  try {
+    writeRealmFiles(root, 'projects');
+    fs.writeFileSync(path.join(root, '.gitignore'), 'drafts/\n');
+    const dry = writeRealmFiles(root, 'projects', { dryRun: true });
+    assert.deepEqual(dry.map((r) => r.action), ['unchanged', 'unchanged', 'would-overwrite']);
+    assert.equal(fs.readFileSync(path.join(root, '.gitignore'), 'utf8'), 'drafts/\n', 'a dry run touches nothing');
+    const real = writeRealmFiles(root, 'projects');
+    assert.deepEqual(real.map((r) => r.action), ['unchanged', 'unchanged', 'overwritten']);
+    assert.equal(fs.readFileSync(path.join(root, '.gitignore'), 'utf8'), gitignoreText({ trackObsidianSettings: true }));
+  } finally {
+    cleanup();
+  }
+});
+
+test('writeRealmFiles creates the realm folder when it does not exist yet', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const dir = path.join(root, 'classes');
+    const written = writeRealmFiles(dir, 'classes');
+    assert.deepEqual(written.map((r) => r.action), ['written', 'written', 'written']);
+    assert.equal(fs.readFileSync(path.join(dir, '.realm'), 'utf8'), 'classes\n');
+  } finally {
+    cleanup();
+  }
+});

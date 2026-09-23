@@ -19,6 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { persist } from './notes-io.mjs';
 import { REALM_MARKER, REALM_NAME } from './realm-sync.mjs';
 
 /** The realm whose `.obsidian/*.json` settings are committed. */
@@ -53,36 +54,43 @@ export function realmPolicyFiles(name) {
 }
 
 /**
- * Write the policy files into `dir`, byte-exact, LF, UTF-8 without BOM.
+ * Write the policy files into `dir` (created if absent), byte-exact, LF,
+ * UTF-8 without BOM.
  *
  * A marker that already names a different realm is never overwritten: that
  * is a folder somebody else owns. An identical file is left alone so a rerun
- * is a no-op and reports it as such.
+ * is a no-op and reports it as such; a file that exists with other content
+ * is replaced, and the action says so, because a hand-added ignore rule
+ * silently vanishing is how `drafts/` ends up on GitHub.
  *
- * @returns {readonly {relPath: string, action: 'written'|'would-write'|'unchanged'}[]}
+ * @returns {readonly {relPath: string, action: 'written'|'overwritten'|'unchanged'|'would-write'|'would-overwrite'}[]}
  */
 export function writeRealmFiles(dir, name, { dryRun = false } = {}) {
   const files = realmPolicyFiles(name);
-  const existingMarker = readIfPresent(path.join(dir, REALM_MARKER)).trim();
-  if (existingMarker && existingMarker !== name) {
-    throw new Error(`${dir} is already marked as '${existingMarker}', not '${name}'`);
+  const existingMarker = readIfPresent(path.join(dir, REALM_MARKER));
+  if (existingMarker !== null && existingMarker.trim() !== name) {
+    throw new Error(`${dir} is already marked as '${existingMarker.trim()}', not '${name}'`);
   }
   return Object.freeze(
     files.map(({ relPath, text }) => {
       const target = path.join(dir, relPath);
-      if (readIfPresent(target) === text) return { relPath, action: 'unchanged' };
-      if (dryRun) return { relPath, action: 'would-write' };
-      fs.writeFileSync(target, text, 'utf8');
-      return { relPath, action: 'written' };
+      const existing = readIfPresent(target);
+      if (existing === text) return { relPath, action: 'unchanged' };
+      const verb = existing === null ? 'write' : 'overwrite';
+      if (dryRun) return { relPath, action: `would-${verb}` };
+      const saved = persist(target, text);
+      if (!saved.ok) throw new Error(`could not write ${target} (${saved.error})`);
+      return { relPath, action: verb === 'write' ? 'written' : 'overwritten' };
     }),
   );
 }
 
+/** The file's text, or null when there is no file. Any other failure is thrown: it is the caller's disk. */
 function readIfPresent(file) {
   try {
     return fs.readFileSync(file, 'utf8');
   } catch (err) {
-    if (err?.code === 'ENOENT') return '';
+    if (err?.code === 'ENOENT') return null;
     throw err;
   }
 }
