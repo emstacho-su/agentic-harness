@@ -50,6 +50,20 @@ export function machineName(env = process.env) {
 }
 
 /**
+ * The author and committer email of unattended realm commits (R-B4); the
+ * name comes from HARNESS_MACHINE.
+ */
+export const GIT_EMAIL_VAR = 'HARNESS_GIT_EMAIL';
+/** One `@`, no spaces or angle brackets: anything else would break `Name <email>`. */
+const GIT_EMAIL_PATTERN = /^[^\s<>@]+@[^\s<>@]+$/;
+
+/** The email for realm commits, or '' when unset or not an email. */
+export function gitEmail(env = process.env) {
+  const value = String(env?.[GIT_EMAIL_VAR] ?? '').trim();
+  return GIT_EMAIL_PATTERN.test(value) ? value : '';
+}
+
+/**
  * The environment with the repo's `.env` filled in underneath it.
  *
  * For the installer and the doctor only: the hook never loads secrets, and the

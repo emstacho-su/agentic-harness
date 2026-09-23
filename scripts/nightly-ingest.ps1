@@ -68,13 +68,21 @@ param(
     [string[]] $CheckpointRepos = @(),
     [ValidateSet('Apply', 'DryRun', 'Skip')]
     [string] $Checkpoints = 'Apply',
-    # Steps -1 and 3: pull every realm before the night's work, push the
-    # push-policy realms after it (hooks/sync-realms.mjs). Nothing is forced.
+    # Steps -1 and 3 (hooks/sync-realms.mjs): commit and merge-pull every realm
+    # before the night's work; commit, merge-pull and push the push-policy realms
+    # after it. Nothing is forced, rebased or stashed.
     [ValidateSet('Apply', 'DryRun', 'Skip')]
     [string] $RealmSync = 'Apply'
 )
 
 $ErrorActionPreference = 'Stop'
+
+# node prints UTF-8. Without this, PowerShell 5.1 decodes captured child output as
+# the OEM code page and `café.md` or `…` reach the log as mojibake.
+# A run with no console handle cannot set it; the log is then only less readable,
+# and says so once the logger exists (Write-Log is defined further down).
+$encodingNote = ''
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { $encodingNote = "console output encoding not set ($($_.Exception.Message)); non-ASCII in child output may log as mojibake" }
 
 # Keep one night's worth of detail without letting the file grow forever.
 $LogMaxBytes = 1MB
@@ -231,6 +239,7 @@ function Invoke-Ingest {
 # --------------------------------------------------------------------------
 
 Write-Log '=== nightly reconcile starting ==='
+if ($encodingNote) { Write-Log $encodingNote }
 
 if (-not (Test-Path $VaultPath)) {
     Write-Log "FATAL vault not found: $VaultPath"
@@ -256,9 +265,10 @@ if ($EnvFile) { $envArgs = @('--env-file', $EnvFile) }
 
 # Step 0: transcripts the hook never saw become notes now, so the ingest below
 # embeds them tonight. Runs from the checkout, like the ingest project does.
-# Step -1: pull every realm this machine holds, so the night's work starts from
-# what the other machines pushed. A conflict is exit 2 and never fatal: the
-# realm is left exactly as it was, and the rest of the night still runs.
+# Step -1: commit and merge-pull every realm this machine holds, so the night's
+# work starts from what the other machines pushed. A conflict is exit 2 and never
+# fatal: the merge is aborted, the local commit is kept, and the rest of the night
+# still runs. A realm locked by another run is exit 2 the same way.
 function Invoke-RealmSync {
     param([string] $Mode, [string] $Label)
     if ($RealmSync -eq 'Skip') { Write-Log "$Label : skipped by -RealmSync Skip"; return 0 }
@@ -345,8 +355,9 @@ if ($sweepCode -ne 0) { Write-Log "sweep failed with $sweepCode; continuing to t
 $ingestArgs = @('--source', 'obsidian', '--path', $VaultPath, '--prune') + $envArgs
 $ingestCode = Invoke-Ingest -Uv $uv -Project $ProjectDir -IngestArgs $ingestArgs -Label 'ingest'
 
-# Step 3: commit the night's notes and push the realms whose policy allows it.
-# Last, so a machine that fails earlier pushes nothing half-reconciled.
+# Step 3: commit the night's notes, merge-pull, and push the realms whose policy
+# allows it. Last, so a machine that fails earlier pushes nothing half-reconciled.
+# A conflicting merge is aborted with the local commit kept; it pushes next time.
 $pushCode = Invoke-RealmSync -Mode 'push' -Label 'realms-push'
 if ($pushCode -ne 0) { Write-Log "realm push ended with $pushCode; the notes are on disk and will go next time" }
 

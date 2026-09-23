@@ -23,20 +23,44 @@ const UNIT = '';
 /** `(#12)` in a squash-merge subject, or GitHub's own merge-commit wording. */
 const PR_IN_MESSAGE = /(?:\(#(\d{1,6})\)|\bMerge pull request #(\d{1,6})\b)/g;
 
+/** How much git output one call may buffer before it is killed. */
+const GIT_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
+
 /**
- * Default runner: `git`, bounded, stderr discarded, never throws.
+ * How much of a failed git's stderr is kept: enough for git's `fatal:` or
+ * `error:` line and a hint after it, without a push's progress noise.
+ */
+export const GIT_STDERR_TAIL_CHARS = 300;
+
+/** The last `GIT_STDERR_TAIL_CHARS` of `text`, trimmed. */
+export function tailStderr(text) {
+  return String(text ?? '').slice(-GIT_STDERR_TAIL_CHARS).trim();
+}
+
+/**
+ * Default runner: `git`, bounded, never throws. stderr is discarded unless
+ * `captureStderr` is set, in which case a failure carries its tail.
  *
  * `cwd` names the repository to run against, and is passed as `git -C <cwd>`
  * rather than as the child's working directory — see `spawn.mjs` for why that
- * distinction is the whole ballgame on Windows.
+ * distinction is the whole ballgame on Windows. `env` is added to the child's
+ * environment for this call only.
+ *
+ * A failure reports `status` (git's exit code, or null when the process was
+ * killed or never started — a timeout keeps `ETIMEDOUT` as its `error`).
  */
-export function runGitSync(args, { cwd, timeoutMs = GIT_TIMEOUT_MS } = {}) {
+export function runGitSync(args, { cwd, timeoutMs = GIT_TIMEOUT_MS, env, captureStderr = false } = {}) {
   try {
     const argv = ['--no-pager', ...repoArgs(cwd), ...args];
-    const stdout = execFileSync('git', argv, trustedSpawnOptions(timeoutMs, 4 * 1024 * 1024));
+    const options = trustedSpawnOptions(timeoutMs, GIT_MAX_BUFFER_BYTES, { extraEnv: env ?? {}, captureStderr });
+    const stdout = execFileSync('git', argv, options);
     return { ok: true, stdout: String(stdout ?? '') };
   } catch (err) {
-    return { ok: false, stdout: '', error: err?.code || err?.message || 'git failed' };
+    const status = Number.isInteger(err?.status) ? err.status : null;
+    // A non-zero exit has no `code`; Node's message would repeat the argv and
+    // the whole stderr, so name the exit instead and keep the tail separately.
+    const error = err?.code || (status !== null ? `exit ${status}` : err?.message || 'git failed');
+    return { ok: false, stdout: '', error, status, stderr: captureStderr ? tailStderr(err?.stderr) : '' };
   }
 }
 

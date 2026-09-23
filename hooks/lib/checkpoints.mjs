@@ -32,6 +32,8 @@ import { runGitSync } from './git-log.mjs';
 import { withLinks } from './links.mjs';
 import { renderNote } from './note.mjs';
 import { ensureIndex, persist, readNote, vaultAvailable } from './notes-io.mjs';
+import { acquireRealmLock, describeHolder, holderAgeMinutes, lockPathFor, peekRealmLock, REALM_LOCK_STALE_MS, releaseRealmLock } from './realm-lock.mjs';
+import { realmRootFor } from './realm-sync.mjs';
 import { redact } from './redact.mjs';
 import { isSafeFilenameSegment, slugify, toPosix } from './text.mjs';
 
@@ -39,6 +41,12 @@ const FALLBACK_COLLECTION = 'misc';
 const UNCLASSIFIED = 'unclassified';
 const ID_PREFIX = 'session-';
 const MAX_NOTE_BYTES = 256 * 1024;
+
+/** The owner the collector writes into a realm lock, so the sync's log can name who holds it. */
+const LOCK_OWNER = 'collector';
+/** The reason a note bound for a locked realm carries; it is filed on the next run. */
+const REALM_LOCKED = 'realm locked';
+const MS_PER_MINUTE = 60_000;
 
 // ------------------------------------------------------------------- git
 
@@ -231,11 +239,10 @@ function folderExists(vaultRoot, area, slug) {
  * already holds: a forged branch can at worst add a new note, and that note
  * says `captured_by: skill` and came through `redact()`.
  */
-export function fileNote({ vaultRoot, fields, body, dryRun = false }) {
-  const placement = resolvePlacement(vaultRoot, fields);
+export function fileNote({ vaultRoot, fields, body, dryRun = false, placement = resolvePlacement(vaultRoot, fields) }) {
   const sessionsDir = path.join(vaultRoot, placement.area, placement.collection, 'sessions');
   const notePath = path.join(sessionsDir, `${fields.session_id}.md`);
-  const relative = `${placement.area}/${placement.collection}/sessions/${fields.session_id}.md`;
+  const relative = relativeNotePath(placement, fields.session_id);
 
   // Links are derived here, from the placement: whatever `up` or `related`
   // arrived through git is overwritten. `parent_session` did arrive that way,
@@ -267,18 +274,92 @@ export function fileNote({ vaultRoot, fields, body, dryRun = false }) {
   return { action: 'create', reason, notePath: relative, placement, touched: notePath };
 }
 
+function relativeNotePath(placement, sessionId) {
+  return `${placement.area}/${placement.collection}/sessions/${sessionId}.md`;
+}
+
+// ------------------------------------------------------------ realm lock
+
+/**
+ * The collector writes into `projects/` and `classes/`; once those are git
+ * realms, the nightly sync stages and merges in them. Only one may write at a
+ * time (R-B3), so before the first note bound for a realm the collector takes
+ * that realm's lock, or stands down and defers the realm's notes to the next
+ * run. A gate is the frozen outcome for one realm:
+ * `{ open, name, lock }` — `lock` is `{ lockPath, token }` when we hold it.
+ */
+
+/**
+ * The realm root for an area, or '' when there is nothing to lock (legacy
+ * vault, or not a checkout). A vault whose root is the realm locks at the root.
+ */
+function lockableRealm(vaultRoot, area) {
+  const root = realmRootFor(vaultRoot, area);
+  return root && lockPathFor(root) ? root : '';
+}
+
+function logHeld(log, name, holder) {
+  log(`realm ${name} is locked by ${describeHolder(holder)}; its notes wait for the next run`);
+}
+
+/** A dry run only looks: no file is written. A stale holder would be taken over, so it does not close the gate. */
+function peekGate(realmRoot, name, { now, log }) {
+  const peeked = peekRealmLock(realmRoot, { now });
+  const locked = peeked.held && !peeked.stale;
+  if (locked) logHeld(log, name, peeked.holder);
+  return Object.freeze({ open: !locked, name, lock: null });
+}
+
+function acquireGate(realmRoot, name, { now, log }) {
+  const acquired = acquireRealmLock(realmRoot, { owner: LOCK_OWNER, pid: process.pid, now });
+  if (acquired.ok) {
+    const stale = acquired.takenOver;
+    if (stale) log(`realm ${name}: took over a stale lock from ${describeHolder(stale)} (${holderAgeMinutes(stale)} min old)`);
+    return Object.freeze({ open: true, name, lock: Object.freeze({ lockPath: acquired.lockPath, token: acquired.token }) });
+  }
+  // A lock we could not take, for any reason, means we do not write there.
+  if (acquired.reason === 'held') logHeld(log, name, acquired.holder);
+  else log(`realm ${name}: lock error (${acquired.error}); its notes wait for the next run`);
+  return Object.freeze({ open: false, name, lock: null });
+}
+
+/**
+ * The gate for a note's area, reusing the one already opened this repo
+ * iteration. Returns `{ gate, gates }`: `gate` is null when no lock applies,
+ * and `gates` is a new Map when a realm was seen for the first time.
+ */
+function gateFor(gates, { vaultRoot, area, dryRun, clock, log }) {
+  const realmRoot = lockableRealm(vaultRoot, area);
+  if (!realmRoot) return { gate: null, gates };
+  if (gates.has(realmRoot)) return { gate: gates.get(realmRoot), gates };
+  const open = dryRun ? peekGate : acquireGate;
+  // Read the clock as the lock is taken: a realm reached late in the run is not born old.
+  const gate = open(realmRoot, area, { now: clock(), log });
+  return { gate, gates: new Map([...gates, [realmRoot, gate]]) };
+}
+
+/** Give back every lock this repo iteration took. A failed release is logged; the stale rule recovers it. */
+function releaseGates(gates, log) {
+  for (const gate of gates.values()) {
+    if (!gate.lock) continue;
+    const released = releaseRealmLock(gate.lock);
+    if (!released.ok) log(`realm ${gate.name}: lock not released (${released.error}); it goes stale in ${REALM_LOCK_STALE_MS / MS_PER_MINUTE} min`);
+  }
+}
+
 // ------------------------------------------------------------------- run
 
 /**
  * The whole collection: every repo, every ref, every note, into the vault.
  * Repos that are missing are reported and skipped; nothing here throws for
- * one repo's sake.
+ * one repo's sake. `clock()` is read as each realm's lock is taken or peeked
+ * at, and that reading both stamps the lock and judges a holder's age.
  */
-export function runCollect({ repos, vaultRoot, dryRun = false, fetch = true, authors = [], runGit = runGitSync, log = () => {} }) {
+export function runCollect({ repos, vaultRoot, dryRun = false, fetch = true, authors = [], runGit = runGitSync, log = () => {}, clock = () => new Date() }) {
   if (!vaultAvailable(vaultRoot)) throw new Error(`vaultRoot is not available: ${vaultRoot}`);
   const allowedAuthors = new Set(authors.map((email) => String(email).trim().toLowerCase()).filter(Boolean));
 
-  const summary = { repos: [], found: 0, created: 0, merged: 0, unchanged: 0, skipped: 0, errors: 0, touchedPaths: [], results: [] };
+  const summary = { repos: [], found: 0, created: 0, merged: 0, unchanged: 0, skipped: 0, deferred: 0, errors: 0, touchedPaths: [], results: [] };
 
   for (const repoRoot of repos) {
     if (!fs.existsSync(path.join(repoRoot, '.git'))) {
@@ -293,19 +374,22 @@ export function runCollect({ repos, vaultRoot, dryRun = false, fetch = true, aut
     summary.errors += gathered.errors;
     summary.found += gathered.notes.length;
 
-    for (const note of gathered.notes) {
-      // Provenance, when an allow-list was given: the commit's author email.
-      // Without one the trust boundary is "anyone who can push to this repo",
-      // and the log still records who that was.
-      if (allowedAuthors.size && !allowedAuthors.has(note.author)) {
-        summary.skipped += 1;
-        const reason = `author ${JSON.stringify(note.author)} is not in the allow-list`;
-        summary.results.push({ repoRoot, file: note.file, ref: note.ref, action: 'skip', reason });
-        log(`skip ${note.file} (${note.ref}): ${reason}`);
-        continue;
-      }
+    collectRepoNotes({ repoRoot, notes: gathered.notes, vaultRoot, dryRun, allowedAuthors, clock, log, summary });
+  }
 
-      const checked = validateNote(note.text);
+  return summary;
+}
+
+/**
+ * One repository's notes into the vault. Every realm lock taken here is
+ * released before this returns, so none is held across the next repo's fetch
+ * (up to 120 s).
+ */
+function collectRepoNotes({ repoRoot, notes, vaultRoot, dryRun, allowedAuthors, clock, log, summary }) {
+  let gates = new Map();
+  try {
+    for (const note of notes) {
+      const checked = screenNote(note, allowedAuthors);
       if (!checked.ok) {
         summary.skipped += 1;
         summary.results.push({ repoRoot, file: note.file, ref: note.ref, action: 'skip', reason: checked.reason });
@@ -313,16 +397,49 @@ export function runCollect({ repos, vaultRoot, dryRun = false, fetch = true, aut
         continue;
       }
 
-      const filed = fileNote({ vaultRoot, fields: checked.fields, body: checked.body, dryRun });
-      summary.results.push({ repoRoot, file: note.file, ref: note.ref, ...filed });
-      if (filed.action === 'create') summary.created += 1;
-      else if (filed.action === 'merge') summary.merged += 1;
-      else if (filed.action === 'noop') summary.unchanged += 1;
-      else summary.skipped += 1;
-      if (filed.touched) summary.touchedPaths.push(filed.touched);
+      const placement = resolvePlacement(vaultRoot, checked.fields);
+      const opened = gateFor(gates, { vaultRoot, area: placement.area, dryRun, clock, log });
+      gates = opened.gates;
+      const filed = fileThroughGate({ gate: opened.gate, vaultRoot, checked, placement, dryRun });
+      recordFiled(summary, { repoRoot, note, filed });
       log(`${filed.action} ${filed.notePath}${filed.reason ? ` (${filed.reason})` : ''} from ${note.ref} by ${note.author || 'unknown author'}`);
     }
+  } finally {
+    releaseGates(gates, log);
   }
+}
 
-  return summary;
+/**
+ * Provenance, when an allow-list was given: the commit's author email.
+ * Without one the trust boundary is "anyone who can push to this repo", and
+ * the log still records who that was. Then the note's own validation.
+ */
+function screenNote(note, allowedAuthors) {
+  if (allowedAuthors.size && !allowedAuthors.has(note.author)) {
+    return { ok: false, reason: `author ${JSON.stringify(note.author)} is not in the allow-list` };
+  }
+  return validateNote(note.text);
+}
+
+/**
+ * File a note unless its realm is locked. A locked realm's note is deferred,
+ * not written; a dry run reports what it would do and says the realm is locked.
+ */
+function fileThroughGate({ gate, vaultRoot, checked, placement, dryRun }) {
+  const locked = Boolean(gate && !gate.open);
+  if (locked && !dryRun) {
+    return { action: 'defer', reason: REALM_LOCKED, notePath: relativeNotePath(placement, checked.fields.session_id), placement };
+  }
+  const filed = fileNote({ vaultRoot, fields: checked.fields, body: checked.body, dryRun, placement });
+  return locked ? { ...filed, reason: [filed.reason, REALM_LOCKED].filter(Boolean).join('; ') } : filed;
+}
+
+function recordFiled(summary, { repoRoot, note, filed }) {
+  summary.results.push({ repoRoot, file: note.file, ref: note.ref, ...filed });
+  if (filed.action === 'create') summary.created += 1;
+  else if (filed.action === 'merge') summary.merged += 1;
+  else if (filed.action === 'noop') summary.unchanged += 1;
+  else if (filed.action === 'defer') summary.deferred += 1;
+  else summary.skipped += 1;
+  if (filed.touched) summary.touchedPaths.push(filed.touched);
 }
