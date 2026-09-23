@@ -10,7 +10,9 @@
  * vault collection it names. The ingest that follows embeds them.
  *
  * Exit codes: 0 clean, 1 if a note was refused or a repo could not be fetched
- * (the run still completed), 2 bad usage or a missing vault.
+ * (the run still completed), 2 bad usage or a missing vault. A note deferred
+ * because the nightly sync holds its realm's lock is not a problem: it is
+ * filed on the next run, so deferrals alone still exit 0.
  */
 
 import os from 'node:os';
@@ -127,10 +129,11 @@ export function run(argv, { env = process.env, out = console.log, err = console.
     out(`ingest: ${summary.touchedPaths.length} note(s), ${ingestFailures} batch(es) failed to start`);
   }
 
+  // `summary.deferred` is left out on purpose: a locked realm is waited out, not a failure.
   const problems = summary.skipped + summary.errors + summary.repos.filter((repo) => repo.status !== 'ok').length + ingestFailures;
   const line =
     `found=${summary.found} created=${summary.created} merged=${summary.merged} ` +
-    `unchanged=${summary.unchanged} skipped=${summary.skipped} errors=${summary.errors} repos=${summary.repos.length}`;
+    `unchanged=${summary.unchanged} skipped=${summary.skipped} deferred=${summary.deferred} errors=${summary.errors} repos=${summary.repos.length}`;
   out(`collect ${mode}: ${line}`);
   log(`=== collect finished (${mode}) ${line}`);
   return problems > 0 ? EXIT_PROBLEMS : EXIT_OK;
