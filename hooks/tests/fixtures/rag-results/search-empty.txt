@@ -1,0 +1,7 @@
+Nothing relevant found for "quantum pastry schedule" in all sources and collections.
+
+No chunk cleared the 0.7 cosine similarity floor, and no chunk matched the query terms literally. On this corpus that normally means the store genuinely holds nothing on this topic — it is a real answer, not a failure.
+
+If you expected a hit, try in this order:
+- Rephrase with fewer, more central terms.
+- Lower `min_similarity` (e.g. 0.5) to widen the net deliberately.
