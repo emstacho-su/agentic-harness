@@ -326,14 +326,21 @@ unrelated layout.
 - **Done when.** Doctor, migrate and embed-check are all green on the VM and the runbook
   needed no un-recorded step.
 
-### R-E2 The VM's realm reaches the hub and personal context reaches the VM
-- **Requirement.** `work-vm` (policy `push`) exists on `emstacho-su/vault-work-vm`, private;
-  `projects` is cloned read-only (policy `local`) if the supervisor allows; a note captured
-  on the VM appears on the home PC after the next two nightly runs (VM push, home pull).
+### R-E2 The VM's realm reaches the hub
+- **Requirement.** `work-vm` (policy `push`) exists as a private repository under the
+  **work GitHub account** (decision 7); `emstacho-su` is a read collaborator on it so the home
+  PC can pull, and the home PC adds `work-vm:local` to its machine file. The VM pushes with
+  the work account's fine-grained PAT scoped to that one repo. **No `projects` clone on the
+  VM**: the internship work has no cross-section with the personal projects, so the VM holds
+  one realm, one account, one token. A note captured on the VM appears on the home PC after
+  the next two nightly runs (VM push, home pull).
+- **Why.** A fine-grained PAT reaches only repositories its own account owns, so a
+  work-account token could never read `emstacho-su/vault-projects`; keeping each realm under
+  the account of the machine that writes it removes the problem instead of working around it.
 - **Tests.** Live: capture a session on the VM; next morning `ls ~/vault/work-vm/…` on
   the home PC shows it, and `search_context` at home finds its outcome.
-- **Done when.** One note has made the round trip and the supervisor's answer on the
-  `projects` clone is recorded in `docs/portable.md`.
+- **Done when.** One note has made the round trip and the collaborator grant is recorded in
+  `docs/portable.md`.
 
 ### R-E3 Names the employer needs scrubbed never leave the VM
 - **Requirement.** `HARNESS_REDACT_EXTRA` names a per-machine JSON file of extra patterns;
@@ -422,7 +429,18 @@ unrelated layout.
    reference vectors (a report, not a gate), because the Python and Node caches hold
    different ONNX artifacts and `search_context` embeds its queries on the Node side.
    (The 03:00 nightly of 2026-09-24 did not fire: the task is Interactive-only and nobody
-   was logged on, so the first DryRun night after Phase C is still ahead.)
+   was logged on, so the first DryRun night after Phase C is still ahead. It fired clean on
+   2026-09-24 at 03:00 local once the machine stayed logged on; the task then went to
+   `-RealmSync Apply`, and `ingest db migrate` ran for real the same day, seeding the ledger
+   with the six migrations already present.)
+7. (2026-09-24) Phase E access model. The VM and the work laptop use a separate work
+   GitHub account. `vault-work-vm` is created under that account, private, with
+   `emstacho-su` as a read collaborator; the VM authenticates with the work account's
+   fine-grained PAT scoped to that one repository. There is **no `projects` clone on the
+   VM**: the internship work has no cross-section with the personal projects, so nothing
+   personal needs to be there, and the fine-grained-PAT rule (a token reaches only its own
+   account's repositories) never has to be worked around. Obsidian Sync is not used: the
+   realms do that job, and two syncers on one folder is the OneDrive problem again.
 
 Follow-ups, not in Phase B:
 - `session-capture.mjs` and `sweep-transcripts.mjs` write into realms without taking the

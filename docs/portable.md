@@ -203,13 +203,20 @@ Exit 2 on a conflict, an error, a refusal or a held lock.
      minimum too, because `search_context` embeds queries on the Node side.
    - `uv run ingest db migrate --dry-run`: a fresh store shows 6 pending. Then the same
      without `--dry-run`.
-4. The vault: `mkdir ~/vault`, then clone the realms this machine may hold into it,
-   e.g. `git clone <private remote>/work-vm ~/vault/work-vm` and, if permitted, a
-   read-only clone of `projects`. Each clone already carries its `.realm`.
-   A new realm: `mkdir ~/vault/work-vm && echo work-vm > ~/vault/work-vm/.realm`,
-   `git init`, commit, add the private remote.
-5. Write `~/.harness/machine.env` (above), including `HARNESS_GIT_EMAIL` so unattended
-   realm commits carry this machine's name and your address. `node hooks/doctor.mjs`.
+4. The vault: `mkdir ~/vault`, then the one realm this machine holds. The dev VM holds
+   only `work-vm`; there is no `projects` clone on it (decision 7: the internship work has
+   no cross-section with the personal projects, so nothing personal needs to be there).
+   A new realm is made the way Phase C made the home ones, with the job identity in the
+   shell for that step: `mkdir ~/vault/work-vm`, then
+   `node hooks/init-realm.mjs --vault C:/Users/<you>/vault --realm work-vm --dry-run`, then
+   the same without `--dry-run` (policy files, `git init -b main`, the guard, one baseline
+   commit), then `--remote https://github.com/<work-account>/vault-work-vm.git` and
+   `git push -u origin main`. An existing realm is cloned instead:
+   `git clone <remote> ~/vault/work-vm`; the clone already carries its `.realm`.
+5. Write `~/.harness/machine.env` (above): `HARNESS_MACHINE=work-vm`,
+   `HARNESS_REALMS=work-vm:push`, and `HARNESS_GIT_EMAIL` set to the **work account's**
+   address, so unattended realm commits carry this machine's name and the identity that
+   owns the remote. `node hooks/doctor.mjs`.
 6. `node hooks/install.mjs --register-mcp` — copies the hook, registers it in
    `settings.json`, and registers the `rag` MCP server. The registration carries only
    the *path* to the repo `.env` (`HARNESS_ENV_FILE`); the server reads the secret
@@ -228,11 +235,17 @@ Exit 2 on a conflict, an error, a refusal or a held lock.
    `scripts/backup-store.sh` elsewhere). There is no register script for it, so this is a
    hand-made task. The script never starts Docker or the container, so a night when
    Docker Desktop is not running is an exit 2 with no backup, never a half-written file.
-8. The push credential: create a fine-grained GitHub PAT scoped to the realm repos only
-   (Contents: read and write) with an expiry, and store it once with
-   `printf 'protocol=https\nhost=github.com\nusername=<user>\npassword=<PAT>\n' | git credential approve`.
-   Put the expiry in the calendar: when it lapses the nightly log shows the `credential`
-   line and nothing hangs, because the sync never lets git prompt.
+8. The push credential. The VM and the work laptop use a separate **work GitHub
+   account**; `vault-work-vm` is created under it (private), and `emstacho-su` is added as
+   a read collaborator so the home PC can pull it (the home PC then lists `work-vm:local`
+   in its own machine file). On the VM, create a fine-grained PAT of the work account
+   scoped to `vault-work-vm` only (Contents: read and write) with an expiry, and store it
+   once with
+   `printf 'protocol=https\nhost=github.com\nusername=<work-account>\npassword=<PAT>\n' | git credential approve`.
+   A fine-grained PAT reaches only the repositories its own account owns, which is why
+   each realm lives under the account of the machine that writes it and why the VM holds
+   no personal realm. Put the expiry in the calendar: when it lapses the nightly log shows
+   the `credential` line and nothing hangs, because the sync never lets git prompt.
 9. The embedding model (130 MB) downloads on first use. On a machine without that
    egress, copy `~/.cache/fastembed` (Python) and `mcp-server/.fastembed-cache` (Node)
    from a machine that has them; the two layouts differ and both are needed.
