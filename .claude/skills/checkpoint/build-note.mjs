@@ -55,6 +55,7 @@ const PLAIN = 'plain';
 const LIST = 'list';
 const NUMBER_LIST = 'numlist';
 const MAP = 'map';
+const RECORDS = 'records';
 
 export const FIELD_SPEC = Object.freeze([
   ['id', QUOTED], ['title', QUOTED], ['type', PLAIN], ['schema_version', PLAIN],
@@ -68,6 +69,7 @@ export const FIELD_SPEC = Object.freeze([
   ['files_modified', LIST], ['prompt_count', PLAIN], ['command_count', PLAIN], ['agent', PLAIN],
   ['agent_type', QUOTED], ['origin', QUOTED], ['captured_by', QUOTED], ['generator', QUOTED],
   ['tools_used', MAP], ['up', QUOTED], ['related', LIST], ['machine', QUOTED],
+  ['retrievals', RECORDS], ['retrieved', LIST],
 ]);
 
 const EMITTABLE_KEY = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
@@ -94,9 +96,67 @@ function emitField(key, value, kind) {
       if (entries.length === 0) return [`${key}: {}`];
       return [`${key}:`, ...entries.map(([name, count]) => `  ${name}: ${Number(count) || 0}`)];
     }
+    case RECORDS: {
+      const records = (Array.isArray(value) ? value : []).map(emitRecord).filter((lines) => lines.length > 0);
+      if (records.length === 0) return [`${key}: []`];
+      return [`${key}:`, ...records.flat()];
+    }
     default:
       return [`${key}: ${yamlStr(value)}`];
   }
+}
+
+// The SC-1 retrieval record. A checkpoint never has one, but the copy emits
+// what the hook would, so the two stay byte-identical for any input.
+const RECORD_KEY_ORDER = Object.freeze(['at', 'channel', 'tool', 'query', 'filters', 'results', 'chunks']);
+const QUOTED_RECORD_KEYS = new Set(['at', 'query', 'results', 'chunks']);
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const BARE_WORD = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+const NON_STRING_WORDS = new Set(['true', 'false', 'null']);
+
+function emitRecord(record) {
+  if (!isPlainObject(record)) return [];
+  const known = RECORD_KEY_ORDER.filter((name) => Object.hasOwn(record, name));
+  const others = Object.keys(record).filter((name) => !RECORD_KEY_ORDER.includes(name) && isEmittableKey(name));
+  return [...known, ...others].map(
+    (name, index) => `${index === 0 ? '  - ' : '    '}${name}: ${emitRecordValue(name, record[name])}`,
+  );
+}
+
+function emitRecordValue(name, value) {
+  const quoted = QUOTED_RECORD_KEYS.has(name);
+  if (Array.isArray(value)) return emitFlowList(value, quoted);
+  if (isPlainObject(value)) return emitFlowMap(value);
+  return emitFlowScalar(value, quoted);
+}
+
+function emitFlowMap(map) {
+  const entries = Object.entries(map).filter(([name]) => isEmittableKey(name));
+  const rendered = entries.map(
+    ([name, value]) => `${name}: ${Array.isArray(value) ? emitFlowList(value, false) : emitFlowScalar(value, false)}`,
+  );
+  return `{${rendered.join(', ')}}`;
+}
+
+function emitFlowList(items, quoted) {
+  return `[${items.map((item) => emitFlowScalar(item, quoted)).join(', ')}]`;
+}
+
+function emitFlowScalar(value, quoted) {
+  if (typeof value === 'boolean') return String(value);
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (value === null || value === undefined) return "''";
+  if (typeof value !== 'string') return yamlStr(JSON.stringify(value));
+  const bare = !quoted && BARE_WORD.test(value) && !NON_STRING_WORDS.has(value);
+  return bare ? value : yamlStr(value);
+}
+
+function isEmittableKey(name) {
+  return EMITTABLE_KEY.test(name) && !UNSAFE_KEYS.has(name);
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 export function serializeFrontmatter(fields) {
@@ -283,6 +343,9 @@ export function buildNote({ repo, body, collection = '', sessionId = '', now = n
     up: '',
     related: [],
     machine: '',
+    // No transcript reaches the checkpoint, so no searches are known.
+    retrievals: [],
+    retrieved: [],
   };
 
   const text =

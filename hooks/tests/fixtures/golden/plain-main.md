@@ -55,7 +55,7 @@ agent: claude-code
 agent_type: ''
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.2.0'
+generator: 'session-capture.mjs 2.3.0'
 tools_used:
   Edit: 5
   Write: 4
@@ -64,6 +64,8 @@ tools_used:
 up: '[[projects/bb2dash/index|bb2dash]]'
 related: []
 machine: ''
+retrievals: []
+retrieved: []
 ---
 
 # Session 2026-09-11 — bb2dash

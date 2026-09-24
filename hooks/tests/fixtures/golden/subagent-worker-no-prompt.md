@@ -43,13 +43,15 @@ agent: claude-code
 agent_type: 'feature-dev:code-reviewer'
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.2.0'
+generator: 'session-capture.mjs 2.3.0'
 tools_used:
   Edit: 1
   Read: 1
 up: '[[88888888-8888-4888-8888-888888888888]]'
 related: []
 machine: ''
+retrievals: []
+retrieved: []
 ---
 
 # Subagent feature-dev:code-reviewer 2026-09-16 — bb2dash

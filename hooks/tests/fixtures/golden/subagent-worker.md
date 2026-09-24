@@ -46,7 +46,7 @@ agent: claude-code
 agent_type: 'general-purpose'
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.2.0'
+generator: 'session-capture.mjs 2.3.0'
 tools_used:
   Bash: 1
   Edit: 1
@@ -54,6 +54,8 @@ tools_used:
 up: '[[88888888-8888-4888-8888-888888888888]]'
 related: []
 machine: ''
+retrievals: []
+retrieved: []
 ---
 
 # Subagent general-purpose 2026-09-16 — bb2dash

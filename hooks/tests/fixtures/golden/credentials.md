@@ -42,13 +42,15 @@ agent: claude-code
 agent_type: ''
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.2.0'
+generator: 'session-capture.mjs 2.3.0'
 tools_used:
   Bash: 2
   Write: 1
 up: '[[projects/agentic-harness/index|agentic-harness]]'
 related: []
 machine: ''
+retrievals: []
+retrieved: []
 ---
 
 # Session 2026-09-12 — agentic-harness

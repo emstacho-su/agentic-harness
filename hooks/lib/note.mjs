@@ -119,6 +119,9 @@ export function buildFields(ctx) {
     up: '',
     related: [],
     machine: ctx.machine ?? '',
+    // SC-1: the session's searches and the vault notes they returned.
+    retrievals: ctx.retrievals ?? [],
+    retrieved: ctx.retrieved ?? [],
   };
 }
 
