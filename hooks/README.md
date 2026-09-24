@@ -113,8 +113,19 @@ A worker launched with the Agent tool does real work but shares its parent's
 `session_id` and never fires `SessionEnd`, so its edits used to disappear into
 the parent's note as a handful of file paths. `SubagentStop` gives it a note of
 its own, with `parent_session` set to the session that spawned it and
-`agent_type` recording what kind of worker it was. Collection, branch, tags and
-redaction are the session rules applied unchanged.
+`agent_type` recording what kind of worker it was. Branch, tags and redaction
+are the session rules applied unchanged.
+
+A worker is filed under its **parent's** collection: the `cwd` the parent
+transcript (`<session_id>.jsonl`, beside the `subagents/` folder) declares in
+its first records, never the directory the worker happened to be in when it
+stopped. The worker's own directory stays on the note as `cwd` / `cwds_seen`,
+and is used for the collection only when the parent transcript cannot be read
+or names no `cwd`. And a note already filed for that worker in any collection
+is merged into where it sits, by the hook and by the nightly sweep alike, rather
+than copied. On 2026-09-24 eight worker notes existed twice: the hook had filed
+them by the folder the worker had `cd`'d into (`vault`, `estac`, another repo),
+the sweep beside their parent.
 
 The link holds whichever order the events arrive in, and both orders really
 happen:

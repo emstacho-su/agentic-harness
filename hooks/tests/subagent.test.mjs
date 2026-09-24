@@ -261,6 +261,119 @@ test('the same worker stopping twice with nothing new to say enqueues nothing', 
   }
 });
 
+// ------------------------------------------------ where a worker is filed
+//
+// 2026-09-24: eight worker notes on the live vault were filed twice. The hook
+// placed a worker by the directory it had `cd`'d to when it stopped (the vault,
+// the home folder, another repo); the sweep placed the same worker beside its
+// parent. A worker belongs to its session, so it files where the session does.
+
+const VAULT_SESSIONS = 'projects/vault/sessions';
+const VAULT_CWD = '__SANDBOX__/vault';
+
+function stopIn(sandbox, transcriptPath, agentId, cwd) {
+  return runSubagentStop(sandbox, { sessionId: SESSION_ID, agentId, agentType: 'general-purpose', cwd, transcriptPath });
+}
+
+/** Every copy of a note with this filename, anywhere in the sandbox vault. */
+function copiesOf(sandbox, filename) {
+  const found = [];
+  for (const area of ['projects', 'classes']) {
+    const areaDir = path.join(sandbox.vaultRoot, area);
+    for (const collection of fs.readdirSync(areaDir)) {
+      if (fs.existsSync(path.join(areaDir, collection, 'sessions', filename))) found.push(`${area}/${collection}`);
+    }
+  }
+  return found;
+}
+
+test("a worker that cd'd into the vault is filed under its parent's collection, by the parent transcript's cwd", () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    const outcome = stopIn(sandbox, transcriptPath, 'c0ffee01', VAULT_CWD);
+    assert.equal(outcome.written, true, `${outcome.action}: ${outcome.skip}`);
+
+    const child = fieldsAt(sandbox, WORKER_ONE);
+    assert.equal(child.collection, 'bb2dash');
+    assert.equal(child.collection_source, 'git');
+    // Where the worker actually was stays on the note: that is provenance.
+    assert.equal(child.cwd, `${sandbox.root}/vault`);
+    assert.deepEqual(copiesOf(sandbox, `${SESSION_ID}--c0ffee01.md`), ['projects/bb2dash']);
+    assert.equal(fs.existsSync(path.join(sandbox.vaultRoot, 'projects', 'vault')), false, 'no folder-named collection was grown');
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('a worker whose parent transcript cannot be read, or declares no cwd, falls back to its own directory', () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+
+    // No parent transcript at all: today's rule, the worker's own cwd.
+    fs.rmSync(transcriptPath);
+    const gone = stopIn(sandbox, transcriptPath, 'c0ffee01', VAULT_CWD);
+    assert.equal(gone.written, true, `${gone.action}: ${gone.skip}`);
+    const orphan = fieldsAt(sandbox, `${VAULT_SESSIONS}/${SESSION_ID}--c0ffee01.md`);
+    assert.equal(orphan.collection, 'vault');
+    assert.equal(orphan.collection_source, 'folder');
+
+    // A parent transcript whose head carries no cwd: the same fallback.
+    fs.writeFileSync(transcriptPath, '{"type":"user","message":{"role":"user","content":"hi"}}\n', 'utf8');
+    stopIn(sandbox, transcriptPath, 'c0ffee02', '__SANDBOX__/repos/agentic-harness');
+    const fallback = fieldsAt(sandbox, `projects/agentic-harness/sessions/${SESSION_ID}--c0ffee02.md`);
+    assert.equal(fallback.collection, 'agentic-harness');
+    assert.equal(fallback.collection_source, 'git');
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('a note already filed for this worker in another collection is merged there, never copied', () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    // What an older hook left: the worker filed under the folder it stopped in.
+    const earlier = path.join(sandbox.vaultRoot, VAULT_SESSIONS, `${SESSION_ID}--c0ffee01.md`);
+    fs.mkdirSync(path.dirname(earlier), { recursive: true });
+    fs.writeFileSync(
+      earlier,
+      [
+        '---',
+        `id: "session-${SESSION_ID}--c0ffee01"`,
+        'collection: "vault"',
+        'collection_source: "folder"',
+        `session_id: "${SESSION_ID}"`,
+        'status: "concluded"',
+        `cwd: "${sandbox.root}/vault"`,
+        'tags:',
+        '  - "kept-by-hand"',
+        `parent_session: "${SESSION_ID}"`,
+        '---',
+        '',
+        '# Earlier note',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const outcome = stopIn(sandbox, transcriptPath, 'c0ffee01', '__SANDBOX__/repos/bb2dash');
+    assert.equal(outcome.action, 'merge', `${outcome.action}: ${outcome.skip}`);
+    assert.equal(outcome.notePath, earlier);
+    assert.deepEqual(copiesOf(sandbox, `${SESSION_ID}--c0ffee01.md`), ['projects/vault']);
+
+    const merged = fieldsAt(sandbox, `${VAULT_SESSIONS}/${SESSION_ID}--c0ffee01.md`);
+    // The note keeps describing the folder it sits in.
+    assert.equal(merged.collection, 'vault');
+    assert.equal(merged.collection_source, 'folder');
+    assert.ok(merged.tags.includes('kept-by-hand'), 'a merge, not a rewrite');
+    assert.ok(merged.files_modified.includes('web/src/lib/retrieval/filter.ts'));
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
 test('an agent id that is not a safe filename never reaches a path', () => {
   const sandbox = createSandbox();
   try {

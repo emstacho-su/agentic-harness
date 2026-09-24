@@ -16,14 +16,16 @@
  *     own `SessionEnd` runs. A child that stops before its parent is listed by
  *     the back-fill; a child that stops after is listed by this merge.
  *
- * Everything else — collection, branch, tags, redaction, the deadline, exit 0 —
- * is the session rules applied unchanged.
+ * The collection is the parent's, from the directory the parent transcript
+ * declares (see `placeWorker`). Everything else — branch, tags, redaction, the
+ * deadline, exit 0 — is the session rules applied unchanged.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 
 import { analyseTranscript } from './analyse.mjs';
+import { deriveCollection } from './collection.mjs';
 import {
   BUDGET_MS,
   CAPTURED_BY_HOOK,
@@ -46,10 +48,12 @@ import {
   renderBody,
   renderNote,
 } from './note.mjs';
-import { ensureIndex, persist, readNote, vaultAvailable } from './notes-io.mjs';
+import { SESSIONS_FOLDER, ensureIndex, findNoteByName, persist, readNote, vaultAvailable } from './notes-io.mjs';
 import { redact } from './redact.mjs';
+import { resolveRepo } from './repo.mjs';
 import { isoDate, uniqueCapped } from './text.mjs';
 import { extractOrigin, extractOutcome, extractPrompts, extractTools, createAccumulator, knownSecrets, readEntries } from './transcript.mjs';
+import { parentTranscriptBeside, readTranscriptHead } from './transcript-head.mjs';
 
 /**
  * Capture one finished subagent.
@@ -113,12 +117,18 @@ export function captureSubagent({
 
   const date = isoDate(facts.timing.endedAt) || isoDate(new Date().toISOString());
 
+  const placement = placeWorker({ input, agentId, agentTranscriptPath: transcriptPath, facts, vaultRoot });
+  const { current, notePath: targetPath } = placement;
+  if (current.error) {
+    return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
+  }
+
   const context = {
     sessionId: input.sessionId,
     noteId: childNoteId(input.sessionId, agentId),
-    title: `Subagent ${agentType || agentId} ${date} — ${facts.collection}`,
-    collection: facts.collection,
-    collectionSource: facts.collectionSource,
+    title: `Subagent ${agentType || agentId} ${date} — ${placement.collection}`,
+    collection: placement.collection,
+    collectionSource: placement.collectionSource,
     date,
     cwd: facts.cwd,
     cwdsSeen: facts.cwdsSeen,
@@ -165,20 +175,13 @@ export function captureSubagent({
     transcriptPath,
   };
 
-  const sessionsDir = path.join(vaultRoot, facts.area, facts.collection, 'sessions');
-  const targetPath = path.join(sessionsDir, childNoteFilename(input.sessionId, agentId));
-
-  const current = readNote(targetPath);
-  if (current.error) {
-    return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
-  }
-
   // The same merge rule as a session note: lists grow, scalars only improve,
   // and a tag added by hand survives. A subagent's note is rewritten if the
   // same agent id stops twice.
   const fields = withLinks(
     current.fields ? mergeFields(current.fields, buildFields(context)) : buildFields(context),
-    facts.area,
+    placement.area,
+    placement.collection,
   );
   const merged = { ...context, previousBody: current.body };
   const result = persist(targetPath, renderNote(fields, renderBody(merged, fields)));
@@ -188,8 +191,13 @@ export function captureSubagent({
 
   // A worker can be the first note in its collection: its parent may file elsewhere.
   // `SubagentStop` fires at every stop of a multi-turn worker; only the first can matter.
-  const index = current.fields ? { ok: true } : ensureIndex(vaultRoot, facts.area, facts.collection);
-  const linked = linkIntoParent({ sessionsDir, area: facts.area, sessionId: input.sessionId, childId: fields.id });
+  const index = current.fields ? { ok: true } : ensureIndex(vaultRoot, placement.area, placement.collection);
+  const linked = linkIntoParent({
+    sessionsDir: placement.parentSessionsDir,
+    area: placement.parentArea,
+    sessionId: input.sessionId,
+    childId: fields.id,
+  });
 
   return {
     written: true,
@@ -204,11 +212,79 @@ export function captureSubagent({
     ],
     vaultRoot,
     detail:
-      `${facts.area}/${facts.collection}/sessions/${path.basename(targetPath)} ` +
-      `agent_type=${agentType || 'unknown'} parent=${linked.status}` +
+      `${placement.area}/${placement.collection}/sessions/${path.basename(targetPath)} ` +
+      `agent_type=${agentType || 'unknown'} placed_by=${placement.basis} parent=${linked.status}` +
       (result.changed ? '' : ' (identical on disk)') +
       (index.ok ? '' : ` (index not written: ${index.error})`),
   };
+}
+
+/** `placed_by=` in the log line: which rule decided where the note went. */
+const PLACED_BY_PARENT = 'parent';
+const PLACED_BY_OWN_CWD = 'own-cwd';
+const PLACED_BY_EARLIER_NOTE = 'earlier-note';
+
+/**
+ * Where a worker's note is filed, and the note already there.
+ *
+ * A worker belongs to its session, so it files where its session does: the
+ * collection comes from the directory the parent transcript declares, never
+ * from wherever the worker had `cd`'d to when it stopped. On 2026-09-24 eight
+ * worker notes on the live vault existed twice — the hook had filed them under
+ * `vault`, `estac` or another repo by the worker's own directory, and the sweep
+ * beside their parent. A parent transcript that cannot be read, or declares no
+ * `cwd`, falls back to the worker's own directory, which is the old rule.
+ *
+ * A note already filed for this worker in any other collection is the one
+ * merged into, and keeps describing the folder it sits in: a second copy is
+ * the bug this exists to stop. The parent note is still looked for in the
+ * parent's collection, because that is where the session files itself.
+ *
+ * @returns {{area: string, collection: string, collectionSource: string,
+ *            notePath: string, current: object, parentArea: string,
+ *            parentSessionsDir: string, basis: string}}
+ */
+function placeWorker({ input, agentId, agentTranscriptPath, facts, vaultRoot }) {
+  const fromParent = parentPlacement({ input, agentTranscriptPath, vaultRoot });
+  const home = fromParent ?? { area: facts.area, collection: facts.collection, collectionSource: facts.collectionSource };
+  const parentSessionsDir = path.join(vaultRoot, home.area, home.collection, SESSIONS_FOLDER);
+  const parent = { parentArea: home.area, parentSessionsDir };
+
+  const filename = childNoteFilename(input.sessionId, agentId);
+  const homePath = path.join(parentSessionsDir, filename);
+  const earlier = fs.existsSync(homePath) ? null : findNoteByName(vaultRoot, filename);
+  if (!earlier) {
+    const basis = fromParent ? PLACED_BY_PARENT : PLACED_BY_OWN_CWD;
+    return { ...home, ...parent, notePath: homePath, current: readNote(homePath), basis };
+  }
+
+  const current = readNote(earlier.notePath);
+  return {
+    area: earlier.area,
+    collection: earlier.collection,
+    collectionSource: String(current.fields?.collection_source ?? '') || home.collectionSource,
+    ...parent,
+    notePath: earlier.notePath,
+    current,
+    basis: PLACED_BY_EARLIER_NOTE,
+  };
+}
+
+/**
+ * The collection the parent session files under, from the `cwd` its own
+ * transcript declares; `null` when no parent transcript says.
+ *
+ * The transcript beside the worker's `subagents/` folder is asked first, then
+ * the payload's `transcript_path`, which on `SubagentStop` is the session's.
+ */
+function parentPlacement({ input, agentTranscriptPath, vaultRoot }) {
+  const candidates = [parentTranscriptBeside(agentTranscriptPath, input.sessionId), input.transcriptPath];
+  for (const candidate of candidates) {
+    if (!candidate || candidate === agentTranscriptPath) continue;
+    const { cwd } = readTranscriptHead(candidate);
+    if (cwd) return deriveCollection({ cwd, vaultRoot, repo: resolveRepo(cwd) });
+  }
+  return null;
 }
 
 /**

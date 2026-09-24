@@ -43,9 +43,11 @@ export function sweepGit(args, options = {}) {
 import { parseHookInput } from './stdin.mjs';
 import { captureSubagent } from './subagent.mjs';
 import { toPosix } from './text.mjs';
+import { readTranscriptHead } from './transcript-head.mjs';
 
-/** How much of a transcript is read to learn its `cwd` and `entrypoint`. */
-export const TRANSCRIPT_HEAD_BYTES = 64 * 1024;
+// The head reader moved to its own module so `SubagentStop` can share it; the
+// sweep still answers for it, and its tests import it from here.
+export { TRANSCRIPT_HEAD_BYTES, readTranscriptHead } from './transcript-head.mjs';
 
 const TRANSCRIPT_SUFFIX = '.jsonl';
 const NOTE_SUFFIX = '.md';
@@ -60,7 +62,11 @@ const AGENT_PREFIX = 'agent-';
  * note is written by `SubagentStop` long before the session ends, and a
  * session killed with its terminal leaves exactly that — worker notes and no
  * parent — which is one of the cases the sweep exists for. Re-capturing the
- * workers alongside the parent is idempotent (the child note merges).
+ * workers alongside the parent is idempotent because `captureSubagent` looks
+ * the worker's filename up across the whole vault and merges into the note it
+ * finds, wherever it sits. Merging only a note in the parent's own folder was
+ * not enough: an older hook filed workers by the directory they stopped in, and
+ * on 2026-09-24 eight worker notes existed twice, once in each collection.
  * A session id never ends in `-r<digits>`, so the strip cannot eat into it.
  */
 export function indexNotedSessions(vaultRoot) {
@@ -126,30 +132,6 @@ export function listCandidateTranscripts({ projectsRoot, noted, minIdleMs, now =
 
   candidates.sort((a, b) => a.mtimeMs - b.mtimeMs || a.sessionId.localeCompare(b.sessionId));
   return { candidates, skippedNoted, skippedActive };
-}
-
-/**
- * The `cwd` and `entrypoint` a transcript declares, from its first records.
- *
- * Only the head is read: the hook receives `cwd` on stdin, and this is the
- * sweep standing in for stdin. A transcript whose head holds neither yields
- * empty strings, and `capture()` then falls back to the cwd its prompts carry.
- */
-export function readTranscriptHead(transcriptPath) {
-  let cwd = '';
-  let entrypoint = '';
-  for (const line of readHeadLines(transcriptPath)) {
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!cwd && typeof entry?.cwd === 'string') cwd = toPosix(entry.cwd);
-    if (!entrypoint && typeof entry?.entrypoint === 'string') entrypoint = entry.entrypoint;
-    if (cwd && entrypoint) break;
-  }
-  return { cwd, entrypoint };
 }
 
 /** The worker transcripts beside a session's own, by Claude Code's layout. */
@@ -372,19 +354,5 @@ function statFile(file) {
     return stat.isFile() ? stat : null;
   } catch {
     return null;
-  }
-}
-
-function readHeadLines(file) {
-  let fd = null;
-  try {
-    fd = fs.openSync(file, 'r');
-    const buf = Buffer.alloc(TRANSCRIPT_HEAD_BYTES);
-    const read = fs.readSync(fd, buf, 0, buf.length, 0);
-    return buf.subarray(0, read).toString('utf8').split('\n');
-  } catch {
-    return [];
-  } finally {
-    if (fd !== null) fs.closeSync(fd);
   }
 }
