@@ -32,6 +32,10 @@ Six asks from Stack (2026-09-24), in the order given:
 | 2 | What runs the reviewer? | Tool-neutral repo commands; headless Claude Code (`claude -p`) runs them now, Hermes may run the same commands later. |
 | 3 | How autonomous is it? | **The end goal is fully automatic.** This sprint builds the evidence that makes that safe (R-C7). |
 | 4 | Where does the sprint stop? | Items 1, 2, 4, 6 built, plus the read-only half of item 5. Condense and prune are applied next sprint. Item 3 is design notes. |
+| 5 | Is `claude-config` public or private? | Private for now (R-H5). |
+| 6 | How often does the curator run? | Weekly (Phase C). |
+| 7 | Readable titles and the Front Matter Title plugin? | Adopted (R-N3). |
+| 8 | Which collection is the curator pilot? | Stack named `agentic-harness` or `bb2dash`; the order is harness first, then bb2dash (Phase C, *Curator safety*). |
 
 ## Facts this rests on (measured 2026-09-24)
 
@@ -137,17 +141,20 @@ untrusted notes) and R-H5 (a repo built from a folder that holds credentials).
   running; the created file is in the right `sessions/` folder and is complete after the parent ends.
 - **Done when.** No `.md` at the vault root; every subagent `up` resolves after its parent concludes.
 
-### R-N3 Session titles that say something (stretch)
+### R-N3 Session titles that say something, shown in the graph
 - **Requirement.** New session titles read `2026-09-24 · agentic-harness · <first six words of the
   first prompt>` instead of `Session 2026-09-24 — agentic-harness`. Existing notes are left alone
-  until C5 supplies better titles. `docs/portable.md` documents the Front Matter Title plugin as an
-  optional MANUAL step per machine (`.obsidian` is untracked).
+  until C5 supplies better titles. The Front Matter Title plugin is adopted (decision 7), set to
+  show `title` in the graph and the file explorer. `.obsidian` is untracked, so installing it is a
+  MANUAL step per machine: `docs/portable.md` lists it in both runbooks, and R-H6's bootstrap prints
+  it as a reminder at the end.
 - **Why.** Session files are named by UUID, so their nodes read as noise; Front Matter Title shows the
   frontmatter `title` in the graph without renaming files
   ([plugin](https://github.com/snezhig/obsidian-front-matter-title)).
 - **Tests.** Unit: title builder on prompts with slash commands, pasted blocks and non-ASCII. Live: one
   new note's title.
-- **Done when.** Stack decides whether to adopt it (open item 3); if yes, new notes carry the form.
+- **Done when.** New notes carry the form, and on home-pc the graph labels session nodes and hub
+  nodes by `title` with the plugin installed.
 
 ---
 
@@ -492,7 +499,11 @@ profile.
   output is schema-validated, and only the Python stage writes files, and only curator-owned paths.
 - Curator-written notes carry `captured_by: curator` and `type: status | ledger | history |
   curation-report`. They are ingested (so `search_context` finds status), but never condensed or pruned.
-- The pilot is `agentic-harness`; all realms follow only after R-C2 to R-C5 pass there.
+- The pilot is `agentic-harness`, then `bb2dash`, then every other collection (decision 8). Each step
+  starts only after R-C2 to R-C5 pass on the one before. The harness goes first because its
+  `status.md` feeds R-H4 for the work in this sprint, and its requirement documents are the format
+  R-C4's parser is tested against. bb2dash is second as the cross-check: it has the most sessions (279)
+  and a different planning format (numbered phase briefs under `docs/planning/`).
 
 ---
 
@@ -511,12 +522,9 @@ The levers, each with the trigger that would make it a requirement:
 | Condense subagents into their parent (C, next sprint) | R-C7 promotes condense |
 | Colour groups by `type` and path, and a saved "overview" filter (`-path:sessions`) | Any collection over 300 notes |
 | Local graph as the default view; hub → history → session drill-down | Stack reports the global graph unusable |
-| Front Matter Title plugin | R-N3 adopted |
+| Front Matter Title plugin | Adopted in R-N3 |
 | Month rollup notes, deferred since PR #5 | `history.md` proves too coarse |
 
-## Open items for Stack
+## Open items
 
-1. `claude-config` private (recommended) or public.
-2. Curator cadence: weekly (recommended) or nightly.
-3. R-N3 and the Front Matter Title plugin: adopt or skip.
-4. The pilot collection: `agentic-harness` (recommended) or another.
+None. The four raised with the first draft were settled the same day (decisions 5–8).
