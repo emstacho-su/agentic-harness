@@ -1,9 +1,10 @@
 <#
 .SYNOPSIS
-    The nightly reconcile: conclude stale sessions, then re-ingest the vault.
+    The nightly reconcile: conclude stale sessions, re-ingest the vault, then
+    audit the store and score retrieval.
 
 .DESCRIPTION
-    Three steps, in this order and for this reason:
+    The steps, in this order and for this reason:
 
       0. transcript sweep — hooks/sweep-transcripts.mjs writes a note for every
          idle transcript under ~/.claude/projects that has none: SDK workers,
@@ -14,6 +15,15 @@
          notes still 'active' more than 24 h after their ended_at (R-27.2).
       2. ingest           — a full walk of the vault, which picks up the notes
          the sweeps just wrote along with anything the per-note hook missed.
+      3. verify           — `ingest verify`, the read-only store audit (R-Q1):
+         exit 0 clean, 1 findings, 2 could not run. After the ingest, so it
+         audits the store the ingest just left.
+      4. eval             — `ingest eval --history`, the read-only retrieval
+         eval (R-Q3), which appends one line to ingest/eval/history.jsonl.
+      5. realms-push      — commit, merge-pull and push the push-policy realms.
+
+    Verify and eval only report. A non-zero exit from either is logged and the
+    job goes on; neither changes the exit code, which stays the ingest's.
 
     Running the sweep first is what makes the status change visible to search in
     the same night. The other way round, every concluded note would wait a day.
@@ -40,6 +50,14 @@
     Apply   - write the concluded status (the point of the nightly run)
     DryRun  - report what it would conclude, change nothing
     Skip    - do not sweep at all
+
+.PARAMETER Verify
+    Apply   - run the store audit after the ingest (the default)
+    Skip    - do not audit. It never writes, so there is no DryRun.
+
+.PARAMETER Eval
+    Apply   - run the retrieval eval and append to its history (the default)
+    Skip    - do not score retrieval tonight
 
 .EXAMPLE
     ./nightly-ingest.ps1 -SweepMode DryRun
@@ -68,11 +86,18 @@ param(
     [string[]] $CheckpointRepos = @(),
     [ValidateSet('Apply', 'DryRun', 'Skip')]
     [string] $Checkpoints = 'Apply',
-    # Steps -1 and 3 (hooks/sync-realms.mjs): commit and merge-pull every realm
+    # Steps -1 and 5 (hooks/sync-realms.mjs): commit and merge-pull every realm
     # before the night's work; commit, merge-pull and push the push-policy realms
     # after it. Nothing is forced, rebased or stashed.
     [ValidateSet('Apply', 'DryRun', 'Skip')]
-    [string] $RealmSync = 'Apply'
+    [string] $RealmSync = 'Apply',
+    # Steps 3 and 4: the store audit (`ingest verify`) and the retrieval eval
+    # (`ingest eval --history`). Both are read-only against the store, so Skip is
+    # the only other choice.
+    [ValidateSet('Apply', 'Skip')]
+    [string] $Verify = 'Apply',
+    [ValidateSet('Apply', 'Skip')]
+    [string] $Eval = 'Apply'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -329,14 +354,37 @@ if ($sweepCode -ne 0) { Write-Log "sweep failed with $sweepCode; continuing to t
 $ingestArgs = @('--source', 'obsidian', '--path', $VaultPath, '--prune') + $envArgs
 $ingestCode = Invoke-Ingest -Uv $uv -Project $ProjectDir -IngestArgs $ingestArgs -Label 'ingest'
 
-# Step 3: commit the night's notes, merge-pull, and push the realms whose policy
+# Step 3: audit the store the ingest just left. It runs after a failed ingest
+# too: that is the night its findings matter most, and it only reads.
+$verifyCode = 0
+if ($Verify -eq 'Skip') {
+    Write-Log 'verify: skipped by -Verify Skip'
+} else {
+    $verifyArgs = @('verify', '--path', $VaultPath) + $envArgs
+    $verifyCode = Invoke-Ingest -Uv $uv -Project $ProjectDir -IngestArgs $verifyArgs -Label 'verify'
+}
+if ($verifyCode -ne 0) { Write-Log "verify ended with $verifyCode; 1 is findings, 2 is could not run, see the verify lines above" }
+
+# Step 4: score retrieval against the golden set and append the result to
+# ingest/eval/history.jsonl. No --min-hit-rate, so it reports and never gates.
+$evalCode = 0
+if ($Eval -eq 'Skip') {
+    Write-Log 'eval: skipped by -Eval Skip'
+} else {
+    $evalArgs = @('eval', '--history') + $envArgs
+    $evalCode = Invoke-Ingest -Uv $uv -Project $ProjectDir -IngestArgs $evalArgs -Label 'eval'
+}
+if ($evalCode -ne 0) { Write-Log "eval ended with $evalCode; tonight's history line may be missing, see the eval lines above" }
+
+# Step 5: commit the night's notes, merge-pull, and push the realms whose policy
 # allows it. Last, so a machine that fails earlier pushes nothing half-reconciled.
 # A conflicting merge is aborted with the local commit kept; it pushes next time.
 $pushCode = Invoke-RealmSync -Mode 'push' -Label 'realms-push'
 if ($pushCode -ne 0) { Write-Log "realm push ended with $pushCode; the notes are on disk and will go next time" }
 
-Write-Log "=== nightly reconcile finished (realms-pull $pullCode, transcripts $transcriptCode, checkpoints $checkpointCode, sweep $sweepCode, ingest $ingestCode, realms-push $pushCode) ==="
+Write-Log "=== nightly reconcile finished (realms-pull $pullCode, transcripts $transcriptCode, checkpoints $checkpointCode, sweep $sweepCode, ingest $ingestCode, verify $verifyCode, eval $evalCode, realms-push $pushCode) ==="
 
 # Task Scheduler shows this as the last result, so it has to mean "the reconcile
-# worked". Only the ingest decides that.
+# worked". Only the ingest decides that: verify and eval report through the log
+# and never change this code, however they end.
 exit $ingestCode

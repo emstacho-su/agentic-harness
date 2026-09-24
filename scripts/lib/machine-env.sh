@@ -24,7 +24,7 @@ MACHINE_ENV_KEY_RE='^[A-Za-z_][A-Za-z0-9_]*$'
 # Every harness setting carries this prefix.
 MACHINE_ENV_PREFIX='HARNESS_'
 # The un-prefixed settings nightly-ingest.sh reads; exactly those, nothing more.
-MACHINE_ENV_SETTINGS=' REALM_SYNC TRANSCRIPT_IDLE_HOURS STALE_AFTER_HOURS '
+MACHINE_ENV_SETTINGS=' REALM_SYNC TRANSCRIPT_IDLE_HOURS STALE_AFTER_HOURS STORE_VERIFY RETRIEVAL_EVAL '
 # Keys the file holds for programs that read it themselves (ingest, the hooks,
 # the MCP server). Skipped quietly: not exported, and not reported as mistakes.
 # Exporting DATABASE_URL here would also make it beat the repo .env, which the
