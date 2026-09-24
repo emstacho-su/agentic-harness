@@ -36,14 +36,20 @@ unrelated layout.
 ### R-A2 Per-device Obsidian state never enters git
 - **Requirement.** Each realm's `.gitignore` excludes `.obsidian/workspace.json`,
   `.obsidian/workspace-mobile.json`, `.trash/`, `.DS_Store`, `Thumbs.db`, and every
-  `.obsidian/plugins/*/` cache directory; `.obsidian/*.json` settings are tracked in the
-  `projects` realm only (the vault root's `.obsidian` moves with it).
+  `.obsidian/plugins/*/` cache directory. `.obsidian` itself stays at the vault root,
+  outside every realm, and is not tracked (decision 5): Obsidian opens the vault as one
+  folder with the realms side by side, and what travels between machines is the notes,
+  not Obsidian's settings. The per-device ignore rules stay in every realm's `.gitignore`
+  (`classes` ignores `.obsidian/` wholesale), so a realm that ever holds an `.obsidian`
+  still keeps its session state out.
 - **Why.** `workspace.json` changes on every session and is the top source of spurious
   conflicts ([obsidian-git docs](https://publish.obsidian.md/git-doc/Tips-and-Tricks),
   [maintainer](https://github.com/Vinzent03/obsidian-git/discussions/709)).
 - **Tests.** Unit: `git check-ignore` on each path in a scratch repo. Live: after one
-  Obsidian session at the new path, `git status --porcelain` in each realm is empty.
-- **Done when.** Opening and closing Obsidian produces no diff in either realm.
+  Obsidian session at the new path, `git status --porcelain` in each realm is empty
+  (runbook step 10).
+- **Done when.** Opening and closing Obsidian produces no diff in either realm (true by
+  construction once `.obsidian` is outside both; the live check confirms it).
 
 ### R-A3 Names that one platform rejects are refused before they are committed
 - **Requirement.** The sync commit step refuses (and reports) any path containing
@@ -134,55 +140,89 @@ unrelated layout.
 ## Phase C — the relocation itself
 
 ### R-C1 Copy, verify by content, only then cut over
-- **Requirement.** The vault is copied (never moved) from OneDrive to `~/vault`, then a
-  SHA-256 listing of every file on both sides is compared and must be identical; the old
-  copy is marked read-only and stays for 21 days; OneDrive stops syncing the folder via
-  Settings › Choose folders, not by deleting it.
+- **Requirement.** The vault leaves OneDrive entirely (decision 5). It is copied (never
+  moved) from OneDrive twice: to `~/vault` (`C:\Users\estac\vault`, the new working
+  vault) and to a read-only local archive outside OneDrive,
+  `C:\Users\estac\vault-archive-2026-09-23`. Each copy is compared with the source by a
+  SHA-256 listing of every file and must be identical. Only then is the OneDrive folder
+  unticked in Settings › Account › Choose folders, which removes the local OneDrive copy
+  and keeps the cloud copy until R-F2. The 21-day safety copy is the local archive, not
+  the OneDrive folder. Nothing under OneDrive is written or deleted by the runbook; the
+  untick is the only OneDrive action, and Stack does it.
 - **Why.** OneDrive corrupts `.git` in place and Microsoft declined the issue
   ([TechCommunity](https://techcommunity.microsoft.com/discussions/onedriveforbusiness/onedrive-is-corrupting-my-git-repositories/3898283));
-  "Always keep on this device" first, because a placeholder copies as zero bytes
+  "Always keep on this device" first, because a placeholder copies as zero bytes, and an
+  unticked folder is removed from the device while it stays available online
   ([Microsoft](https://support.microsoft.com/en-us/onedrive/choose-which-onedrive-folders-you-want-to-sync-on-windows-or-macos)).
-- **Tests.** Dry run: `robocopy /L` shows the file count (621 + `.obsidian`). Live: hash
-  listings match (script committed as `scripts/verify-copy.ps1`, prints the first mismatch or
-  `identical`); `attrib` shows `R` on the old tree.
-- **Done when.** `verify-copy.ps1` prints `identical`, the old folder is read-only, the
-  folder is unticked in OneDrive, and the rollback note (R-C4) is written.
+  That removal is why the safety copy has to be a separate local archive: once the folder
+  is unticked there is no OneDrive copy on this PC to fall back to.
+- **Tests.** Dry run: `robocopy /L` shows 762 files, for each destination. (This doc first
+  said 621 + `.obsidian`; the vault grew between 2026-09-22 and the 2026-09-23
+  measurement: 762 files, 66 folders, 8.9 MB, 754 `.md`, 7 under `.obsidian`.) Live:
+  `scripts/verify-copy.ps1 -Source <OneDrive vault> -Destination <copy>`, run once for
+  `C:\Users\estac\vault` and once for the archive, hashes every file on both sides with
+  SHA-256 (`.git` excluded by default, so it can be re-run after the realms exist) and
+  prints the first mismatch (`missing in destination:`, `hash differs:`,
+  `extra in destination:`, exit 1) or `identical (<n> files, <bytes> bytes, SHA256, <s> s)`
+  (exit 0); exit 2 on a bad argument. It is proved on the rehearsal copy first, including
+  one deliberately altered byte. `attrib` shows `R` on the archive. After the untick,
+  `Test-Path` on the OneDrive vault is `False`, or finds only an empty folder stub.
+- **Done when.** Two `identical (762 files, …)` lines (working vault, archive), `attrib`
+  shows `R` on the archive, the folder is unticked in OneDrive, and the rollback section
+  (R-C4) exists. Runbook steps 2-3 in `docs/portable.md`.
 
 ### R-C2 Realms initialised from the copy, first commit is the whole history baseline
 - **Requirement.** `~/vault/projects` and `~/vault/classes` each get `.realm`, R-A1/R-A2
   files, `git init -b main`, one commit, and a **new** private remote
   (`emstacho-su/vault-projects`, `emstacho-su/vault-classes`). `emstacho-su/vault` (May
   2026, old layout) is archived, not reused. Both realms are `push` (decision 3), so both
-  remotes are created and pushed in this phase.
+  remotes are created and pushed in this phase. Before the baseline, the one non-markdown
+  file is moved to `classes/attachments/ist466/Group 3 IST466.pptx` (decision 5), so the
+  first commit already carries it where the sync will keep staging it.
 - **Why.** Reusing the old repo would mix two histories and two layouts under one name.
-- **Tests.** Dry run: `hooks/init-realm.mjs --dry-run` lists the files it would write and
-  the commit it would make. Live: `git log --oneline | wc -l` is 1 in each; `gh repo view`
-  shows both remotes private; `git fsck` clean.
+- **Tests.** Unit and real git: `hooks/init-realm.mjs` (dry run writes nothing; one commit;
+  every `.md` `i/lf`; a stray `.env` untracked and named; an NFD name refused with no
+  commit; `.gitattributes` in the first commit; a second run refused; `--remote` sets
+  origin without pushing). Dry run: `node hooks/init-realm.mjs --vault <dir> --realm <name>
+  --dry-run` lists the three policy files it would write, the staged path count with a
+  sample, any `not staged:` lines, and the commit it would make. Live: `git log --oneline
+  | wc -l` is 1 in each; `gh repo view` shows both remotes private; `git fsck` clean.
 - **Done when.** Both remotes exist, private, with one commit whose tree equals the copy
-  (`git diff --stat HEAD` empty after `git add` of allowed paths).
+  (`git diff --stat HEAD` empty), and `emstacho-su/vault` is archived. Runbook steps 4-6.
 
 ### R-C3 The machine file and the tools point at the new vault
 - **Requirement.** `~/.harness/machine.env` names `HARNESS_VAULT=C:/Users/estac/vault`,
-  `HARNESS_REALMS=projects:push,classes:push`, `HARNESS_MACHINE=home-pc`; the hook is
-  reinstalled; both scheduled tasks are re-registered; Obsidian opens the new path.
+  `HARNESS_REALMS=projects:push,classes:push`, `HARNESS_MACHINE=home-pc`,
+  `HARNESS_GIT_EMAIL=emstacho@syr.edu` and `HARNESS_INGEST_PROJECT`; `DATABASE_URL` stays
+  in the repo `.env`. The hook is reinstalled; both scheduled tasks are re-registered, the
+  nightly one first with `-RealmSync DryRun` and, after one clean night, with
+  `-RealmSync Apply`; Obsidian opens the new path.
 - **Why.** Every tier resolves the vault from the machine file now; the tasks captured the
-  old path at registration time.
-- **Tests.** `node hooks/doctor.mjs` shows the new vault, both realms on disk and listed,
-  no `unlisted`. Obsidian: a known wikilink resolves; graph renders. Tasks: `Get-ScheduledTask`
-  actions contain the new path.
+  old path at registration time. A dry-run first night means the first unattended sync
+  against real remotes changes nothing until its log has been read.
+- **Tests.** `node hooks/doctor.mjs` is the evidence: the new vault, both realms on disk and
+  listed, `realms unlisted` and `realms missing` none, `git email` set, and a
+  `realm <name>` row per realm showing a git checkout with its origin, the commit count
+  and no lock held. Obsidian: a known wikilink resolves; graph renders. Tasks:
+  `Get-ScheduledTask` actions contain the new path (and `-RealmSync DryRun` on the first
+  registration).
 - **Done when.** Doctor output is clean, a session ended in a repo writes its note under
   `~/vault/projects/<collection>/sessions/` within a minute, and `claude mcp get rag` still
   shows Connected.
 
 ### R-C4 A written rollback, rehearsed once
 - **Requirement.** `docs/portable.md` gains a rollback section: exact commands to re-point
-  the machine file, tasks and Obsidian at the read-only OneDrive copy, and how long each
-  takes. It is rehearsed once on a scratch copy before cutover.
+  the machine file, tasks and Obsidian at the read-only local archive
+  (`C:\Users\estac\vault-archive-2026-09-23`, R-C1), and how long each takes. It is rehearsed once on a scratch copy before cutover.
 - **Why.** A rollback that exists only in someone's head is not a rollback
   ([rollback planning](https://softwaremodernizationservices.com/insights/data-migration-rollback-planning/)).
-- **Tests.** Rehearsal: follow the section verbatim against `C:/tmp/vault-rehearsal`;
-  every command runs; total time recorded.
-- **Done when.** The section exists with recorded timings and the rehearsal log is linked.
+- **Tests.** Rehearsal (runbook step 0): follow the section verbatim against
+  `C:\tmp\vault-rehearsal` with the paths swapped as the section lists (scratch machine
+  file via `HARNESS_MACHINE_ENV`, throwaway task names), before cutover; every command
+  runs; each step's time and the total recorded.
+- **Done when.** The *Rollback* section in `docs/portable.md` exists with its timing table
+  filled in from the rehearsal, and the rehearsal log
+  (`~/.claude/hooks/rollback-rehearsal.log`) is linked.
 
 ## Phase D — the store stays correct
 
@@ -267,10 +307,15 @@ unrelated layout.
   as recorded before migration (`ingest eval --json` before/after, diff empty on `returned`).
 - **Done when.** The script exits 0 and its output is attached to the migration PR.
 
-### R-F2 The read-only OneDrive copy is deleted only after the window
-- **Requirement.** 21 days after R-F1, if no rollback was needed, the OneDrive copy is
-  deleted and R-C4's rollback section is marked expired.
-- **Done when.** The folder is gone from OneDrive and the doc says so with the date.
+### R-F2 The old copies are deleted only after the window
+- **Requirement.** 21 days after R-F1, if no rollback was needed, both old copies are
+  deleted: the vault folder in OneDrive online (web: Files › vault › Delete, then again
+  from the Recycle bin, which otherwise keeps it) and the local archive
+  `C:\Users\estac\vault-archive-2026-09-23` (R-C1). R-C4's rollback section is marked
+  expired, because it re-points at that archive.
+- **Done when.** The vault folder is gone from OneDrive online (Recycle bin included) and
+  the local archive is gone from disk, and this doc and `docs/portable.md` say so with
+  the date.
 
 ---
 
@@ -280,7 +325,7 @@ unrelated layout.
 | --- | --- | --- |
 | A | B | R-A1–A4 done in code and tests, on `main` |
 | B | C | R-B1–B4 done in code, unit and real-git tests, on `main`; the three-night nightly check moves after Phase C (decision 4, 2026-09-23) |
-| C | D | R-C1 identical copy, R-C2 remotes, R-C3 doctor clean, R-C4 rehearsed |
+| C | D | R-C1 identical copy, R-C2 remotes, R-C3 doctor clean, R-C4 rehearsed; then, before D, the checks Phase B deferred: three `committed -> pulled -> pushed` nights (R-B1) and the credential-less push test (R-B4) |
 | D | E | R-D1 query returns 0, eval unchanged, R-D2 references committed |
 | E | F | R-E1 green on the VM, R-E2 round trip |
 | F | — | R-F1 script exit 0; R-F2 after 21 days |
@@ -306,6 +351,19 @@ unrelated layout.
    the two tasks overlapped on a catch-up run on 2026-09-23 and the collector writes notes
    into realm folders. The commit email is the machine-file variable `HARNESS_GIT_EMAIL`
    (`emstacho@syr.edu` on the home PC).
+5. (2026-09-23) `.obsidian` stays at the vault root, untracked, outside every realm.
+   Obsidian keeps opening `C:\Users\estac\vault` as one vault (`projects/`, `classes/`,
+   `daily/`, `templates/` side by side); what travels between machines is the notes in
+   the two realms plus the store each machine rebuilds, and Obsidian settings play no part
+   in that. R-A2 is amended to match; the `projects` `.gitignore` keeps its narrower rules,
+   which are harmless. The `.pptx` moves to `classes/attachments/ist466/Group 3 IST466.pptx`
+   at cutover, a plain file move before the baseline commit (runbook step 4). The vault
+   leaves OneDrive entirely: the folder is unticked once both copies verify (unticking
+   removes the local OneDrive copy, as Microsoft documents), and the 21-day safety copy is
+   the read-only local archive `C:\Users\estac\vault-archive-2026-09-23`, not the OneDrive
+   folder. At R-F2 both the OneDrive folder (online) and the archive are deleted. Phase C's
+   code, tests and docs are built on Opus 5.5 subagents, one per commit, reviewed and
+   committed in one PR.
 
 Follow-ups, not in Phase B:
 - `session-capture.mjs` and `sweep-transcripts.mjs` write into realms without taking the
@@ -313,6 +371,6 @@ Follow-ups, not in Phase B:
 - `commit.gpgsign` is not overridden by the sync; a machine that signs commits needs its
   key usable without a prompt.
 
-Open for Phase C: the one non-markdown file today (`classes/ist466/ethics-case/Group 3
-IST466.pptx`, 4.9 MB) is not under `attachments/`; R-A4's guard reports it, and R-B2's
-pathspecs would not stage it. Move it to `classes/attachments/` at cutover, or widen the rule.
+Decided for Phase C (was open): the one non-markdown file today (`classes/ist466/ethics-case/Group 3
+IST466.pptx`, 4.9 MB) is not under `attachments/`, and R-B2's pathspecs would not stage
+it. It moves to `classes/attachments/` at cutover (decision 5); the rule is not widened.
