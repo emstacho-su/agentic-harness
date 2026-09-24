@@ -69,6 +69,27 @@ function New-TreePair {
     return $pair
 }
 
+# A folder outside both trees for junctions to point at, holding one file.
+function New-JunctionTarget {
+    param([string] $Name)
+    $target = Join-Path $script:ScratchRoot "$Name\target"
+    Write-TreeFile $target 'inside.md' 'behind the link' | Out-Null
+    return $target
+}
+
+# A junction at <root>/<relative>; junctions need no admin rights, unlike symbolic links.
+function New-TreeJunction {
+    param([string] $Root, [string] $Relative, [string] $Target)
+    New-Item -ItemType Junction -Path (Join-Path $Root ($Relative -replace '/', '\')) -Target $Target | Out-Null
+}
+
+# Hold a file open with no sharing while $Action runs: anything that tries to read it fails.
+function Invoke-WithFileLocked {
+    param([string] $Path, [scriptblock] $Action)
+    $handle = [System.IO.File]::Open($Path, 'Open', 'Read', 'None')
+    try { return & $Action } finally { $handle.Dispose() }
+}
+
 function Get-BaseByteCount {
     $total = 0
     foreach ($content in $script:BaseFiles.Values) { $total += [System.Text.Encoding]::UTF8.GetByteCount($content) }
@@ -96,11 +117,14 @@ function Invoke-Verify {
 
 # Plain substring checks: -like would read the brackets in a name as a pattern.
 function Test-Case {
-    param([string] $Name, $Result, [int] $ExpectedCode, [string[]] $Expected = @())
+    param([string] $Name, $Result, [int] $ExpectedCode, [string[]] $Expected = @(), [string[]] $NotExpected = @())
     $problems = @()
     if ($Result.Code -ne $ExpectedCode) { $problems += "exit $($Result.Code), expected $ExpectedCode" }
     foreach ($fragment in $Expected) {
         if (-not $Result.Output.Contains($fragment)) { $problems += "output lacks '$fragment'" }
+    }
+    foreach ($fragment in $NotExpected) {
+        if ($Result.Output.Contains($fragment)) { $problems += "output has '$fragment'" }
     }
     if ($problems.Count -eq 0) {
         Write-Output "PASS $Name"
@@ -166,6 +190,48 @@ try {
     # The child's output crosses the console code page, so match on the ASCII
     # part of the name; the exit code and the verdict line are what matter.
     Test-Case 'non-ASCII name is hashed' $result 1 @('hash differs: notes/caf', '.md (', 'mismatch')
+
+    # Links: a junction is compared as a link to its target, never walked into.
+    $junctions = @()
+    $target = New-JunctionTarget 'junction-extra'
+    $pair = New-TreePair 'junction-extra'
+    New-TreeJunction $pair.Destination 'notes/linked' $target
+    $junctions += Join-Path $pair.Destination 'notes\linked'
+    $result = Invoke-Verify $pair.Source $pair.Destination
+    Test-Case 'junction only in destination is one extra entry' $result 1 @('extra in destination: notes/linked', 'mismatch') @('notes/linked/')
+
+    $pair = New-TreePair 'junction-both'
+    foreach ($root in @($pair.Source, $pair.Destination)) {
+        New-TreeJunction $root 'notes/linked' $target
+        $junctions += Join-Path $root 'notes\linked'
+    }
+    $result = Invoke-Verify $pair.Source $pair.Destination
+    Test-Case 'same junction on both sides is identical, and not walked into' $result 0 @(
+        "source: $($fileCount + 1) files", "identical ($($fileCount + 1) files, $byteCount bytes, ")
+
+    $otherTarget = New-JunctionTarget 'junction-other'
+    $pair = New-TreePair 'junction-differs'
+    New-TreeJunction $pair.Source 'notes/linked' $target
+    New-TreeJunction $pair.Destination 'notes/linked' $otherTarget
+    $junctions += @((Join-Path $pair.Source 'notes\linked'), (Join-Path $pair.Destination 'notes\linked'))
+    $result = Invoke-Verify $pair.Source $pair.Destination
+    Test-Case 'junctions to different targets differ' $result 1 @('link differs: notes/linked (', 'mismatch')
+    foreach ($junction in $junctions) { [System.IO.Directory]::Delete($junction) }
+
+    # Path sets are compared before any file is read: an unreadable source file
+    # cannot hide a missing one, and is never hashed when a path is missing.
+    $pair = New-TreePair 'missing-before-hash'
+    Remove-Item -LiteralPath (Join-Path $pair.Destination 'notes\sub\b.md')
+    $result = Invoke-WithFileLocked (Join-Path $pair.Source 'notes\a.md') { Invoke-Verify $pair.Source $pair.Destination }
+    Test-Case 'missing file is reported before hashing' $result 1 @('missing in destination: notes/sub/b.md', 'mismatch') @('hash differs', 'error:')
+
+    $pair = New-TreePair 'unreadable'
+    $result = Invoke-WithFileLocked (Join-Path $pair.Source 'notes\a.md') { Invoke-Verify $pair.Source $pair.Destination }
+    Test-Case 'unreadable file is exit 2, never a verdict' $result 2 @('error: ') @('mismatch', 'identical (')
+
+    $pair = New-TreePair 'bad-algorithm'
+    $result = Invoke-Verify $pair.Source $pair.Destination @('-Algorithm', 'MD4')
+    Test-Case 'unknown algorithm is exit 2, not 1' $result 2 @('error: ', 'MD4')
 
     $pair = New-TreePair 'missing-dir'
     $result = Invoke-Verify $pair.Source (Join-Path $script:ScratchRoot 'does-not-exist')

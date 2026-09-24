@@ -4,9 +4,10 @@
  *
  *   node hooks/init-realm.mjs --vault <dir> --realm <name> [--remote <url>] [--source <label>] [--dry-run]
  *
- * In `<vault>/<name>`: write `.realm`, `.gitattributes` and `.gitignore`,
- * `git init -b main` unless `.git` is already there, stage the sync paths
- * after the same guard the nightly sync runs, renormalise, and commit as
+ * In `<vault>/<name>`: survey the folder through a throwaway git directory
+ * with the same guard the nightly sync runs (a refusal writes nothing), then
+ * write `.realm`, `.gitattributes` and `.gitignore`, `git init -b main` unless
+ * `.git` is already there, stage the sync paths, renormalise, and commit as
  * HARNESS_MACHINE <HARNESS_GIT_EMAIL>. `--remote` adds origin; nothing is ever
  * pushed or fetched. A realm that already has a commit is left alone. See
  * lib/realm-baseline.mjs for the rules.
@@ -26,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { VAULT_ENV_VAR } from './lib/constants.mjs';
 import { gitEmail, loadMachineEnv, machineName } from './lib/machine-env.mjs';
 import { BASELINE_BRANCH, baselineRealm, checkRemoteUrl, checkSourceLabel, DEFAULT_SOURCE_LABEL, PATHS_NAMED } from './lib/realm-baseline.mjs';
+import { namePaths, redactRemoteUrl } from './lib/realm-steps.mjs';
 import { REALM_NAME } from './lib/realm-sync.mjs';
 
 const EXIT_OK = 0;
@@ -69,29 +71,24 @@ export function parseArgs(argv, env = process.env) {
   return validate(options);
 }
 
-/** `a, b, c` or `a, b, c, …N more`, naming the first `shown` of `total`. */
-function listed(shown, total, separator) {
-  const more = total - shown.length;
-  return more > 0 ? `${shown.join(separator)}${separator}…${more} more` : shown.join(separator);
-}
-
 function stopLine({ outcome, error }) {
   if (outcome === 'ok') return '';
   return outcome === 'already' ? error : `${outcome}: ${error}`;
 }
 
-/** The report, one line per fact, in the order the steps ran. */
+/** The report, one line per fact, in the order the steps ran. A remote url is printed without its user part. */
 export function formatBaseline(result) {
   const { staged, notStaged, remote } = result;
+  const named = { shown: PATHS_NAMED };
   return Object.freeze(
     [
       ...result.files.map(({ relPath, action }) => `${relPath}: ${action}`),
       result.init ? `init: ${INIT_WORDS[result.init]}` : '',
-      staged.count > 0 ? `staged: ${staged.count} paths (${listed(staged.sample, staged.count, ', ')})` : '',
-      notStaged.length > 0 ? `not staged: ${listed(notStaged.slice(0, PATHS_NAMED), notStaged.length, '; ')}` : '',
+      staged.count > 0 ? `staged: ${staged.count} paths (${namePaths(staged.sample, ', ', { ...named, total: staged.count })})` : '',
+      notStaged.length > 0 ? `not staged: ${namePaths(notStaged, '; ', named)}` : '',
       ...result.notes,
       result.commit ? (result.dryRun ? result.commit : `commit: ${result.commit}`) : '',
-      remote ? `remote: origin ${remote.url} ${remote.action}` : '',
+      remote ? `remote: origin ${redactRemoteUrl(remote.url)} ${remote.action}` : '',
       stopLine(result),
     ].filter(Boolean),
   );

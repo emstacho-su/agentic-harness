@@ -26,7 +26,14 @@ export const SYNC_GIT_TIMEOUT_MS = 30_000;
 const PATHS_SHOWN = 3;
 
 /** `git remote get-url` exits 2 when the remote does not exist; anything else is a real failure. */
-const NO_SUCH_REMOTE_STATUS = 2;
+export const NO_SUCH_REMOTE_STATUS = 2;
+/**
+ * The ignore rules the sync lists with: the realm's own `.gitignore`,
+ * `.git/info/exclude` and `core.excludesFile`, exactly as `git add` applies them.
+ */
+const STANDARD_EXCLUDES = Object.freeze(['--exclude-standard']);
+/** `scheme://anything@` up to the host: the user part of a url, where a token hides. */
+const URL_USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i;
 /** The remote a branch without an upstream is checked against: the name `git clone` gives. */
 const DEFAULT_REMOTE = 'origin';
 /** `git symbolic-ref -q` exits 1, quietly, when HEAD is detached. */
@@ -66,12 +73,12 @@ function step(word, notes = []) {
 }
 
 /** One git call with the realm's cwd, identity env and stderr capture. */
-function git(ctx, args, timeoutMs = SYNC_GIT_TIMEOUT_MS) {
+export function git(ctx, args, timeoutMs = SYNC_GIT_TIMEOUT_MS) {
   return ctx.runGit(args, { cwd: ctx.dir, timeoutMs, env: ctx.env, captureStderr: true });
 }
 
 /** `exit 128: fatal: …`, or just the code when git said nothing. */
-function describe(result) {
+export function describe(result) {
   const code = result.error || (result.status != null ? `exit ${result.status}` : 'failed');
   return result.stderr ? `${code}: ${result.stderr}` : code;
 }
@@ -81,10 +88,19 @@ export function splitZ(stdout) {
   return Object.freeze(String(stdout ?? '').split('\0').filter(Boolean));
 }
 
-/** `a; b; c; …N more`. */
-export function namePaths(paths) {
-  const shown = paths.slice(0, PATHS_SHOWN).join('; ');
-  return paths.length > PATHS_SHOWN ? `${shown}; …${paths.length - PATHS_SHOWN} more` : shown;
+/**
+ * `a; b; c; …N more`: the first `shown` of `paths`, joined by `separator`.
+ * `total` is for a caller that kept only a sample: it counts what `paths` left out.
+ */
+export function namePaths(paths, separator = '; ', { shown = PATHS_SHOWN, total = paths.length } = {}) {
+  const named = paths.slice(0, shown);
+  const more = total - named.length;
+  return more > 0 ? `${named.join(separator)}${separator}…${more} more` : named.join(separator);
+}
+
+/** `https://x:token@github.com/o/r.git` → `https://github.com/o/r.git`. A token never reaches a report. */
+export function redactRemoteUrl(url) {
+  return String(url ?? '').replace(URL_USERINFO, '$1');
 }
 
 // ---------------------------------------------------------------- preflight
@@ -182,21 +198,38 @@ function recordName(record) {
 }
 
 /**
- * Every path the add could take (tracked and untracked-not-ignored, on the
- * sync paths) goes through the guard before anything is staged (R-A3, R-A4).
- * `-z`: names come back as they are on disk, not C-quoted.
+ * Every path the add could take on the sync paths: tracked, and untracked
+ * but not ignored. `excludeArgs` are the ignore rules (the realm's own by
+ * default); `ctx.env` may point git at another GIT_DIR. `-z`: names come back
+ * as they are on disk, not C-quoted.
+ *
+ * @returns {{candidates: readonly string[]} | {stop: {outcome: string, error: string}, notes: readonly string[]}}
  */
-function guardSyncPaths(ctx) {
-  const listed = git(ctx, ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...SYNC_PATHSPECS]);
+export function listSyncCandidates(ctx, { excludeArgs = STANDARD_EXCLUDES, timeoutMs = SYNC_GIT_TIMEOUT_MS } = {}) {
+  const listed = git(ctx, ['ls-files', '-z', '--cached', '--others', ...excludeArgs, '--', ...SYNC_PATHSPECS], timeoutMs);
   if (!listed.ok) return halt('error', `git ls-files failed (${describe(listed)})`);
-  const candidates = splitZ(listed.stdout);
+  return Object.freeze({ candidates: splitZ(listed.stdout) });
+}
+
+const describeEntry = (entry) => `${entry.path}: ${entry.reason}`;
+
+/**
+ * The guard over `candidates` (R-A3, R-A4): a refusal stops with every
+ * `reported:` note kept; otherwise the candidates and those notes.
+ */
+export function guardCandidates(ctx, candidates) {
   const { refused, reported } = scanRealm(candidates, (relPath) => ctx.stat(path.join(ctx.dir, relPath)));
-  const notes = reported.length > 0 ? [`reported: ${reported.map((r) => `${r.path}: ${r.reason}`).join('; ')}`] : [];
+  const notes = reported.length > 0 ? [`reported: ${reported.map(describeEntry).join('; ')}`] : [];
   if (refused.length > 0) {
-    const shown = namePaths(refused.map((r) => `${r.path}: ${r.reason}`));
-    return halt('refused', `${refused.length} path(s) refused: ${shown}`, notes);
+    return halt('refused', `${refused.length} path(s) refused: ${namePaths(refused.map(describeEntry))}`, notes);
   }
   return Object.freeze({ candidates, notes: Object.freeze(notes) });
+}
+
+/** Every path the add could take goes through the guard before anything is staged. */
+function guardSyncPaths(ctx) {
+  const listed = listSyncCandidates(ctx);
+  return listed.stop ? listed : guardCandidates(ctx, listed.candidates);
 }
 
 /** Stage the live sync pathspecs, then check the index holds only what the guard saw. */

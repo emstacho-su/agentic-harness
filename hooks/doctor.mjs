@@ -30,6 +30,7 @@ import {
   machineName,
 } from './lib/machine-env.mjs';
 import { describeHolder, gitDirKind, peekRealmLock } from './lib/realm-lock.mjs';
+import { NO_SUCH_REMOTE_STATUS, redactRemoteUrl } from './lib/realm-steps.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -59,23 +60,17 @@ export function realmsOnDisk(vaultRoot) {
  */
 const DOCTOR_GIT_TIMEOUT_MS = 5_000;
 
-/** `git remote get-url` exits 2 when the remote does not exist. */
-const NO_SUCH_REMOTE_STATUS = 2;
-
 /** `git rev-parse --verify --quiet` exits 1, silently, when the name does not resolve. */
 const UNRESOLVED_REV_STATUS = 1;
 
-/** `scheme://anything@` up to the host: the user part of a url, where a token hides. */
-const URL_USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i;
+/** Printed in place of the history when git gave no exit code at all (a timeout, or no git to run). */
+const COUNT_SKIPPED = ', commit count skipped (git did not answer)';
 
-/** `https://x:token@github.com/o/r.git` → `https://github.com/o/r.git`. A token never reaches the report. */
-function redactRemoteUrl(url) {
-  return url.replace(URL_USERINFO, '$1');
-}
+/** Whether git ran and exited, as opposed to being killed or never starting (status null). */
+const gitAnswered = (result) => result.ok || Number.isInteger(result.status);
 
-/** `, origin <url>`, `, no origin remote` or `, remote unknown (<error>)`. */
-function originPart(folder, runGit) {
-  const result = runGit(['remote', 'get-url', 'origin'], { cwd: folder, timeoutMs: DOCTOR_GIT_TIMEOUT_MS });
+/** `, origin <url>`, `, no origin remote` or `, remote unknown (<error>)`, from the lookup's result. */
+function originPart(result) {
   if (result.ok) return `, origin ${redactRemoteUrl(result.stdout.trim())}`;
   if (result.status === NO_SUCH_REMOTE_STATUS) return ', no origin remote';
   return `, remote unknown (${result.error || 'git failed'})`;
@@ -88,22 +83,34 @@ function lockPart(folder) {
   return `, lock held by ${describeHolder(lock.holder)}${lock.stale ? ' (stale)' : ''}`;
 }
 
-/** `, <n> commits`, `, no commits yet` on an unborn branch, or `, commit count unknown (<error>)`. */
+/**
+ * `, <n> commits`, `, no commits yet` on an unborn branch, or `, commit count
+ * unknown (<error>)`. The unborn probe runs only when the count's git exited:
+ * after a timeout a second 5 s wait says nothing new.
+ */
 function commitsPart(folder, runGit) {
   const options = { cwd: folder, timeoutMs: DOCTOR_GIT_TIMEOUT_MS };
   const count = runGit(['rev-list', '--count', 'HEAD'], options);
   if (count.ok) return `, ${count.stdout.trim()} commits`;
+  const unknown = `, commit count unknown (${count.error || 'git failed'})`;
+  if (!gitAnswered(count)) return unknown;
   const head = runGit(['rev-parse', '--verify', '--quiet', 'HEAD'], options);
   if (!head.ok && head.status === UNRESOLVED_REV_STATUS) return ', no commits yet';
-  return `, commit count unknown (${count.error || 'git failed'})`;
+  return unknown;
 }
 
-/** One realm's row value: what its `.git` is and, for a checkout, remote, lock and history. */
+/**
+ * One realm's row value: what its `.git` is and, for a checkout, remote, lock
+ * and history. When the origin lookup got no answer from git, the history is
+ * not asked for: it would wait out the same timeout.
+ */
 function describeRealm(folder, runGit) {
   const kind = gitDirKind(folder);
   if (kind === 'none') return 'not a checkout (no .git)';
   if (kind === 'file') return '.git is a file (worktree or submodule): not synced';
-  return `git checkout${originPart(folder, runGit)}${lockPart(folder)}${commitsPart(folder, runGit)}`;
+  const origin = runGit(['remote', 'get-url', 'origin'], { cwd: folder, timeoutMs: DOCTOR_GIT_TIMEOUT_MS });
+  const history = gitAnswered(origin) ? commitsPart(folder, runGit) : COUNT_SKIPPED;
+  return `git checkout${originPart(origin)}${lockPart(folder)}${history}`;
 }
 
 /** Realm names from HARNESS_REALMS (`name:mode,…`), in order. */

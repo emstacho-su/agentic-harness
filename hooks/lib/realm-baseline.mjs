@@ -2,22 +2,24 @@
  * A realm's first commit: the folder as it is, in one baseline (R-C2), made
  * under the same rules as every nightly commit after it.
  *
- *   1. The policy files go in first (R-A1, R-A2): `.realm`, `.gitattributes`,
+ *   1. Survey first, write after. Both runs list the folder through a
+ *      throwaway git directory under the temp folder, with the policy
+ *      `.gitignore` passed as `--exclude` rules, and put every candidate
+ *      through the sync's guard (R-A3, R-A4). A refusal, or any failure up to
+ *      here, leaves the folder byte-identical: no policy file, no `.git`, no
+ *      lock. The dry run stops after the survey, so the count it prints is the
+ *      count the real run stages.
+ *   2. Then the policy files (R-A1, R-A2): `.realm`, `.gitattributes`,
  *      `.gitignore`, so the line endings and ignore rules already apply the
- *      first time git looks at the folder.
- *   2. The same guard and the same pathspecs as the sync (R-A3, R-A4, R-B2): a
- *      refused name stops the baseline with nothing staged, and whatever the
- *      pathspecs would not take is named on a `not staged:` line.
- *   3. `git add --renormalize .` before the commit (R-A1).
+ *      first time the realm's own git looks at the folder.
+ *   3. `git init` when there is no `.git`, then the lock, the sync's
+ *      pathspecs, `git add --renormalize .` (R-A1), and a check that the index
+ *      holds nothing the survey did not see.
  *   4. The job's identity on the commit (R-B4), or no commit at all.
- *   5. Once only: a realm with a commit on HEAD is `already` and left alone.
+ *   5. Once only: a realm with a commit on HEAD is `already` and left alone; a
+ *      `.git` git cannot read is an error, never mistaken for an unborn one.
  *   6. Never a push or a fetch. `--remote` only names origin; the push is a
- *      separate live step.
- *
- * A dry run writes nothing in the realm. When there is no `.git` yet it lists
- * the folder through a throwaway git directory under the temp folder, with the
- * `.gitignore` it would write passed as `--exclude` rules, so the count it
- * prints is the count the real run stages.
+ *      separate live step. Every url in a message has its user part removed.
  */
 
 import fs from 'node:fs';
@@ -25,10 +27,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { runGitSync } from './git-log.mjs';
-import { livePathspecs, scanRealm, SYNC_PATHSPECS } from './realm-guard.mjs';
+import { livePathspecs } from './realm-guard.mjs';
 import { realmPolicyFiles, writeRealmFiles } from './realm-init.mjs';
 import { acquireRealmLock, describeHolder, gitDirKind, holderAgeMinutes, releaseRealmLock } from './realm-lock.mjs';
-import { namePaths, splitZ } from './realm-steps.mjs';
+import { describe, git, guardCandidates, listSyncCandidates, namePaths, NO_SUCH_REMOTE_STATUS, redactRemoteUrl, splitZ } from './realm-steps.mjs';
 import { REALM_MARKER, REALM_NAME, syncGitEnv } from './realm-sync.mjs';
 
 export const BASELINE_BRANCH = 'main';
@@ -41,11 +43,11 @@ export const IDENTITY_REQUIRED = 'set HARNESS_MACHINE and HARNESS_GIT_EMAIL (mac
 /** The whole folder goes in at once: far more than the handful of notes a nightly commit stages. */
 const BASELINE_GIT_TIMEOUT_MS = 120_000;
 const ORIGIN = 'origin';
-/** `git remote get-url` exits 2 when the remote does not exist; anything else is a real failure. */
-const NO_SUCH_REMOTE_STATUS = 2;
-/** `git rev-list HEAD` exits 128 on an unborn branch: `git init` ran, nothing was committed. */
-const UNBORN_STATUS = 128;
+/** `git rev-parse --verify --quiet` exits 1, silently, when HEAD does not resolve: an unborn branch. */
+const UNRESOLVED_REV_STATUS = 1;
 const LOCK_OWNER = 'init-realm';
+/** Where the throwaway survey git directory is made, under the temp folder. */
+const SCRATCH_PREFIX = 'init-realm-survey-';
 /** One line of a commit subject, short enough to read in `git log --oneline`. */
 // eslint-disable-next-line no-control-regex
 const SOURCE_LABEL = /^[^\u0000-\u001f\u007f]{1,80}$/;
@@ -60,7 +62,7 @@ export function checkSourceLabel(label) {
 
 /** Why git would not take `url` as a remote, or '' when it would. */
 export function checkRemoteUrl(url) {
-  return REMOTE_URL.test(String(url ?? '')) ? '' : `'${url}' is not a remote URL (no spaces, no leading '-')`;
+  return REMOTE_URL.test(String(url ?? '')) ? '' : `'${redactRemoteUrl(url)}' is not a remote URL (no spaces, no leading '-')`;
 }
 
 // ------------------------------------------------------------------ helpers
@@ -69,15 +71,9 @@ function stopWith(outcome, error, extra = {}) {
   return { stop: { outcome, error, ...extra } };
 }
 
-/** One git call in the realm with the job's env, the long timeout and stderr capture. */
-function git(ctx, args) {
-  return ctx.runGit(args, { cwd: ctx.dir, timeoutMs: BASELINE_GIT_TIMEOUT_MS, env: ctx.env, captureStderr: true });
-}
-
-/** `exit 128: fatal: …`, or just the code when git said nothing. */
-function describe(result) {
-  const code = result.error || (result.status != null ? `exit ${result.status}` : 'failed');
-  return result.stderr ? `${code}: ${result.stderr}` : code;
+/** Every baseline git call: the sync's runner, with the long timeout. */
+function baselineGit(ctx, args) {
+  return git(ctx, args, BASELINE_GIT_TIMEOUT_MS);
 }
 
 function isDirectory(dir) {
@@ -92,8 +88,6 @@ function isDirectory(dir) {
 function fileSize(file) {
   return fs.lstatSync(file).size;
 }
-
-const describePath = (entry) => `${entry.path}: ${entry.reason}`;
 
 function summarise(paths) {
   return { count: paths.length, sample: paths.slice(0, PATHS_NAMED) };
@@ -132,35 +126,43 @@ function invalidInput({ vaultRoot, name, remote, sourceLabel }) {
   return checkSourceLabel(sourceLabel) || (remote ? checkRemoteUrl(remote) : '');
 }
 
-/** Nothing on HEAD yet, or a stop: `already` when there is history, `error` when git could not say. */
+/**
+ * Nothing on HEAD yet, or a stop. `rev-parse --verify --quiet` exits 1 only
+ * for a name that does not resolve; exit 128 (not a repository, dubious
+ * ownership) or no exit at all (a timeout) is git failing, and says nothing
+ * about the history.
+ */
 function checkUnborn(probe) {
-  const answer = git(probe, ['rev-list', '--count', 'HEAD']);
-  if (!answer.ok) return answer.status === UNBORN_STATUS ? {} : stopWith('error', `git rev-list failed (${describe(answer)})`);
+  const head = baselineGit(probe, ['rev-parse', '--verify', '--quiet', 'HEAD']);
+  if (!head.ok && head.status === UNRESOLVED_REV_STATUS) return {};
+  if (!head.ok) return stopWith('error', `git rev-parse failed (${describe(head)})`);
+  const answer = baselineGit(probe, ['rev-list', '--count', 'HEAD']);
+  if (!answer.ok) return stopWith('error', `git rev-list failed (${describe(answer)})`);
   const count = Number.parseInt(answer.stdout.trim(), 10);
   if (!Number.isInteger(count)) return stopWith('error', `git rev-list gave an unreadable count '${answer.stdout.trim()}'`);
-  return count > 0 ? stopWith('already', `already initialised (${count} commits)`) : {};
+  return stopWith('already', `already initialised (${count} commits)`);
 }
 
 /**
- * What `--remote` will do. A dry run asks git nothing about it; a fresh
- * `git init` has no remotes to ask about.
+ * What `--remote` will do, the same in both runs: a fresh `git init` has no
+ * remotes, and an existing `.git` is asked (read-only) what origin is.
  */
 function planRemote(probe, url, kind, dryRun) {
-  if (dryRun) return { plan: { url, action: 'would-add' } };
-  if (kind === 'none') return { plan: { url, action: 'add' } };
-  const current = git(probe, ['remote', 'get-url', ORIGIN]);
+  const adding = { plan: { url, action: dryRun ? 'would-add' : 'add' } };
+  if (kind === 'none') return adding;
+  const current = baselineGit(probe, ['remote', 'get-url', ORIGIN]);
   if (current.ok) {
     const existing = current.stdout.trim();
     if (existing === url) return { plan: { url, action: 'unchanged' } };
-    return stopWith('error', `${ORIGIN} is already ${existing}, not ${url}; change it by hand if that is meant`);
+    return stopWith('error', `${ORIGIN} is already ${redactRemoteUrl(existing)}, not ${redactRemoteUrl(url)}; change it by hand if that is meant`);
   }
-  if (current.status === NO_SUCH_REMOTE_STATUS) return { plan: { url, action: 'add' } };
+  if (current.status === NO_SUCH_REMOTE_STATUS) return adding;
   return stopWith('error', `git remote get-url failed (${describe(current)})`);
 }
 
 /**
- * Every check that comes before a file is written: the inputs, the folder,
- * `.git`, the history on HEAD, the identity, and origin.
+ * Every check that asks git nothing about the folder's files: the inputs,
+ * the folder, `.git`, the history on HEAD, the identity, and origin.
  */
 function inspect(opts) {
   const invalid = invalidInput(opts);
@@ -181,128 +183,47 @@ function inspect(opts) {
   return { ctx: { dir, env, kind, remotePlan: remote.plan } };
 }
 
-// ------------------------------------------------------------ list and stage
-
-/**
- * The candidates (every path the sync pathspecs take, through the guard) and
- * the untracked paths they leave out. `excludes` and `implied` are for the
- * dry run: the ignore rules and policy files it has not written.
- */
-function survey(ctx, { excludes = [], implied = [] } = {}) {
-  const excludeArgs = excludes.map((pattern) => `--exclude=${pattern}`);
-  const listed = git(ctx, ['ls-files', '-z', '--cached', '--others', '--exclude-standard', ...excludeArgs, '--', ...SYNC_PATHSPECS]);
-  if (!listed.ok) return stopWith('error', `git ls-files failed (${describe(listed)})`);
-  const untracked = git(ctx, ['ls-files', '-z', '--others', '--exclude-standard', ...excludeArgs]);
-  if (!untracked.ok) return stopWith('error', `git ls-files --others failed (${describe(untracked)})`);
-  const candidates = Object.freeze([...new Set([...splitZ(listed.stdout), ...implied])].sort());
-  const taken = new Set(candidates);
-  const notStaged = Object.freeze(splitZ(untracked.stdout).filter((relPath) => !taken.has(relPath)).sort());
-  const { refused, reported } = scanRealm(candidates, (relPath) => ctx.stat(path.join(ctx.dir, relPath)));
-  const notes = reported.length > 0 ? [`reported: ${reported.map(describePath).join('; ')}`] : [];
-  if (refused.length > 0) {
-    return stopWith('refused', `${refused.length} path(s) refused: ${namePaths(refused.map(describePath))}`, { notStaged, notes });
-  }
-  return { candidates, notStaged, notes };
-}
-
-/** Stage the live pathspecs, renormalise, then check the index holds only what the guard saw. */
-function stage(ctx, candidates) {
-  const specs = livePathspecs(candidates);
-  // `git add --all --` with no pathspec at all would take the whole folder.
-  if (specs.length === 0) return stopWith('error', 'nothing on the sync paths to stage; nothing committed');
-  const added = git(ctx, ['add', '--all', '--', ...specs]);
-  if (!added.ok) return stopWith('error', `git add failed (${describe(added)})`);
-  const renormalized = git(ctx, ['add', '--renormalize', '.']);
-  if (!renormalized.ok) return stopWith('error', `git add --renormalize failed (${describe(renormalized)})`);
-  const cached = git(ctx, ['diff', '--cached', '--name-only', '-z']);
-  if (!cached.ok) return stopWith('error', `git diff --cached failed (${describe(cached)})`);
-  const paths = splitZ(cached.stdout);
-  if (paths.length === 0) return stopWith('error', 'git staged nothing; nothing committed');
-  const scanned = new Set(candidates);
-  const stray = paths.filter((relPath) => !scanned.has(relPath));
-  if (stray.length > 0) {
-    return stopWith('error', `${namePaths(stray)} staged but never scanned (staged by hand, or new during the run); nothing committed`);
-  }
-  return { paths };
-}
-
-function addRemote(ctx) {
-  const plan = ctx.remotePlan;
-  if (!plan) return {};
-  if (plan.action !== 'add') return { remote: plan };
-  const added = git(ctx, ['remote', 'add', ORIGIN, plan.url]);
-  if (!added.ok) return { outcome: 'error', error: `git remote add failed (${describe(added)}); the commit stands` };
-  return { remote: { url: plan.url, action: 'added' } };
-}
-
-function stageAndCommit(ctx) {
-  const seen = survey(ctx);
-  if (seen.stop) return seen.stop;
-  const { candidates, notStaged, notes } = seen;
-  const staged = stage(ctx, candidates);
-  if (staged.stop) return { ...staged.stop, notStaged, notes };
-  const summary = { staged: summarise(staged.paths), notStaged, notes };
-  const subject = commitSubject(ctx);
-  const committed = git(ctx, ['commit', '--quiet', '-m', subject]);
-  if (!committed.ok) return { ...summary, outcome: 'error', error: `git commit failed (${describe(committed)})` };
-  return { ...summary, commit: subject, ...addRemote(ctx) };
-}
-
-// ------------------------------------------------------------------ real run
-
-/**
- * `git init` when there is no `.git`, then the rest under the realm's lock, so
- * a nightly sync that arrives mid-baseline stands down instead of committing
- * half of it as `harness: sync`.
- */
-function commitBaseline(ctx) {
-  const init = ctx.kind === 'none' ? 'initialised' : 'existing';
-  if (ctx.kind === 'none') {
-    const made = git(ctx, ['init', '-q', '-b', BASELINE_BRANCH]);
-    if (!made.ok) return { outcome: 'error', error: `git init failed (${describe(made)})` };
-  }
-  const lock = acquireRealmLock(ctx.dir, { owner: LOCK_OWNER, pid: ctx.pid, now: ctx.clock() });
-  if (!lock.ok) {
-    const error = lock.reason === 'held' ? `held by ${describeHolder(lock.holder)}` : `lock: ${lock.error}`;
-    return { init, outcome: 'error', error };
-  }
-  const before = lock.takenOver ? [`lock: taken over from ${describeHolder(lock.takenOver)} (${holderAgeMinutes(lock.takenOver)} min old)`] : [];
-  let released = { ok: true };
-  let done;
+/** The policy files' actions; `dryRun` only reads, and finds a marker naming another realm. */
+function policyFiles(ctx, { dryRun }) {
   try {
-    done = stageAndCommit(ctx);
-  } finally {
-    released = releaseRealmLock(lock);
+    return { files: writeRealmFiles(ctx.dir, ctx.name, { dryRun }) };
+  } catch (err) {
+    return stopWith('error', err.message);
   }
-  const after = released.ok ? [] : [`lock: not given back (${released.error}); remove ${lock.lockPath} by hand`];
-  return { ...done, init, notes: [...before, ...(done.notes ?? []), ...after] };
 }
 
-// ------------------------------------------------------------------- dry run
+// ------------------------------------------------------------------- survey
 
 function policyPaths(name) {
   return realmPolicyFiles(name).map((file) => file.relPath);
 }
 
-function policyIgnoreLines(name) {
+/** The policy `.gitignore`, one `--exclude=` per line. */
+function policyExcludeArgs(name) {
   const ignore = realmPolicyFiles(name).find((file) => file.relPath === '.gitignore');
-  return ignore.text.split('\n').filter(Boolean);
+  return ignore.text.split('\n').filter(Boolean).map((line) => `--exclude=${line}`);
 }
 
-/** A git directory under the temp folder, so a realm with no `.git` can be listed without one. */
-function throwawayGitDir(ctx) {
-  let root;
-  try {
-    root = fs.mkdtempSync(path.join(ctx.tmpRoot, 'init-realm-dry-'));
-  } catch (err) {
-    return stopWith('error', `could not make a scratch git folder (${err?.code || err?.message})`);
-  }
-  const made = ctx.runGit(['init', '-q'], { cwd: root, timeoutMs: BASELINE_GIT_TIMEOUT_MS, env: ctx.env, captureStderr: true });
-  if (!made.ok) {
-    removeThrowaway(root);
-    return stopWith('error', `git init of a scratch folder failed (${describe(made)})`);
-  }
-  return { root, gitDir: path.join(root, '.git') };
+/**
+ * List and guard the folder through the throwaway `gitDir`. The policy
+ * ignore rules come in as `--exclude`, and `--exclude-standard` is left out
+ * on purpose: a `.gitignore` already on disk is overwritten before the real
+ * add, so it plays no part in either run's survey. The policy files are
+ * candidates whether or not they are on disk yet.
+ */
+function surveyThrough(ctx, gitDir) {
+  const view = Object.freeze({ ...ctx, env: Object.freeze({ ...ctx.env, GIT_DIR: gitDir, GIT_WORK_TREE: ctx.dir }) });
+  const excludeArgs = policyExcludeArgs(ctx.name);
+  const listed = listSyncCandidates(view, { excludeArgs, timeoutMs: BASELINE_GIT_TIMEOUT_MS });
+  if (listed.stop) return { stop: listed.stop };
+  const untracked = baselineGit(view, ['ls-files', '-z', '--others', ...excludeArgs]);
+  if (!untracked.ok) return stopWith('error', `git ls-files --others failed (${describe(untracked)})`);
+  const candidates = Object.freeze([...new Set([...listed.candidates, ...policyPaths(ctx.name)])].sort());
+  const taken = new Set(candidates);
+  const notStaged = Object.freeze(splitZ(untracked.stdout).filter((relPath) => !taken.has(relPath)).sort());
+  const guard = guardCandidates(view, candidates);
+  if (guard.stop) return { stop: { ...guard.stop, notStaged, notes: guard.notes } };
+  return { candidates, notStaged, notes: guard.notes };
 }
 
 /** '' when the throwaway is gone, a note naming it when it is not. */
@@ -315,12 +236,44 @@ function removeThrowaway(root) {
   }
 }
 
-function listForDryRun(ctx, scratch) {
-  const env = scratch ? Object.freeze({ ...ctx.env, GIT_DIR: scratch.gitDir, GIT_WORK_TREE: ctx.dir }) : ctx.env;
-  const view = Object.freeze({ ...ctx, env });
-  const seen = survey(view, { excludes: policyIgnoreLines(ctx.name), implied: policyPaths(ctx.name) });
-  if (seen.stop) return seen.stop;
+function surveyInScratch(ctx, root) {
+  const made = baselineGit({ ...ctx, dir: root }, ['init', '-q']);
+  if (!made.ok) return stopWith('error', `git init of a scratch folder failed (${describe(made)})`);
+  return surveyThrough(ctx, path.join(root, '.git'));
+}
+
+/**
+ * The survey both runs make before anything is written: `{ candidates,
+ * notStaged, notes }` or a stop. The throwaway is removed on every path, and
+ * a throwaway that will not go is named in the notes.
+ */
+function survey(ctx) {
+  let root;
+  try {
+    root = fs.mkdtempSync(path.join(ctx.tmpRoot, SCRATCH_PREFIX));
+  } catch (err) {
+    return stopWith('error', `could not make a scratch git folder (${err?.code || err?.message})`);
+  }
+  let seen;
+  let leftover = '';
+  try {
+    seen = surveyInScratch(ctx, root);
+  } finally {
+    leftover = removeThrowaway(root);
+  }
+  if (!leftover) return seen;
+  if (seen.stop) return { stop: { ...seen.stop, notes: [...(seen.stop.notes ?? []), leftover] } };
+  return { ...seen, notes: [...seen.notes, leftover] };
+}
+
+// ------------------------------------------------------------------- dry run
+
+function rehearse(ctx, files) {
+  const outline = { files, init: ctx.kind === 'none' ? 'would-init' : 'existing' };
+  const seen = survey(ctx);
+  if (seen.stop) return { ...outline, ...seen.stop };
   return {
+    ...outline,
     staged: summarise(seen.candidates),
     notStaged: seen.notStaged,
     notes: seen.notes,
@@ -329,18 +282,87 @@ function listForDryRun(ctx, scratch) {
   };
 }
 
-function rehearse(ctx) {
-  const init = ctx.kind === 'none' ? 'would-init' : 'existing';
-  const scratch = ctx.kind === 'none' ? throwawayGitDir(ctx) : null;
-  if (scratch?.stop) return { init, ...scratch.stop };
-  let done;
-  let leftover = '';
-  try {
-    done = listForDryRun(ctx, scratch);
-  } finally {
-    if (scratch) leftover = removeThrowaway(scratch.root);
+// ------------------------------------------------------------------ real run
+
+/** Stage the live pathspecs, renormalise, then check the index holds only what the survey saw. */
+function stage(ctx, candidates) {
+  const specs = livePathspecs(candidates);
+  // `git add --all --` with no pathspec at all would take the whole folder.
+  if (specs.length === 0) return stopWith('error', 'nothing on the sync paths to stage; nothing committed');
+  const added = baselineGit(ctx, ['add', '--all', '--', ...specs]);
+  if (!added.ok) return stopWith('error', `git add failed (${describe(added)})`);
+  const renormalized = baselineGit(ctx, ['add', '--renormalize', '.']);
+  if (!renormalized.ok) return stopWith('error', `git add --renormalize failed (${describe(renormalized)})`);
+  const cached = baselineGit(ctx, ['diff', '--cached', '--name-only', '-z']);
+  if (!cached.ok) return stopWith('error', `git diff --cached failed (${describe(cached)})`);
+  const paths = splitZ(cached.stdout);
+  if (paths.length === 0) return stopWith('error', 'git staged nothing; nothing committed');
+  const scanned = new Set(candidates);
+  const stray = paths.filter((relPath) => !scanned.has(relPath));
+  if (stray.length > 0) {
+    const named = namePaths(stray);
+    return stopWith('error', `${named} staged but never scanned (staged by hand, or new during the run); nothing committed, the tree is left staged but uncommitted`);
   }
-  return { ...done, init, notes: [...(done.notes ?? []), ...(leftover ? [leftover] : [])] };
+  return { paths };
+}
+
+function addRemote(ctx) {
+  const plan = ctx.remotePlan;
+  if (!plan) return {};
+  if (plan.action !== 'add') return { remote: plan };
+  const added = baselineGit(ctx, ['remote', 'add', ORIGIN, plan.url]);
+  if (!added.ok) return { outcome: 'error', error: `git remote add failed (${describe(added)}); the commit stands` };
+  return { remote: { url: plan.url, action: 'added' } };
+}
+
+function stageAndCommit(ctx, { candidates, notStaged, notes }) {
+  const staged = stage(ctx, candidates);
+  if (staged.stop) return { ...staged.stop, notStaged, notes };
+  const summary = { staged: summarise(staged.paths), notStaged, notes };
+  const subject = commitSubject(ctx);
+  const committed = baselineGit(ctx, ['commit', '--quiet', '-m', subject]);
+  if (!committed.ok) return { ...summary, outcome: 'error', error: `git commit failed (${describe(committed)})` };
+  return { ...summary, commit: subject, ...addRemote(ctx) };
+}
+
+/**
+ * Stage and commit under the realm's lock, so a nightly sync that arrives
+ * mid-baseline stands down instead of committing half of it as `harness: sync`.
+ */
+function underLock(ctx, seen) {
+  const lock = acquireRealmLock(ctx.dir, { owner: LOCK_OWNER, pid: ctx.pid, now: ctx.clock() });
+  if (!lock.ok) {
+    const error = lock.reason === 'held' ? `held by ${describeHolder(lock.holder)}` : `lock: ${lock.error}`;
+    return { outcome: 'error', error, notStaged: seen.notStaged, notes: seen.notes };
+  }
+  const before = lock.takenOver ? [`lock: taken over from ${describeHolder(lock.takenOver)} (${holderAgeMinutes(lock.takenOver)} min old)`] : [];
+  let released = { ok: true };
+  let done;
+  try {
+    done = stageAndCommit(ctx, seen);
+  } finally {
+    released = releaseRealmLock(lock);
+  }
+  const after = released.ok ? [] : [`lock: not given back (${released.error}); remove ${lock.lockPath} by hand`];
+  return { ...done, notes: [...before, ...(done.notes ?? []), ...after] };
+}
+
+/** `git init -b main` when there is no `.git`; the word the report prints either way. */
+function initRealm(ctx) {
+  if (ctx.kind !== 'none') return { init: 'existing' };
+  const made = baselineGit(ctx, ['init', '-q', '-b', BASELINE_BRANCH]);
+  return made.ok ? { init: 'initialised' } : stopWith('error', `git init failed (${describe(made)})`);
+}
+
+/** The survey, and only when it passes: the policy files, `git init`, the lock, the commit. */
+function commitBaseline(ctx) {
+  const seen = survey(ctx);
+  if (seen.stop) return seen.stop;
+  const written = policyFiles(ctx, { dryRun: false });
+  if (written.stop) return { ...written.stop, notes: seen.notes };
+  const made = initRealm(ctx);
+  if (made.stop) return { files: written.files, ...made.stop, notes: seen.notes };
+  return { files: written.files, init: made.init, ...underLock(ctx, seen) };
 }
 
 // -------------------------------------------------------------------- entry
@@ -349,6 +371,7 @@ function rehearse(ctx) {
  * Make `<vaultRoot>/<name>`'s baseline commit, or say why not. `clock()` is
  * read for the lock and again for the commit subject. `baseEnv` is the
  * environment git inherits, consulted only for the user's own ssh command.
+ * `tmpRoot` is where the survey's throwaway git directory is made.
  *
  * @returns {{name: string, dir: string, outcome: 'ok'|'refused'|'error'|'already', dryRun: boolean,
  *   init: ''|'initialised'|'existing'|'would-init', files: readonly {relPath: string, action: string}[],
@@ -374,12 +397,9 @@ export function baselineRealm({
   const checked = inspect({ vaultRoot, name, remote, sourceLabel, machine, email, dryRun, runGit, baseEnv });
   if (checked.stop) return freezeResult({ ...base, ...checked.stop });
   const ctx = Object.freeze({ ...checked.ctx, name, sourceLabel, runGit, stat, clock, pid, tmpRoot });
-  let files;
-  try {
-    files = writeRealmFiles(ctx.dir, name, { dryRun });
-  } catch (err) {
-    return freezeResult({ ...base, dir: ctx.dir, outcome: 'error', error: err.message });
-  }
-  const done = dryRun ? rehearse(ctx) : commitBaseline(ctx);
-  return freezeResult({ ...base, dir: ctx.dir, files, ...done });
+  // Read-only either way: finds a marker naming another realm before anything else is asked.
+  const planned = policyFiles(ctx, { dryRun: true });
+  if (planned.stop) return freezeResult({ ...base, dir: ctx.dir, ...planned.stop });
+  const done = dryRun ? rehearse(ctx, planned.files) : commitBaseline(ctx);
+  return freezeResult({ ...base, dir: ctx.dir, ...done });
 }

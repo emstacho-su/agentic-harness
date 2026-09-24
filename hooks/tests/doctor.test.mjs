@@ -162,23 +162,47 @@ test('realm rows: no .git, a .git file, an origin with its token stripped, no or
   }
 });
 
+const TIMED_OUT = Object.freeze({ ok: false, stdout: '', error: 'ETIMEDOUT', status: null });
+
 test('realm rows: a failing remote lookup, an unborn branch, a count that fails', () => {
   const { root, cleanup } = scratch();
   try {
     const { vault, env } = vaultWith(root);
-    addRealm(vault, 'odd');
     addRealm(vault, 'fresh');
+    addRealm(vault, 'broken');
     const { runGit } = scriptedGit({
-      [`odd|${ORIGIN}`]: { ok: false, stdout: '', error: 'ETIMEDOUT', status: null },
-      [`odd|${COUNT}`]: exit(128),
-      [`odd|${UNBORN}`]: ok('abc\n'),
       [`fresh|${ORIGIN}`]: exit(2),
       [`fresh|${COUNT}`]: exit(128),
       [`fresh|${UNBORN}`]: exit(1),
+      [`broken|${ORIGIN}`]: exit(128),
+      [`broken|${COUNT}`]: exit(128),
+      [`broken|${UNBORN}`]: exit(128),
     });
     const rows = Object.fromEntries(diagnose(env, root, { runGit }));
-    assert.equal(rows['realm odd'], 'git checkout, remote unknown (ETIMEDOUT), commit count unknown (exit 128)');
     assert.equal(rows['realm fresh'], 'git checkout, no origin remote, no commits yet');
+    assert.equal(rows['realm broken'], 'git checkout, remote unknown (exit 128), commit count unknown (exit 128)');
+  } finally {
+    cleanup();
+  }
+});
+
+test('realm rows: when git does not answer, the second probe is never run', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { vault, env } = vaultWith(root);
+    addRealm(vault, 'silent');
+    addRealm(vault, 'slow');
+    const { runGit, calls } = scriptedGit({
+      [`silent|${ORIGIN}`]: TIMED_OUT,
+      [`slow|${ORIGIN}`]: exit(2),
+      [`slow|${COUNT}`]: TIMED_OUT,
+    });
+    const rows = Object.fromEntries(diagnose(env, root, { runGit }));
+    assert.equal(rows['realm silent'], 'git checkout, remote unknown (ETIMEDOUT), commit count skipped (git did not answer)');
+    assert.equal(rows['realm slow'], 'git checkout, no origin remote, commit count unknown (ETIMEDOUT)');
+    const asked = (realm) => calls.filter((call) => path.basename(call.cwd) === realm).map((call) => call.args.join(' '));
+    assert.deepEqual(asked('silent'), [ORIGIN]);
+    assert.deepEqual(asked('slow'), [ORIGIN, COUNT]);
   } finally {
     cleanup();
   }
