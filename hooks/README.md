@@ -12,6 +12,7 @@ hooks/
 ├── session-capture.mjs     the SessionEnd hook: stdin in, one note out
 ├── install.mjs             deploy to ~/.claude/hooks, verified by hash
 ├── migrate-sessions.mjs    one-time: v1 notes -> schema v2, right collection
+├── rename-hubs.mjs         one-time: name each hub note after its folder
 ├── untagged-sessions.mjs   the weekly `unclassified` review list
 ├── lib/                    one concern per file, no dependencies
 └── tests/                  node --test, fixtures and golden notes
@@ -45,10 +46,24 @@ string or an empty list**, never absent and never guessed.
 | Context | `phase`, `tags`, `parent_session`, `child_sessions` |
 | Work | `memory_files`, `plan_file`, `docs_touched`, `artifacts`, `files_modified` |
 | Volume | `duration_minutes`, `prompt_count`, `command_count`, `tools_used` |
+| Links | `up`, `related` (Obsidian wikilinks, derived afresh on every write) |
 | Provenance | `origin` (the transcript's `entrypoint`: `cli`, `claude-desktop`, `sdk-py`, `sdk-cli`, or empty), `captured_by` (`hook`, `sweep` or `migration`) |
 
 `id` is `session-<session_id>`, which is the `external_id` ingest keys on. It
 never changes, so a note that moves does not strand its row.
+
+`title` is what a person reads, because the filename is a UUID:
+`<date> · <collection> · <first six words of the first prompt>` for a session
+(`2026-09-24 · agentic-harness · ultracode. You are the orchestrator for`) and
+`<date> · <collection> · <agent type> · <first six words of the task>` for a
+worker. Notes written before 2026-09-24 keep their old titles. The graph shows
+`title` only with the Front Matter Title plugin (`docs/portable.md`).
+
+`up` joins a note to the graph: a session links to its collection's hub,
+`[[<realm>/<collection>/<collection>|<collection>]]`, the note named after its
+folder; a worker links to its parent session, path-qualified as
+`[[<realm>/<collection>/sessions/<parent-uuid>|<parent title>]]`. `related`
+links the resume chain.
 
 ## The four rules
 
@@ -117,6 +132,9 @@ writes:
 
 A note whose frontmatter will not parse is **not written**. Refusing is the only
 safe answer to "somebody hand-edited this into a shape I do not understand".
+A 0-byte or frontmatter-less file at the target path is different: it is what
+Obsidian leaves when someone follows a link before its note exists, so the hook
+treats it as absent and writes over it.
 
 ### Subagents
 
@@ -148,6 +166,12 @@ fresh note is written in the parent's collection. An unreadable note at that
 home path is refused, exactly as for a session note. A worker is linked into
 the head of its parent's resume chain (`<id>-r2.md` once it exists), never the
 superseded base note.
+
+A worker's `up` names its parent by path, not by the bare `[[<uuid>]]`. A worker
+usually stops while its parent is still running, and Obsidian creates the target
+of a link that is followed before its note exists: a bare link put that file at
+the vault root, a path-qualified one puts it in the parent's `sessions/` folder,
+where the parent's `SessionEnd` then writes over it.
 
 The link holds whichever order the events arrive in, and both orders really
 happen:
@@ -244,6 +268,18 @@ Checkouts that no longer exist are handled by an explicit table in
 `lib/migrate.mjs` — `bb2dash-retrieval → bb2dash` — because nothing on disk can
 resolve them and inferring a project from a folder name is exactly the bug this
 stream exists to fix.
+
+## The hub rename
+
+```bash
+node hooks/rename-hubs.mjs --dry-run   # list the moves and link rewrites
+node hooks/rename-hubs.mjs --apply
+```
+
+Names each collection's hub note after its folder, `<collection>/<collection>.md`,
+with one `git mv` per realm, and rewrites every `up:` link that names a hub and
+nothing else. `type: index` and the UUID `id` stay, so ingest sees a metadata
+update. A second run changes nothing.
 
 ## Tests
 

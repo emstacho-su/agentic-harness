@@ -213,6 +213,13 @@ Exit 2 on a conflict, an error, a refusal or a held lock.
    commit), then `--remote https://github.com/<work-account>/vault-work-vm.git` and
    `git push -u origin main`. An existing realm is cloned instead:
    `git clone <remote> ~/vault/work-vm`; the clone already carries its `.realm`.
+   - **MANUAL, per machine: Front Matter Title** (R-N3), when you first open `~/vault` in
+     Obsidian (Open another vault › Open folder as vault). Settings › Community plugins ›
+     Browse, install [Front Matter Title](https://github.com/snezhig/obsidian-front-matter-title)
+     and enable it; in its settings turn on the Graph and Explorer features, so both show a
+     note's frontmatter `title` rather than its UUID filename. It is manual because
+     `.obsidian/` is untracked and each machine keeps its own (see the rules above), so no
+     sync or install script carries it.
 5. Write `~/.harness/machine.env` (above): `HARNESS_MACHINE=work-vm`,
    `HARNESS_REALMS=work-vm:push`, and `HARNESS_GIT_EMAIL` set to the **work account's**
    address, so unattended realm commits carry this machine's name and the identity that
@@ -503,7 +510,17 @@ Claude Code sessions in that window.
 
 10. **MANUAL: open the new vault in Obsidian.** Open another vault › Open folder as vault ›
     `C:\Users\estac\vault`. Open a note with a known wikilink and follow it; open the
-    graph view. Close Obsidian, then (R-A2, live):
+    graph view.
+
+    - **MANUAL, per machine: Front Matter Title** (R-N3). Settings › Community plugins ›
+      Browse, install [Front Matter Title](https://github.com/snezhig/obsidian-front-matter-title)
+      and enable it; in its settings turn on the Graph and Explorer features, so both show a
+      note's frontmatter `title` rather than its UUID filename. It is manual because
+      `.obsidian/` is untracked and each machine keeps its own (see the rules above); the
+      plugin writes only under `.obsidian/` at the vault root, outside every realm, so the
+      check below still holds.
+
+    Close Obsidian, then (R-A2, live):
 
     ```
     git -C C:/Users/estac/vault/projects status --porcelain
