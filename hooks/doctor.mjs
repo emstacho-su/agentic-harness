@@ -20,7 +20,16 @@ import {
   VAULT_ENV_VAR,
 } from './lib/constants.mjs';
 import { DEFAULT_PROJECT_DIR, ENV_PROJECT_DIR, resolveUv } from './lib/enqueue-ingest.mjs';
-import { MACHINE_ENV_SEGMENTS, MACHINE_ENV_VAR, loadMachineEnv, loadRepoEnv, machineName } from './lib/machine-env.mjs';
+import { runGitSync } from './lib/git-log.mjs';
+import {
+  MACHINE_ENV_SEGMENTS,
+  MACHINE_ENV_VAR,
+  gitEmail,
+  loadMachineEnv,
+  loadRepoEnv,
+  machineName,
+} from './lib/machine-env.mjs';
+import { describeHolder, gitDirKind, peekRealmLock } from './lib/realm-lock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,28 +52,102 @@ export function realmsOnDisk(vaultRoot) {
     .filter((entry) => entry.name);
 }
 
-/** The report as rows; `main` prints them. Exported for the tests. */
-export function diagnose(env = process.env, home = os.homedir()) {
+/**
+ * A doctor run is interactive, so each git call gets far less than the sync's
+ * 30 s: neither call touches the network, and a realm that cannot answer a
+ * local lookup in 5 s is itself the finding.
+ */
+const DOCTOR_GIT_TIMEOUT_MS = 5_000;
+
+/** `git remote get-url` exits 2 when the remote does not exist. */
+const NO_SUCH_REMOTE_STATUS = 2;
+
+/** `git rev-parse --verify --quiet` exits 1, silently, when the name does not resolve. */
+const UNRESOLVED_REV_STATUS = 1;
+
+/** `scheme://anything@` up to the host: the user part of a url, where a token hides. */
+const URL_USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i;
+
+/** `https://x:token@github.com/o/r.git` → `https://github.com/o/r.git`. A token never reaches the report. */
+function redactRemoteUrl(url) {
+  return url.replace(URL_USERINFO, '$1');
+}
+
+/** `, origin <url>`, `, no origin remote` or `, remote unknown (<error>)`. */
+function originPart(folder, runGit) {
+  const result = runGit(['remote', 'get-url', 'origin'], { cwd: folder, timeoutMs: DOCTOR_GIT_TIMEOUT_MS });
+  if (result.ok) return `, origin ${redactRemoteUrl(result.stdout.trim())}`;
+  if (result.status === NO_SUCH_REMOTE_STATUS) return ', no origin remote';
+  return `, remote unknown (${result.error || 'git failed'})`;
+}
+
+/** `, lock held by <holder>` (with `(stale)` when it is), or '' when the realm is free. */
+function lockPart(folder) {
+  const lock = peekRealmLock(folder);
+  if (!lock.held) return '';
+  return `, lock held by ${describeHolder(lock.holder)}${lock.stale ? ' (stale)' : ''}`;
+}
+
+/** `, <n> commits`, `, no commits yet` on an unborn branch, or `, commit count unknown (<error>)`. */
+function commitsPart(folder, runGit) {
+  const options = { cwd: folder, timeoutMs: DOCTOR_GIT_TIMEOUT_MS };
+  const count = runGit(['rev-list', '--count', 'HEAD'], options);
+  if (count.ok) return `, ${count.stdout.trim()} commits`;
+  const head = runGit(['rev-parse', '--verify', '--quiet', 'HEAD'], options);
+  if (!head.ok && head.status === UNRESOLVED_REV_STATUS) return ', no commits yet';
+  return `, commit count unknown (${count.error || 'git failed'})`;
+}
+
+/** One realm's row value: what its `.git` is and, for a checkout, remote, lock and history. */
+function describeRealm(folder, runGit) {
+  const kind = gitDirKind(folder);
+  if (kind === 'none') return 'not a checkout (no .git)';
+  if (kind === 'file') return '.git is a file (worktree or submodule): not synced';
+  return `git checkout${originPart(folder, runGit)}${lockPart(folder)}${commitsPart(folder, runGit)}`;
+}
+
+/** Realm names from HARNESS_REALMS (`name:mode,…`), in order. */
+function listedRealms(merged) {
+  return String(merged.HARNESS_REALMS ?? '')
+    .split(',')
+    .map((entry) => entry.trim().split(':')[0])
+    .filter(Boolean);
+}
+
+/** `git email`, `realms missing` and one `realm <name>` row per realm on disk. */
+function realmRows(merged, vaultRoot, realms, listed, runGit) {
+  const onDisk = realms.map((r) => r.name);
+  const missing = listed.filter((name) => !onDisk.includes(name));
+  return [
+    ['git email', gitEmail(merged) || '(unset: git config identity applies to realm commits)'],
+    ['realms missing', missing.length ? missing.join(', ') : 'none'],
+    ...realms.map((r) => [`realm ${r.name}`, describeRealm(path.join(vaultRoot, r.folder), runGit)]),
+  ];
+}
+
+/**
+ * The report as rows; `main` prints them. Exported for the tests, which
+ * script `runGit` so only one of them spawns git.
+ */
+export function diagnose(env = process.env, home = os.homedir(), { runGit = runGitSync } = {}) {
   const machineFile = env[MACHINE_ENV_VAR] || path.join(home, ...MACHINE_ENV_SEGMENTS);
   const merged = loadMachineEnv(loadRepoEnv(env, path.resolve(HERE, '..')), home);
   const vaultRoot = merged[VAULT_ENV_VAR] || path.join(home, ...DEFAULT_VAULT_SEGMENTS);
   const projectDir = merged[ENV_PROJECT_DIR] || DEFAULT_PROJECT_DIR;
   const realms = realmsOnDisk(vaultRoot);
-  const listed = String(merged.HARNESS_REALMS ?? '')
-    .split(',')
-    .map((entry) => entry.trim().split(':')[0])
-    .filter(Boolean);
+  const listed = listedRealms(merged);
   const unlisted = realms.map((r) => r.name).filter((name) => listed.length && !listed.includes(name));
   const uv = resolveUv(merged);
   const distIndex = path.resolve(HERE, '..', 'mcp-server', 'dist', 'index.js');
 
-  return [
+  const rows = [
     ['machine file', fs.existsSync(machineFile) ? machineFile : `${machineFile} (absent: defaults apply)`],
     ['machine', machineName(merged) || '(unset: notes carry machine: \'\')'],
     ['vault', `${vaultRoot} ${fs.existsSync(vaultRoot) ? '' : '(MISSING)'}`.trim()],
     ['realms on disk', realms.length ? realms.map((r) => `${r.folder}=${r.name}`).join(', ') : '(none: legacy layout)'],
     ['realms listed', listed.length ? listed.join(', ') : '(HARNESS_REALMS unset: any realm on disk is accepted)'],
     ['realms unlisted', unlisted.length ? `${unlisted.join(', ')} — ingest will refuse` : 'none'],
+    ...realmRows(merged, vaultRoot, realms, listed, runGit),
     ['ingest project', `${projectDir} ${fs.existsSync(path.join(projectDir, 'pyproject.toml')) ? '' : '(MISSING pyproject.toml)'}`.trim()],
     ['uv', uv || '(not found: ~/.local/bin or PATH)'],
     ['node', process.execPath],
@@ -74,10 +157,15 @@ export function diagnose(env = process.env, home = os.homedir()) {
     ['DATABASE_SSL', merged.DATABASE_SSL || '(default: verify-full)'],
     ['transcripts', path.join(home, '.claude', 'projects')],
   ];
+  return Object.freeze(rows.map((row) => Object.freeze(row)));
+}
+
+/** The rows as `main` prints them: labels padded into one column, one row a line. */
+export function formatRows(rows) {
+  const width = Math.max(...rows.map(([label]) => label.length));
+  return rows.map(([label, value]) => `${label.padEnd(width)}  ${value}`).join('\n');
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  const rows = diagnose();
-  const width = Math.max(...rows.map(([label]) => label.length));
-  for (const [label, value] of rows) console.log(`${label.padEnd(width)}  ${value}`);
+  console.log(formatRows(diagnose()));
 }
