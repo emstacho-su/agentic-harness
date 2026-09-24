@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { AREAS, INDEX_FILENAME } from './constants.mjs';
+import { AREAS, INDEX_FILENAME, SESSIONS_DIR } from './constants.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { noteFilename } from './note.mjs';
 import { isSafeFilenameSegment, yamlStr } from './text.mjs';
@@ -80,6 +80,45 @@ function isIdentical(notePath, text) {
 export function vaultAvailable(vaultRoot) {
   if (!vaultRoot) return false;
   return fs.existsSync(vaultRoot) || fs.existsSync(path.dirname(vaultRoot));
+}
+
+/**
+ * Every copy of a note with this filename, in any collection.
+ *
+ * A worker note's filename is unique across the vault — it is the session id
+ * and the agent id — so finding it anywhere means it exists, and more than one
+ * entry is a duplicate somebody should hear about. One `stat` per collection
+ * folder, never a listing of every `sessions/` directory. Collections come
+ * back in sorted order, so the first copy is always the same one.
+ *
+ * @returns {Array<{notePath: string, area: string, collection: string}>}
+ */
+export function findNotesByName(vaultRoot, filename) {
+  // One path segment, or nothing: a name with a separator in it could reach
+  // outside the collection folders it is meant to be looked for in.
+  const name = String(filename ?? '');
+  if (!vaultRoot || !name || name.startsWith('.') || /[\\/]/.test(name)) return [];
+  return AREAS.flatMap((area) =>
+    listFolder(path.join(vaultRoot, area))
+      .map((collection) => ({ notePath: path.join(vaultRoot, area, collection, SESSIONS_DIR, name), area, collection }))
+      .filter((copy) => isFile(copy.notePath)),
+  );
+}
+
+function listFolder(dir) {
+  try {
+    return fs.readdirSync(dir).sort();
+  } catch {
+    return [];
+  }
+}
+
+function isFile(file) {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**

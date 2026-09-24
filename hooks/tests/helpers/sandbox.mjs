@@ -14,6 +14,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { AREAS, SESSIONS_DIR } from '../../lib/constants.mjs';
+
 /** The placeholder every fixture and golden uses for the sandbox root. */
 export const SANDBOX_TOKEN = '__SANDBOX__';
 
@@ -135,6 +137,20 @@ export function collapse(text, sandbox) {
 /** `git log` that always fails: the fake checkouts have no objects to walk. */
 export function noGit() {
   return { ok: false, stdout: '', error: 'ENOENT' };
+}
+
+/**
+ * Every collection holding a note with this filename, as `<area>/<collection>`,
+ * in sorted order. How a test proves a note was filed once, and where.
+ */
+export function collectionsHolding(vaultRoot, filename) {
+  return AREAS.flatMap((area) => {
+    const areaDir = path.join(vaultRoot, area);
+    const collections = fs.existsSync(areaDir) ? fs.readdirSync(areaDir).sort() : [];
+    return collections
+      .filter((collection) => fs.existsSync(path.join(areaDir, collection, SESSIONS_DIR, filename)))
+      .map((collection) => `${area}/${collection}`);
+  });
 }
 
 /** Read a note out of the sandbox vault with the sandbox path collapsed again. */

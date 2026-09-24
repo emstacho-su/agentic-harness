@@ -16,21 +16,25 @@
  *     own `SessionEnd` runs. A child that stops before its parent is listed by
  *     the back-fill; a child that stops after is listed by this merge.
  *
- * Everything else — collection, branch, tags, redaction, the deadline, exit 0 —
- * is the session rules applied unchanged.
+ * The collection is the parent's, from the directory the parent transcript
+ * declares (see `placeWorker`). Everything else — branch, tags, redaction, the
+ * deadline, exit 0 — is the session rules applied unchanged.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 
 import { analyseTranscript } from './analyse.mjs';
+import { deriveCollection } from './collection.mjs';
 import {
   BUDGET_MS,
   CAPTURED_BY_HOOK,
   MAX_CHILD_SESSIONS,
   MAX_LABEL_CHARS,
   RESERVE_MS,
+  SESSIONS_DIR,
   SUBAGENT_BUDGET_BYTES,
+  SUBAGENTS_DIR,
   STATUS_CONCLUDED,
 } from './constants.mjs';
 import { runGitSync } from './git-log.mjs';
@@ -41,15 +45,16 @@ import {
   buildFields,
   childNoteFilename,
   childNoteId,
-  noteFilename,
   normalizeAgentId,
   renderBody,
   renderNote,
 } from './note.mjs';
-import { ensureIndex, persist, readNote, vaultAvailable } from './notes-io.mjs';
+import { ensureIndex, findNotesByName, persist, readNote, resolveChainHead, vaultAvailable } from './notes-io.mjs';
 import { redact } from './redact.mjs';
-import { isoDate, uniqueCapped } from './text.mjs';
+import { resolveRepo } from './repo.mjs';
+import { isoDate, toPosix, uniqueCapped } from './text.mjs';
 import { extractOrigin, extractOutcome, extractPrompts, extractTools, createAccumulator, knownSecrets, readEntries } from './transcript.mjs';
+import { parentTranscriptBeside, readTranscriptHead } from './transcript-head.mjs';
 
 /**
  * Capture one finished subagent.
@@ -59,6 +64,10 @@ import { extractOrigin, extractOutcome, extractPrompts, extractTools, createAccu
  * A note that re-rendered byte-identically is absent from it — `SubagentStop`
  * fires at every stop point of a multi-turn worker, and re-ingesting an
  * unchanged note costs a whole process and a 130 MB model load to learn nothing.
+ *
+ * `log` receives the lines worth a human's attention that are not the outcome
+ * itself — a duplicate copy left in another collection, a stray note the
+ * parser cannot read. The outcome is still the caller's to log.
  *
  * @returns {{written: boolean, action: string, skip: string, notePath: string,
  *            touchedPaths: string[], vaultRoot: string, detail: string}}
@@ -71,6 +80,7 @@ export function captureSubagent({
   deadlineAt = startedAtMs + BUDGET_MS,
   runGit = runGitSync,
   capturedBy = CAPTURED_BY_HOOK,
+  log = () => {},
 }) {
   const skip = (reason) => ({ written: false, action: 'skip', skip: reason, notePath: '', touchedPaths: [], vaultRoot, detail: '' });
 
@@ -103,6 +113,7 @@ export function captureSubagent({
     entries,
     prompts,
     cwd: input.cwd,
+    transcriptPath,
     vaultRoot,
     deadlineAt,
     runGit,
@@ -113,12 +124,18 @@ export function captureSubagent({
 
   const date = isoDate(facts.timing.endedAt) || isoDate(new Date().toISOString());
 
+  const placement = placeWorker({ input, agentId, agentTranscriptPath: transcriptPath, facts, vaultRoot, log });
+  const { current, notePath: targetPath } = placement;
+  if (current.error) {
+    return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
+  }
+
   const context = {
     sessionId: input.sessionId,
     noteId: childNoteId(input.sessionId, agentId),
-    title: `Subagent ${agentType || agentId} ${date} — ${facts.collection}`,
-    collection: facts.collection,
-    collectionSource: facts.collectionSource,
+    title: `Subagent ${agentType || agentId} ${date} — ${placement.collection}`,
+    collection: placement.collection,
+    collectionSource: placement.collectionSource,
     date,
     cwd: facts.cwd,
     cwdsSeen: facts.cwdsSeen,
@@ -165,20 +182,13 @@ export function captureSubagent({
     transcriptPath,
   };
 
-  const sessionsDir = path.join(vaultRoot, facts.area, facts.collection, 'sessions');
-  const targetPath = path.join(sessionsDir, childNoteFilename(input.sessionId, agentId));
-
-  const current = readNote(targetPath);
-  if (current.error) {
-    return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
-  }
-
   // The same merge rule as a session note: lists grow, scalars only improve,
   // and a tag added by hand survives. A subagent's note is rewritten if the
   // same agent id stops twice.
   const fields = withLinks(
     current.fields ? mergeFields(current.fields, buildFields(context)) : buildFields(context),
-    facts.area,
+    placement.area,
+    placement.collection,
   );
   const merged = { ...context, previousBody: current.body };
   const result = persist(targetPath, renderNote(fields, renderBody(merged, fields)));
@@ -188,8 +198,13 @@ export function captureSubagent({
 
   // A worker can be the first note in its collection: its parent may file elsewhere.
   // `SubagentStop` fires at every stop of a multi-turn worker; only the first can matter.
-  const index = current.fields ? { ok: true } : ensureIndex(vaultRoot, facts.area, facts.collection);
-  const linked = linkIntoParent({ sessionsDir, area: facts.area, sessionId: input.sessionId, childId: fields.id });
+  const index = current.fields ? { ok: true } : ensureIndex(vaultRoot, placement.area, placement.collection);
+  const linked = linkIntoParent({
+    sessionsDir: placement.parentSessionsDir,
+    area: placement.parentArea,
+    sessionId: input.sessionId,
+    childId: fields.id,
+  });
 
   return {
     written: true,
@@ -204,11 +219,128 @@ export function captureSubagent({
     ],
     vaultRoot,
     detail:
-      `${facts.area}/${facts.collection}/sessions/${path.basename(targetPath)} ` +
-      `agent_type=${agentType || 'unknown'} parent=${linked.status}` +
+      `${vaultRelative(vaultRoot, targetPath)} ` +
+      `agent_type=${agentType || 'unknown'} placed_by=${placement.basis} parent=${linked.status}` +
       (result.changed ? '' : ' (identical on disk)') +
       (index.ok ? '' : ` (index not written: ${index.error})`),
   };
+}
+
+/** `placed_by=` in the log line: which rule decided where the note went. */
+const PLACED_BY_PARENT = 'parent';
+const PLACED_BY_OWN_CWD = 'own-cwd';
+const PLACED_BY_EARLIER_NOTE = 'earlier-note';
+
+/** A note that is not there yet: what a fresh capture starts from. */
+const NO_NOTE = Object.freeze({ fields: null, body: '', error: '' });
+
+/**
+ * Where a worker's note is filed, and the note already there.
+ *
+ * A worker belongs to its session, so it files where its session does: the
+ * collection comes from the directory the parent transcript declares, never
+ * from wherever the worker had `cd`'d to when it stopped. On 2026-09-24 eight
+ * worker notes on the live vault existed twice — the hook had filed them under
+ * `vault`, `estac` or another repo by the worker's own directory, and the sweep
+ * beside their parent. A parent transcript that cannot be read, or declares no
+ * `cwd`, falls back to the directory the worker's own transcript declares.
+ *
+ * Every other copy of the note is looked for, whatever is at home, and each one
+ * not merged into is logged — never deleted: a second copy is the bug this
+ * exists to stop, and somebody has to hear it is still there. The parent note
+ * is still looked for in the parent's collection, because that is where the
+ * session files itself.
+ *
+ * @returns {{area: string, collection: string, collectionSource: string,
+ *            notePath: string, current: object, parentArea: string,
+ *            parentSessionsDir: string, basis: string}}
+ */
+function placeWorker({ input, agentId, agentTranscriptPath, facts, vaultRoot, log }) {
+  const fromParent = parentPlacement({ input, agentTranscriptPath, vaultRoot });
+  const home = fromParent ?? { area: facts.area, collection: facts.collection, collectionSource: facts.collectionSource };
+  const parentSessionsDir = path.join(vaultRoot, home.area, home.collection, SESSIONS_DIR);
+  const filename = childNoteFilename(input.sessionId, agentId);
+  const atHome = {
+    ...home,
+    parentArea: home.area,
+    parentSessionsDir,
+    notePath: path.join(parentSessionsDir, filename),
+    basis: fromParent ? PLACED_BY_PARENT : PLACED_BY_OWN_CWD,
+  };
+
+  const strays = findNotesByName(vaultRoot, filename).filter((copy) => !samePath(copy.notePath, atHome.notePath));
+  const { placement, claimed } = chooseTarget({ atHome, homeExists: fs.existsSync(atHome.notePath), strays, vaultRoot, log });
+  if (!placement.current.error) {
+    const target = vaultRelative(vaultRoot, placement.notePath);
+    for (const stray of strays.filter((copy) => copy !== claimed)) {
+      log(`duplicate worker note left at ${vaultRelative(vaultRoot, stray.notePath)}; merged into ${target}`);
+    }
+  }
+  return placement;
+}
+
+/**
+ * The note this capture merges into, and the stray copy it has dealt with.
+ *
+ * The home copy wins when it exists; an unreadable one there is the caller's
+ * refusal to write, exactly as for a session note. Otherwise the first stray,
+ * in sorted order, is merged into where it sits and keeps describing its
+ * folder. A stray the parser cannot read is left alone and a fresh note is
+ * written at home: a hand-edited note elsewhere must not cost this worker's.
+ *
+ * @returns {{placement: object, claimed: object|null}}
+ */
+function chooseTarget({ atHome, homeExists, strays, vaultRoot, log }) {
+  const [earlier] = strays;
+  if (homeExists || !earlier) return { placement: { ...atHome, current: readNote(atHome.notePath) }, claimed: null };
+
+  const current = readNote(earlier.notePath);
+  if (current.error) {
+    log(`existing note unreadable at ${vaultRelative(vaultRoot, earlier.notePath)}; writing beside the parent`);
+    return { placement: { ...atHome, current: NO_NOTE }, claimed: earlier };
+  }
+  const placement = {
+    ...atHome,
+    area: earlier.area,
+    collection: earlier.collection,
+    collectionSource: String(current.fields?.collection_source ?? '') || atHome.collectionSource,
+    notePath: earlier.notePath,
+    current,
+    basis: PLACED_BY_EARLIER_NOTE,
+  };
+  return { placement, claimed: earlier };
+}
+
+/** The same file, however it is spelled: `path.relative` folds case on Windows. */
+function samePath(a, b) {
+  return path.relative(a, b) === '';
+}
+
+/** `<area>/<collection>/sessions/<name>`, the form every log line uses. */
+function vaultRelative(vaultRoot, notePath) {
+  return toPosix(path.relative(vaultRoot, notePath));
+}
+
+/**
+ * The collection the parent session files under, from the `cwd` its own
+ * transcript declares; `null` when no parent transcript says.
+ *
+ * The transcript beside the worker's `subagents/` folder is asked first, then
+ * the payload's `transcript_path`, which on `SubagentStop` is the session's.
+ * Both are compared in posix form, so one file named twice — once built here,
+ * once in the payload's Windows spelling — is read once, and the worker's own
+ * transcript is never taken for its parent's. `readHead` is injectable so a
+ * test can count the reads.
+ */
+export function parentPlacement({ input, agentTranscriptPath, vaultRoot, readHead = readTranscriptHead }) {
+  const own = toPosix(agentTranscriptPath);
+  const named = [parentTranscriptBeside(agentTranscriptPath, input.sessionId), input.transcriptPath].map(toPosix);
+  const candidates = [...new Set(named)].filter((candidate) => candidate && candidate !== own);
+  for (const candidate of candidates) {
+    const { cwd } = readHead(candidate);
+    if (cwd) return deriveCollection({ cwd, vaultRoot, repo: resolveRepo(cwd) });
+  }
+  return null;
 }
 
 /**
@@ -227,7 +359,9 @@ export function captureSubagent({
 function linkIntoParent({ sessionsDir, area, sessionId, childId }) {
   const untouched = (status) => ({ status, notePath: '' });
 
-  const parentPath = path.join(sessionsDir, noteFilename(sessionId));
+  // The head of the chain, as for the session's own write: once `-r2` exists
+  // the base note is superseded, and a link added there is a link to history.
+  const parentPath = resolveChainHead(sessionsDir, sessionId).path;
   const parent = readNote(parentPath);
   if (!parent.fields || parent.error) {
     return untouched(parent.error ? 'unreadable' : 'not yet written');
@@ -257,10 +391,10 @@ function resolveAgentTranscript({ input, agentId, projectsRoot }) {
 
   const candidates = [];
   if (input.transcriptPath) {
-    candidates.push(path.join(path.dirname(input.transcriptPath), input.sessionId, 'subagents'));
+    candidates.push(path.join(path.dirname(input.transcriptPath), input.sessionId, SUBAGENTS_DIR));
   }
   if (projectsRoot && input.cwd) {
-    candidates.push(path.join(projectsRoot, sanitize(input.cwd), input.sessionId, 'subagents'));
+    candidates.push(path.join(projectsRoot, sanitize(input.cwd), input.sessionId, SUBAGENTS_DIR));
   }
 
   for (const dir of candidates) {

@@ -25,6 +25,7 @@ import {
   CHECKPOINT_GIT_TIMEOUT_MS,
   CHECKPOINT_NOTES_DIR,
   SCHEMA_VERSION,
+  SESSIONS_DIR,
   STATUS_CONCLUDED,
 } from './constants.mjs';
 import { FIELD_SPEC, parseFrontmatter } from './frontmatter.mjs';
@@ -240,7 +241,7 @@ function folderExists(vaultRoot, area, slug) {
  * says `captured_by: skill` and came through `redact()`.
  */
 export function fileNote({ vaultRoot, fields, body, dryRun = false, placement = resolvePlacement(vaultRoot, fields) }) {
-  const sessionsDir = path.join(vaultRoot, placement.area, placement.collection, 'sessions');
+  const sessionsDir = path.join(vaultRoot, placement.area, placement.collection, SESSIONS_DIR);
   const notePath = path.join(sessionsDir, `${fields.session_id}.md`);
   const relative = relativeNotePath(placement, fields.session_id);
 
@@ -275,7 +276,7 @@ export function fileNote({ vaultRoot, fields, body, dryRun = false, placement = 
 }
 
 function relativeNotePath(placement, sessionId) {
-  return `${placement.area}/${placement.collection}/sessions/${sessionId}.md`;
+  return `${placement.area}/${placement.collection}/${SESSIONS_DIR}/${sessionId}.md`;
 }
 
 // ------------------------------------------------------------ realm lock

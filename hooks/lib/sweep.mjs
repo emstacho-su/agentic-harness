@@ -25,7 +25,9 @@ import {
   AREA_PROJECTS,
   CAPTURED_BY_SWEEP,
   SESSION_END_EVENT,
+  SESSIONS_DIR,
   SUBAGENT_STOP_EVENT,
+  SUBAGENTS_DIR,
   SWEEP_BUDGET_MS,
   SWEEP_EXCLUDED_CWD_SEGMENTS,
   SWEEP_GIT_TIMEOUT_MS,
@@ -43,9 +45,7 @@ export function sweepGit(args, options = {}) {
 import { parseHookInput } from './stdin.mjs';
 import { captureSubagent } from './subagent.mjs';
 import { toPosix } from './text.mjs';
-
-/** How much of a transcript is read to learn its `cwd` and `entrypoint`. */
-export const TRANSCRIPT_HEAD_BYTES = 64 * 1024;
+import { readTranscriptHead } from './transcript-head.mjs';
 
 const TRANSCRIPT_SUFFIX = '.jsonl';
 const NOTE_SUFFIX = '.md';
@@ -60,14 +60,18 @@ const AGENT_PREFIX = 'agent-';
  * note is written by `SubagentStop` long before the session ends, and a
  * session killed with its terminal leaves exactly that — worker notes and no
  * parent — which is one of the cases the sweep exists for. Re-capturing the
- * workers alongside the parent is idempotent (the child note merges).
+ * workers alongside the parent is idempotent because `captureSubagent` looks
+ * the worker's filename up across the whole vault and merges into the note it
+ * finds, wherever it sits. Merging only a note in the parent's own folder was
+ * not enough: an older hook filed workers by the directory they stopped in, and
+ * on 2026-09-24 eight worker notes existed twice, once in each collection.
  * A session id never ends in `-r<digits>`, so the strip cannot eat into it.
  */
 export function indexNotedSessions(vaultRoot) {
   const noted = new Set();
   for (const area of [AREA_PROJECTS, AREA_CLASSES]) {
     for (const collection of readDirNames(path.join(vaultRoot, area))) {
-      const sessionsDir = path.join(vaultRoot, area, collection, 'sessions');
+      const sessionsDir = path.join(vaultRoot, area, collection, SESSIONS_DIR);
       for (const name of readDirNames(sessionsDir)) {
         const sessionId = sessionIdFromNoteName(name);
         if (sessionId) noted.add(sessionId);
@@ -128,33 +132,9 @@ export function listCandidateTranscripts({ projectsRoot, noted, minIdleMs, now =
   return { candidates, skippedNoted, skippedActive };
 }
 
-/**
- * The `cwd` and `entrypoint` a transcript declares, from its first records.
- *
- * Only the head is read: the hook receives `cwd` on stdin, and this is the
- * sweep standing in for stdin. A transcript whose head holds neither yields
- * empty strings, and `capture()` then falls back to the cwd its prompts carry.
- */
-export function readTranscriptHead(transcriptPath) {
-  let cwd = '';
-  let entrypoint = '';
-  for (const line of readHeadLines(transcriptPath)) {
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!cwd && typeof entry?.cwd === 'string') cwd = toPosix(entry.cwd);
-    if (!entrypoint && typeof entry?.entrypoint === 'string') entrypoint = entry.entrypoint;
-    if (cwd && entrypoint) break;
-  }
-  return { cwd, entrypoint };
-}
-
 /** The worker transcripts beside a session's own, by Claude Code's layout. */
 export function listSubagentTranscripts(transcriptPath, sessionId) {
-  const dir = path.join(path.dirname(transcriptPath), sessionId, 'subagents');
+  const dir = path.join(path.dirname(transcriptPath), sessionId, SUBAGENTS_DIR);
   return readDirNames(dir)
     .filter((name) => name.startsWith(AGENT_PREFIX) && name.endsWith(TRANSCRIPT_SUFFIX))
     .sort()
@@ -181,6 +161,7 @@ export function sweepOne({
   runGit = sweepGit,
   budgetMs = SWEEP_BUDGET_MS,
   excludes = SWEEP_EXCLUDED_CWD_SEGMENTS,
+  log = () => {},
 }) {
   const base = { sessionId: candidate.sessionId, transcriptPath: candidate.transcriptPath };
   try {
@@ -217,7 +198,7 @@ export function sweepOne({
     });
 
     const children = listSubagentTranscripts(candidate.transcriptPath, candidate.sessionId).map((worker) =>
-      sweepWorker({ worker, head, candidate, vaultRoot, projectsRoot, runGit, budgetMs }),
+      sweepWorker({ worker, head, candidate, vaultRoot, projectsRoot, runGit, budgetMs, log }),
     );
 
     return {
@@ -232,7 +213,7 @@ export function sweepOne({
   }
 }
 
-function sweepWorker({ worker, head, candidate, vaultRoot, projectsRoot, runGit, budgetMs }) {
+function sweepWorker({ worker, head, candidate, vaultRoot, projectsRoot, runGit, budgetMs, log }) {
   const now = Date.now();
   const parsed = parseHookInput(
     JSON.stringify({
@@ -256,6 +237,7 @@ function sweepWorker({ worker, head, candidate, vaultRoot, projectsRoot, runGit,
     deadlineAt: now + budgetMs,
     runGit,
     capturedBy: CAPTURED_BY_SWEEP,
+    log: (line) => log(`  note ${candidate.sessionId}--${worker.agentId}: ${line}`),
   });
   return {
     agentId: worker.agentId,
@@ -299,7 +281,7 @@ export function runSweep({
   const results = dryRun
     ? []
     : selected.map((candidate) => {
-        const result = sweepOne({ candidate, vaultRoot, projectsRoot, runGit, excludes });
+        const result = sweepOne({ candidate, vaultRoot, projectsRoot, runGit, excludes, log });
         log(`${result.action} ${result.sessionId} ${result.detail}`);
         for (const child of result.children) {
           log(`  ${child.action} ${result.sessionId}--${child.agentId} ${child.detail}`);
@@ -372,19 +354,5 @@ function statFile(file) {
     return stat.isFile() ? stat : null;
   } catch {
     return null;
-  }
-}
-
-function readHeadLines(file) {
-  let fd = null;
-  try {
-    fd = fs.openSync(file, 'r');
-    const buf = Buffer.alloc(TRANSCRIPT_HEAD_BYTES);
-    const read = fs.readSync(fd, buf, 0, buf.length, 0);
-    return buf.subarray(0, read).toString('utf8').split('\n');
-  } catch {
-    return [];
-  } finally {
-    if (fd !== null) fs.closeSync(fd);
   }
 }

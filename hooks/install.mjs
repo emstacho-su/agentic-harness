@@ -67,6 +67,7 @@ const PAYLOAD = [
   'lib/tags.mjs',
   'lib/text.mjs',
   'lib/transcript.mjs',
+  'lib/transcript-head.mjs',
   'lib/vocabulary.mjs',
 ];
 

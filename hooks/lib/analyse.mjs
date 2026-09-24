@@ -30,6 +30,7 @@ import { resolveRepo } from './repo.mjs';
 import { classify } from './tags.mjs';
 import { toPosix, uniqueCapped } from './text.mjs';
 import { createAccumulator, extractTools, scanToolResults } from './transcript.mjs';
+import { readTranscriptHead } from './transcript-head.mjs';
 
 /**
  * Analyse one transcript.
@@ -37,7 +38,11 @@ import { createAccumulator, extractTools, scanToolResults } from './transcript.m
  * @param {object} args
  * @param {object[]} args.entries    parsed JSONL entries
  * @param {object[]} args.prompts    from `extractPrompts`
- * @param {string} args.cwd          the working directory the hook reported
+ * @param {string} args.cwd          the working directory the hook reported;
+ *                                   kept as the note's `cwd` (provenance)
+ * @param {string} [args.transcriptPath] the file the entries came from; its
+ *                                   first record's `cwd` decides the collection,
+ *                                   repository, branch and commits
  * @param {string} args.vaultRoot
  * @param {number} args.deadlineAt
  * @param {function} [args.runGit]
@@ -49,6 +54,7 @@ export function analyseTranscript({
   entries,
   prompts,
   cwd,
+  transcriptPath = '',
   vaultRoot,
   deadlineAt,
   runGit = runGitSync,
@@ -62,8 +68,12 @@ export function analyseTranscript({
   const cwdsSeen = uniqueCapped(entries.map((entry) => toPosix(entry.cwd)).filter(Boolean), MAX_CWDS_SEEN);
   const effectiveCwd = cwd || cwdsSeen[cwdsSeen.length - 1] || '';
 
-  const repo = resolveRepo(effectiveCwd);
-  const { area, collection, collectionSource } = deriveCollection({ cwd: effectiveCwd, vaultRoot, repo });
+  // Everything the note says about *where* — collection, repository, branch,
+  // commits — comes from one directory, so it can never claim a git collection
+  // with no repository. The stdin cwd is only provenance, kept as `cwd`.
+  const placementCwd = declaredCwd(transcriptPath, cwdsSeen) || effectiveCwd;
+  const repo = resolveRepo(placementCwd);
+  const { area, collection, collectionSource } = deriveCollection({ cwd: placementCwd, vaultRoot, repo });
   const branch = repo.branch || lastBranchSeen(accumulator) || '';
 
   const paths = classifyPaths(sortedFiles(accumulator), {
@@ -113,6 +123,26 @@ export function analyseTranscript({
     artifacts: uniqueCapped(accumulator.artifacts, MAX_ARTIFACTS),
     toolCounts: sortedToolCounts(accumulator),
   };
+}
+
+/**
+ * The directory a transcript declares it started in: its first record's `cwd`.
+ *
+ * The stdin `cwd` is wherever the session was when it ended — the vault, the
+ * home folder, another repository it `cd`'d into — so a session that started
+ * in `bb2dash` and ended in the vault used to file itself under `vault`, away
+ * from its own workers, with no repository and no commits. Where the transcript
+ * says it started is where the session belongs.
+ *
+ * Read from the head of the file, because a transcript over the read budget is
+ * parsed tail-first and its parsed entries no longer begin at the start. The
+ * first `cwd` among the parsed entries stands in when the head carries none or
+ * no file was named. `''` when the transcript declares no directory at all, and
+ * the caller falls back to the stdin `cwd`.
+ */
+function declaredCwd(transcriptPath, cwdsSeen) {
+  const fromHead = transcriptPath ? readTranscriptHead(transcriptPath).cwd : '';
+  return fromHead || cwdsSeen[0] || '';
 }
 
 /**

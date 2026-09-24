@@ -126,7 +126,7 @@ export function runSubagentScenario(sandbox, scenario) {
  * Returns the outcome; the caller decides whether the parent note existed
  * first, which is what the two link orders come down to.
  */
-export function runSubagentStop(sandbox, { sessionId, agentId, agentType, cwd, transcriptPath }) {
+export function runSubagentStop(sandbox, { sessionId, agentId, agentType, cwd, transcriptPath, log }) {
   return captureSubagent({
     input: {
       sessionId,
@@ -142,6 +142,7 @@ export function runSubagentStop(sandbox, { sessionId, agentId, agentType, cwd, t
     vaultRoot: sandbox.vaultRoot,
     projectsRoot: sandbox.projectsRoot,
     runGit: noGit,
+    log,
   });
 }
 

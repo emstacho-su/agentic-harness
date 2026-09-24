@@ -22,6 +22,7 @@ import {
   MAX_CHILD_SESSIONS,
   RESERVE_MS,
   RESUME_REASON,
+  SESSIONS_DIR,
   STATUS_ACTIVE,
   STATUS_CONCLUDED,
 } from './constants.mjs';
@@ -106,6 +107,7 @@ export function capture({
     entries,
     prompts,
     cwd: input.cwd,
+    transcriptPath,
     vaultRoot,
     deadlineAt,
     runGit,
@@ -168,7 +170,7 @@ export function capture({
     transcriptPath,
   };
 
-  const sessionsDir = path.join(vaultRoot, facts.area, facts.collection, 'sessions');
+  const sessionsDir = path.join(vaultRoot, facts.area, facts.collection, SESSIONS_DIR);
   return writeNote({ context, sessionsDir, area: facts.area, collection: facts.collection, vaultRoot });
 }
 
@@ -222,7 +224,7 @@ function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
     touchedPaths: result.changed ? [targetPath] : [],
     vaultRoot,
     detail:
-      `${area}/${collection}/sessions/${path.basename(targetPath)}` +
+      `${area}/${collection}/${SESSIONS_DIR}/${path.basename(targetPath)}` +
       (result.changed ? '' : ' (identical on disk)') +
       (index.ok ? '' : ` (index not written: ${index.error})`),
   };
@@ -265,7 +267,7 @@ function writeResumeNote({ context, sessionsDir, area, collection, vaultRoot, pr
     ],
     vaultRoot,
     detail:
-      `${area}/${collection}/sessions/${path.basename(targetPath)} ` +
+      `${area}/${collection}/${SESSIONS_DIR}/${path.basename(targetPath)} ` +
       `supersedes=${path.basename(previousPath)}${flipped.ok ? '' : ' (status flip failed)'}`,
   };
 }

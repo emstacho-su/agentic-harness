@@ -81,6 +81,17 @@ three steps:
 3. the folder name, preferring an ancestor that already owns a vault folder →
    `collection_source: folder`.
 
+The directory those steps are applied to is the one the **transcript declares**
+in its first record, not the stdin `cwd`. The stdin `cwd` is wherever the
+session was when it ended — the vault, the home folder, another repository it
+`cd`'d into — and filing by it put a session that started in `bb2dash` under
+`vault`, away from its own workers. The stdin `cwd` stays on the note as `cwd`
+(provenance), `cwds_seen` is unchanged, and the stdin `cwd` decides the
+collection only when the transcript carries no `cwd` at all. A resumed session
+follows the same rule, so its `-r2` note lands beside the note it continues.
+`repo`, `branch` and `commits` come from that same directory, for sessions and
+workers alike, so a note can never say `collection_source: git` with `repo: ''`.
+
 Step 2 reads `.git/config` and `.git/HEAD` directly rather than shelling out:
 `git` costs 50–150 ms per invocation on Windows and can hang on a network path.
 The only subprocess is one bounded `git log` for `commits`, and it is skipped
@@ -113,8 +124,30 @@ A worker launched with the Agent tool does real work but shares its parent's
 `session_id` and never fires `SessionEnd`, so its edits used to disappear into
 the parent's note as a handful of file paths. `SubagentStop` gives it a note of
 its own, with `parent_session` set to the session that spawned it and
-`agent_type` recording what kind of worker it was. Collection, branch, tags and
-redaction are the session rules applied unchanged.
+`agent_type` recording what kind of worker it was. Branch, tags and redaction
+are the session rules applied unchanged.
+
+A worker is filed under its **parent's** collection: the `cwd` the parent
+transcript (`<session_id>.jsonl`, beside the `subagents/` folder) declares in
+its first records, never the directory the worker happened to be in when it
+stopped. The worker's own directory stays on the note as `cwd` / `cwds_seen`.
+When the parent transcript cannot be read or names no `cwd`, the worker's own
+transcript's first `cwd` decides, and its stdin `cwd` only when that is missing
+too. And a note already filed for that worker in any collection is merged into
+where it sits, by the hook and by the nightly sweep alike, rather than copied.
+On 2026-09-24 eight worker notes existed twice: the hook had filed them by the
+folder the worker had `cd`'d into (`vault`, `estac`, another repo), the sweep
+beside their parent.
+
+Copies are never deleted, but they are reported. Every capture looks for the
+worker's filename in every collection, and each copy it does not merge into is
+logged: `duplicate worker note left at <area>/<collection>/sessions/<name>;
+merged into <home>`. A stray copy the parser cannot read does not block the
+capture: `existing note unreadable at <path>; writing beside the parent`, and a
+fresh note is written in the parent's collection. An unreadable note at that
+home path is refused, exactly as for a session note. A worker is linked into
+the head of its parent's resume chain (`<id>-r2.md` once it exists), never the
+superseded base note.
 
 The link holds whichever order the events arrive in, and both orders really
 happen:
