@@ -4,10 +4,16 @@
     uv run ingest embed-check --json
     uv run ingest embed-check --threshold 0.9995
     uv run ingest embed-check --record [--force] # re-record the references on this machine
+    uv run ingest embed-check --env-file ../.env  # explicit .env (default: nearest, walking up)
 
 Ten fixed texts and their vectors are committed in ``ingest/eval/embeddings.json``.
 The check embeds the same texts here and compares each pair by cosine. Run it on
 every new machine before its first ingest (R-D2). It never touches the database.
+
+Like every other subcommand it first loads the repo ``.env`` and then
+``~/.harness/machine.env``, so ``FASTEMBED_CACHE_DIR`` and ``HARNESS_MACHINE`` come
+from the machine file. That puts ``DATABASE_URL`` in the environment too; no value
+from either file is ever printed or logged.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from typing import NamedTuple
 import numpy as np
 
 from .embedding import Embedder, FastEmbedEmbedder
+from .envfile import load_env_file
 from .errors import ConfigError, EmbeddingError, IngestError
 
 log = logging.getLogger(__name__)
@@ -54,10 +61,12 @@ DISPLAY_WIDTH = 60
 ELLIPSIS = "…"
 
 # The recording machine's label. Unset means "unknown": the hostname is never
-# written into a committed file.
+# written into a committed file. The rule is the hooks' MACHINE_NAME_PATTERN
+# (hooks/lib/constants.mjs), so one variable has one validator. Used with
+# fullmatch, because Python's `$` would also accept a trailing newline.
 ENV_MACHINE = "HARNESS_MACHINE"
 UNKNOWN = "unknown"
-MACHINE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+MACHINE_LABEL = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 
 # The two packages whose versions decide the numbers; recorded with the vectors.
 FASTEMBED_PACKAGE = "fastembed"
@@ -113,12 +122,10 @@ class Provenance:
 
 @dataclass(frozen=True)
 class References:
-    model: str
+    """A reference file. On disk the provenance fields sit flat beside ``dimensions``."""
+
     dimensions: int
-    fastembed: str
-    onnxruntime: str
-    machine: str
-    recorded_at: str
+    provenance: Provenance
     items: tuple[Reference, ...]
 
 
@@ -154,16 +161,32 @@ def load_references(path: Path | str) -> References:
 
 
 def write_references(references: References, path: Path | str, *, overwrite: bool = False) -> None:
-    """Write the file, one item per line, floats at full (repr) precision."""
+    """Write the file, one item per line, floats at full (repr) precision.
+
+    The one exists/--force guard: an existing file is replaced only with
+    ``overwrite``. The text goes to ``<name>.tmp`` and is renamed over the target;
+    the staging file never outlives a failure of either step.
+    """
     target = Path(path)
     if target.exists() and not overwrite:
-        raise ConfigError(f"{target} already exists; refusing to overwrite it")
+        raise ConfigError(f"{target} already exists; pass --force to replace it")
+    text = _serialise(references)
     staging = target.with_name(target.name + ".tmp")
     try:
-        staging.write_text(_serialise(references), encoding="utf-8", newline="\n")
+        staging.write_text(text, encoding="utf-8", newline="\n")
         os.replace(staging, target)
     except OSError as exc:
         raise IngestError(f"cannot write reference file {target}: {exc}") from exc
+    finally:
+        _discard(staging)
+
+
+def _discard(staging: Path) -> None:
+    """Remove a leftover staging file; after a successful rename there is none."""
+    try:
+        staging.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("could not remove the staging file %s: %s", staging, exc)
 
 
 def record(texts: Sequence[str], embedder: Embedder, meta: Provenance) -> References:
@@ -175,19 +198,11 @@ def record(texts: Sequence[str], embedder: Embedder, meta: Provenance) -> Refere
         raise EmbeddingError(f"embedder returned {len(vectors)} vectors for {len(texts)} texts")
     items = tuple(
         Reference(_checked_text(text, f"item {index}"),
-                  _checked_vector(vector, embedder.dimensions, f"item {index}"))
+                  _embedded_vector(vector, embedder.dimensions, f"item {index}"))
         for index, (text, vector) in enumerate(zip(texts, vectors, strict=True))
     )
     _reject_duplicates(items, "recorded references")
-    return References(
-        model=meta.model,
-        dimensions=embedder.dimensions,
-        fastembed=meta.fastembed,
-        onnxruntime=meta.onnxruntime,
-        machine=meta.machine,
-        recorded_at=meta.recorded_at,
-        items=items,
-    )
+    return References(dimensions=embedder.dimensions, provenance=meta, items=items)
 
 
 # -- scoring -----------------------------------------------------------------------
@@ -212,7 +227,7 @@ def score(references: References, embedder: Embedder) -> tuple[Score, ...]:
     if len(vectors) != len(texts):
         raise EmbeddingError(f"embedder returned {len(vectors)} vectors for {len(texts)} texts")
     return tuple(
-        Score(item.text, cosine(item.vector, _checked_vector(
+        Score(item.text, cosine(item.vector, _embedded_vector(
             vector, references.dimensions, f"embedding of item {index}")))
         for index, (item, vector) in enumerate(zip(references.items, vectors, strict=True))
     )
@@ -275,6 +290,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="machine-readable result on stdout")
     parser.add_argument("--record", action="store_true", help="embed the built-in texts and write the file")
     parser.add_argument("--force", action="store_true", help="with --record: replace an existing file")
+    parser.add_argument(
+        "--env-file",
+        default=None,
+        help="explicit .env path (default: nearest .env walking up); ~/.harness/machine.env follows it",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     return parser
 
@@ -291,6 +311,9 @@ def run_embed_check(argv: list[str]) -> int:
         print(f"error: {refusal}", file=sys.stderr)
         return EXIT_USAGE
     try:
+        # Before the embedder exists: its cache dir and the machine label come
+        # from these files. envfile logs names only, never values.
+        load_env_file(Path(args.env_file) if args.env_file else None)
         return _run_record(args) if args.record else _run_check(args)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -318,9 +341,10 @@ def _run_check(args: argparse.Namespace) -> int:
     if mismatch:
         print(f"error: {mismatch}", file=sys.stderr)
         return EXIT_USAGE
+    origin = references.provenance
     log.info(
         "references from machine %s (fastembed %s, onnxruntime %s, %s)",
-        references.machine, references.fastembed, references.onnxruntime, references.recorded_at,
+        origin.machine, origin.fastembed, origin.onnxruntime, origin.recorded_at,
     )
     result = check(references, embedder, threshold)
     if args.json:
@@ -332,9 +356,6 @@ def _run_check(args: argparse.Namespace) -> int:
 
 def _run_record(args: argparse.Namespace) -> int:
     target = Path(args.file)
-    if target.exists() and not args.force:
-        print(f"error: {target} exists; pass --force to replace it", file=sys.stderr)
-        return EXIT_USAGE
     embedder = build_embedder()
     model = embedder_model_name(embedder)
     if model is None:
@@ -351,8 +372,9 @@ def _mismatch(references: References, embedder: Embedder) -> str | None:
     model = embedder_model_name(embedder)
     if model is None:
         return "the embedder does not report its model name"
-    if model != references.model:
-        return f"the reference file is for model {references.model}; this embedder runs {model}"
+    recorded = references.provenance.model
+    if model != recorded:
+        return f"the reference file is for model {recorded}; this embedder runs {model}"
     if embedder.dimensions != references.dimensions:
         return (
             f"the reference file has {references.dimensions} dimensions; "
@@ -399,15 +421,18 @@ def _machine_label() -> str:
     value = os.environ.get(ENV_MACHINE, "").strip()
     if not value:
         return UNKNOWN
-    if not MACHINE_LABEL.match(value):
+    if not MACHINE_LABEL.fullmatch(value):
         raise ConfigError(
-            f"{ENV_MACHINE}={value!r} is not a plain label (letters, digits, '.', '_', '-'; 64 max)"
+            f"{ENV_MACHINE}={value!r} is not a machine name: lowercase letters, digits and '-', "
+            "starting with a letter or digit, 32 at most (e.g. home-pc). A hostname is not one; "
+            f"set {ENV_MACHINE} in ~/.harness/machine.env to the name the hooks use"
         )
     return value
 
 
 # -- parsing and serialising --------------------------------------------------------
 
+# Flat beside "model" and "dimensions" in the file; grouped as a Provenance in memory.
 _PROVENANCE_FIELDS = ("fastembed", "onnxruntime", "machine", "recorded_at")
 
 
@@ -420,8 +445,8 @@ def _parse(payload: object, where: str) -> References:
     dimensions = payload.get("dimensions")
     if isinstance(dimensions, bool) or not isinstance(dimensions, int) or dimensions < 1:
         raise ConfigError(f"{where}: 'dimensions' must be a positive integer, got {dimensions!r}")
-    provenance = {name: payload.get(name) for name in _PROVENANCE_FIELDS}
-    for name, value in provenance.items():
+    fields = {name: payload.get(name) for name in _PROVENANCE_FIELDS}
+    for name, value in fields.items():
         if not isinstance(value, str) or not value.strip():
             raise ConfigError(f"{where}: '{name}' must be a non-empty string")
     raw_items = payload.get("items")
@@ -429,7 +454,9 @@ def _parse(payload: object, where: str) -> References:
         raise ConfigError(f"{where}: 'items' must be a non-empty list")
     items = tuple(_parse_item(raw, index, dimensions, where) for index, raw in enumerate(raw_items))
     _reject_duplicates(items, where)
-    return References(model=model, dimensions=dimensions, items=items, **provenance)
+    return References(
+        dimensions=dimensions, provenance=Provenance(model=model, **fields), items=items
+    )
 
 
 def _parse_item(raw: object, index: int, dimensions: int, where: str) -> Reference:
@@ -446,11 +473,23 @@ def _checked_text(text: object, label: str) -> str:
     return text
 
 
-def _checked_vector(values: object, dimensions: int, label: str) -> tuple[float, ...]:
+def _embedded_vector(values: object, dimensions: int, label: str) -> tuple[float, ...]:
+    """A vector the embedder just produced: a defect is the embedder's (exit 1), not the file's."""
+    return _checked_vector(values, dimensions, label, error=EmbeddingError)
+
+
+def _checked_vector(
+    values: object,
+    dimensions: int,
+    label: str,
+    *,
+    error: type[IngestError] = ConfigError,
+) -> tuple[float, ...]:
+    """Validate a vector; ``error`` says whose defect it is (the reference file's by default)."""
     if not isinstance(values, (list, tuple)):
-        raise ConfigError(f"{label}: 'vector' must be a list of numbers")
+        raise error(f"{label}: 'vector' must be a list of numbers")
     if len(values) != dimensions:
-        raise ConfigError(f"{label}: vector has {len(values)} values, expected {dimensions}")
+        raise error(f"{label}: vector has {len(values)} values, expected {dimensions}")
     for position, value in enumerate(values):
         finite = (
             isinstance(value, numbers.Real)
@@ -458,7 +497,7 @@ def _checked_vector(values: object, dimensions: int, label: str) -> tuple[float,
             and math.isfinite(value)
         )
         if not finite:
-            raise ConfigError(f"{label}: vector[{position}] is {value!r}, not a finite number")
+            raise error(f"{label}: vector[{position}] is {value!r}, not a finite number")
     return tuple(float(value) for value in values)
 
 
@@ -473,13 +512,14 @@ def _reject_duplicates(items: tuple[Reference, ...], where: str) -> None:
 
 
 def _serialise(references: References) -> str:
+    origin = references.provenance
     header = {
-        "model": references.model,
+        "model": origin.model,
         "dimensions": references.dimensions,
-        "fastembed": references.fastembed,
-        "onnxruntime": references.onnxruntime,
-        "machine": references.machine,
-        "recorded_at": references.recorded_at,
+        "fastembed": origin.fastembed,
+        "onnxruntime": origin.onnxruntime,
+        "machine": origin.machine,
+        "recorded_at": origin.recorded_at,
     }
     lines = ["{"]
     lines.extend(f"  {json.dumps(key)}: {json.dumps(value, ensure_ascii=False)}," for key, value in header.items())

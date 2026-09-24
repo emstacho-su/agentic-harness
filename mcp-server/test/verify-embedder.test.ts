@@ -1,16 +1,40 @@
-import { describe, expect, it } from 'vitest';
-import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID } from '../src/config.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID, loadEmbeddingConfig } from '../src/config.js';
 import {
   compatibilityProblem,
   cosine,
+  embedderFromConfig,
   embedReferences,
   formatReport,
+  formatReportHeader,
   parseReferences,
   REFERENCE_AGREEMENT_THRESHOLD,
   scoreReferences,
   type References,
 } from '../src/embedder-report.js';
 import { FakeEmbedder } from './helpers.js';
+
+/**
+ * A fake ONNX model behind the real FastEmbedEmbedder: it records exactly the
+ * strings the embedder hands to fastembed, so the query prefix is observable
+ * without downloading anything.
+ */
+const fakeModel = vi.hoisted(() => ({ inputs: [] as string[] }));
+
+vi.mock('fastembed', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fastembed')>();
+  return {
+    ...actual,
+    FlagEmbedding: {
+      init: async () => ({
+        async *embed(texts: string[]) {
+          fakeModel.inputs.push(...texts);
+          yield texts.map(() => Array.from({ length: 384 }, (_unused, i) => ((i % 5) + 1) / 10));
+        },
+      }),
+    },
+  };
+});
 
 const TEXTS = [
   'What did we decide about the ledger cash invariant?',
@@ -95,6 +119,68 @@ describe('embedReferences', () => {
 
     expect(embedder.calls).toEqual([...TEXTS]);
     expect(vectors).toHaveLength(TEXTS.length);
+  });
+});
+
+describe('loadEmbeddingConfig', () => {
+  it('reads the embedding settings without DATABASE_URL', () => {
+    const embedding = loadEmbeddingConfig({
+      RAG_QUERY_PREFIX: 'query: ',
+      FASTEMBED_CACHE_DIR: 'C:/cache/fastembed',
+    });
+    expect(embedding).toEqual({
+      modelId: EMBEDDING_MODEL_ID,
+      dimensions: EMBEDDING_DIMENSIONS,
+      cacheDir: 'C:/cache/fastembed',
+      queryPrefix: 'query: ',
+    });
+  });
+
+  it('defaults to no prefix and no cache dir', () => {
+    expect(loadEmbeddingConfig({})).toMatchObject({ cacheDir: undefined, queryPrefix: '' });
+  });
+});
+
+describe('embedderFromConfig', () => {
+  beforeEach(() => {
+    fakeModel.inputs.length = 0;
+  });
+
+  it('embeds the reference texts with RAG_QUERY_PREFIX, as search_context does', async () => {
+    const references = await recordedWith(new FakeEmbedder());
+    const embedder = embedderFromConfig(loadEmbeddingConfig({ RAG_QUERY_PREFIX: 'query: ' }));
+
+    const vectors = await embedReferences(embedder, references);
+
+    expect(fakeModel.inputs).toEqual(TEXTS.map((text) => `query: ${text}`));
+    expect(vectors).toHaveLength(TEXTS.length);
+  });
+
+  it('embeds the bare texts when no prefix is set', async () => {
+    const references = await recordedWith(new FakeEmbedder());
+    await embedReferences(embedderFromConfig(loadEmbeddingConfig({})), references);
+    expect(fakeModel.inputs).toEqual([...TEXTS]);
+  });
+});
+
+describe('formatReportHeader', () => {
+  const source = 'C:/repo/ingest/eval/embeddings.json';
+
+  it('names the file, the provenance, the count and "none" for an empty prefix', async () => {
+    const references = await recordedWith(new FakeEmbedder());
+    expect(formatReportHeader(references, source, '')).toEqual([
+      `reference:    ${source}`,
+      '              recorded 2026-09-24T00:00:00Z, on test, fastembed 0.7.3, onnxruntime 1.22.0',
+      'items:        3',
+      'query prefix: none',
+    ]);
+  });
+
+  it('prints a set prefix quoted, and says the two sides now embed differently on purpose', async () => {
+    const references = await recordedWith(new FakeEmbedder());
+    const lines = formatReportHeader(references, source, 'query: ');
+    expect(lines).toContain('query prefix: "query: "');
+    expect(lines.at(-1)).toMatch(/Python references were embedded without it/);
   });
 });
 

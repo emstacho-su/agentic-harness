@@ -53,36 +53,10 @@ param(
     [switch] $Unregister
 )
 
-# ~/.harness/machine.env: what this machine is. KEY=value, the same file the
-# hook and ingest read. A parameter passed explicitly still wins; the file only
-# replaces the defaults that used to name one machine's paths.
-function Read-MachineEnv {
-    $file = if ($env:HARNESS_MACHINE_ENV) { $env:HARNESS_MACHINE_ENV } else { Join-Path $env:USERPROFILE '.harness\machine.env' }
-    $values = @{}
-    if (-not (Test-Path $file)) { return $values }
-    foreach ($raw in Get-Content $file -Encoding UTF8) {
-        $line = $raw.Trim()
-        if (-not $line -or $line.StartsWith('#')) { continue }
-        if ($line.StartsWith('export ')) { $line = $line.Substring(7).Trim() }
-        $at = $line.IndexOf('=')
-        if ($at -lt 1) { continue }
-        $key = $line.Substring(0, $at).Trim()
-        $value = $line.Substring($at + 1).Trim()
-        if ($value.Length -ge 2 -and (($value[0] -eq '"' -and $value[-1] -eq '"') -or ($value[0] -eq "'" -and $value[-1] -eq "'"))) {
-            $value = $value.Substring(1, $value.Length - 2)
-        }
-        $values[$key] = $value
-    }
-    return $values
-}
-
-function Get-MachineSetting {
-    param([hashtable] $Machine, [string] $Key, [string] $Default)
-    $fromEnv = [Environment]::GetEnvironmentVariable($Key)
-    if ($fromEnv) { return $fromEnv }
-    if ($Machine.ContainsKey($Key) -and $Machine[$Key]) { return $Machine[$Key] }
-    return $Default
-}
+# ~/.harness/machine.env: what this machine is, through the shared reader
+# (Read-MachineEnv, Get-MachineSetting). A parameter passed explicitly still
+# wins; the file only replaces the defaults that used to name one machine's paths.
+. (Join-Path $PSScriptRoot 'lib\machine-env.ps1')
 
 $machine = Read-MachineEnv
 if (-not $VaultPath)  { $VaultPath  = Get-MachineSetting $machine 'HARNESS_VAULT' "C:/Users/$env:USERNAME/OneDrive - Syracuse University/vault" }

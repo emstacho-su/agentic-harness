@@ -87,16 +87,23 @@ function Get-PartialFiles {
 }
 
 # Run backup-store.ps1 in a child shell with PATH = <BinDir>;System32 and the
-# given variables; return its exit code and all output as one string.
+# given variables; return its exit code and all output as one string. With
+# -Location, the child first Set-Locations there and runs the script with `&`,
+# so PowerShell's location and the process's .NET working directory differ.
 function Invoke-Backup {
-    param([string] $BinDir, [string[]] $Arguments = @(), [hashtable] $Environment = @{})
+    param([string] $BinDir, [string[]] $Arguments = @(), [hashtable] $Environment = @{}, [string] $Location = '')
     $ErrorActionPreference = 'Continue'
     $values = @{ PATH = "$BinDir;$($script:System32)"; HARNESS_MACHINE_ENV = (Join-Path $script:ScratchRoot 'no-machine.env');
                  HARNESS_STORE_CONTAINER = $null; HARNESS_STORE_DB = $null; FAKE_INSPECT = 'true'; FAKE_EXEC = 'args' }
     foreach ($key in $Environment.Keys) { $values[$key] = $Environment[$key] }
     try {
         foreach ($key in $values.Keys) { [Environment]::SetEnvironmentVariable($key, $values[$key]) }
-        $lines = & $script:ChildShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script:BackupScript @Arguments 2>&1
+        if ($Location) {
+            $command = "Set-Location -LiteralPath '$Location'; & '$($script:BackupScript)' $($Arguments -join ' '); exit `$LASTEXITCODE"
+            $lines = & $script:ChildShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $command 2>&1
+        } else {
+            $lines = & $script:ChildShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script:BackupScript @Arguments 2>&1
+        }
         $code = $LASTEXITCODE
     } finally {
         [Environment]::SetEnvironmentVariable('PATH', $script:SavedEnvironment['PATH'])
@@ -229,6 +236,34 @@ try {
     Test-Case 'a name with a cmd metacharacter is refused' $result 2 @("-Container 'a&b'")
     $result = Invoke-Backup $fakeBin @('-OutDir', $out, '-DryRun', '-Keep', '0')
     Test-Case '-Keep 0 is refused' $result 2 @('-Keep 0 keeps nothing')
+
+    # (7) a relative -OutDir follows PowerShell's location, not .NET's working directory.
+    $here = New-ScratchDir 'relative-location'
+    $result = Invoke-Backup $fakeBin @('-OutDir', 'backups', '-DryRun') -Location $here
+    Test-Case 'a relative -OutDir resolves under the PowerShell location' $result 0 @(
+        "> `"$here\backups\harness-", "rename it to $here\backups\harness-") -Checks @{
+        'OutDir was created' = -not (Test-Path -LiteralPath (Join-Path $here 'backups'))
+    }
+
+    # (8) `$` also matches before a trailing newline; `\z` does not. A newline would end
+    # the cmd.exe command line early, dropping the redirect.
+    $result = Invoke-Backup $fakeBin @('-OutDir', $out, '-DryRun') @{ HARNESS_STORE_CONTAINER = "harness-postgres`n" }
+    Test-Case 'a container name with a trailing newline is refused' $result 2 @('has characters this script will not pass to cmd.exe') @('dry run: would run')
+
+    # (9) a `!` in the path reaches cmd.exe intact (delayed expansion is forced off).
+    $out = Join-Path $script:ScratchRoot 'bang!dir'
+    $result = Invoke-Backup $fakeBin @('-OutDir', $out)
+    Test-Case "an -OutDir with '!' gets its dump" $result 0 @("backup: $out\harness-") -Checks @{
+        "expected 1 dump in $out" = (Get-DumpFiles $out).Count -eq 1
+    }
+
+    # (10) the machine file, through the shared reader: its HARNESS_STORE_DB applies,
+    # and a key that is not a harness setting is ignored and named on stderr.
+    $machineFile = Join-Path $script:ScratchRoot 'machine.env'
+    [System.IO.File]::WriteAllText($machineFile, "HARNESS_STORE_DB=fromfile`r`nLD_PRELOAD=/x`r`n")
+    $result = Invoke-Backup $fakeBin @('-OutDir', $out, '-DryRun') @{ HARNESS_MACHINE_ENV = $machineFile }
+    Test-Case 'the machine file supplies HARNESS_STORE_DB and ignores other keys' $result 0 @(
+        'pg_dump -U harness -Fc fromfile', "machine.env: ignoring key 'LD_PRELOAD'")
 } catch {
     $script:Failures++
     Write-Output "FAIL harness -- $($_.Exception.Message)"

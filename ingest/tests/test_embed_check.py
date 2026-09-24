@@ -7,15 +7,18 @@ test chose, so a check can be made to pass or fail on purpose.
 from __future__ import annotations
 
 import json
+import logging
 import math
-from collections.abc import Sequence
+import os
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from ingest import embed_check
+from ingest import embed_check, envfile
 from ingest.cli import main
+from ingest.config import embedding_cache_dir
 from ingest.embed_check import (
     COSINE_THRESHOLD,
     DEFAULT_REFERENCES,
@@ -29,7 +32,7 @@ from ingest.embed_check import (
     score,
     write_references,
 )
-from ingest.errors import ConfigError
+from ingest.errors import ConfigError, EmbeddingError, IngestError
 
 MODEL = "BAAI/bge-small-en-v1.5"
 DIMENSIONS = 384
@@ -38,6 +41,28 @@ SEED = 20260924
 # R-D2's perturbation: enough to drop the cosine far below the threshold.
 PERTURBATION = 0.05
 PERTURBED_INDEX = 3
+# The item the "bad embedding" tests break; any index but 0 proves it is named.
+BAD_INDEX = 4
+# A value from the machine file that must never reach any output.
+SECRET = "s3cret-value-never-printed"
+# The file layout the committed embeddings.json uses; the Provenance refactor keeps it.
+FLAT_KEYS = {"model", "dimensions", "fastembed", "onnxruntime", "machine", "recorded_at", "items"}
+
+
+@pytest.fixture(autouse=True)
+def isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
+    """No repo .env, no real machine file, and whatever a run loads is undone after it.
+
+    embed-check now calls load_env_file, which writes os.environ directly; monkeypatch
+    only undoes what it set, so the environment is snapshotted and restored here.
+    """
+    saved = dict(os.environ)
+    monkeypatch.setattr(envfile, "find_env_file", lambda start=None: None)
+    monkeypatch.setenv("HARNESS_MACHINE_ENV", str(tmp_path / "no-machine.env"))
+    yield
+    for key in set(os.environ) - set(saved):
+        del os.environ[key]
+    os.environ.update(saved)
 
 
 def unit_vectors(count: int, dimensions: int = DIMENSIONS) -> list[list[float]]:
@@ -255,9 +280,8 @@ def test_record_write_load_check_round_trips(tmp_path: Path) -> None:
     write_references(record(REFERENCE_TEXTS, embedder, provenance()), path)
     loaded = load_references(path)
 
-    assert loaded.model == MODEL
+    assert loaded.provenance == provenance()
     assert loaded.dimensions == DIMENSIONS
-    assert loaded.machine == "test-box"
     assert [item.text for item in loaded.items] == list(REFERENCE_TEXTS)
     # repr precision: the floats come back bit for bit.
     assert list(loaded.items[0].vector) == vectors[REFERENCE_TEXTS[0]]
@@ -282,10 +306,67 @@ def test_write_refuses_to_overwrite_unless_asked(tmp_path: Path) -> None:
     write_references(references, path, overwrite=True)
 
 
-def test_record_rejects_a_vector_of_the_wrong_length() -> None:
+def test_write_keeps_the_flat_file_layout(tmp_path: Path) -> None:
+    path = tmp_path / "embeddings.json"
+    write_references(references_from(reference_vectors()), path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert set(payload) == FLAT_KEYS
+    assert payload["machine"] == "test-box"
+    assert payload["model"] == MODEL
+
+
+def test_write_removes_the_staging_file_when_the_rename_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "embeddings.json"
+
+    def refuse(_source: object, _target: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(embed_check.os, "replace", refuse)
+    with pytest.raises(IngestError, match="disk full"):
+        write_references(references_from(reference_vectors()), path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_write_removes_the_staging_file_on_any_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "embeddings.json"
+
+    def interrupted(_source: object, _target: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(embed_check.os, "replace", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        write_references(references_from(reference_vectors()), path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_record_rejects_an_embedding_of_the_wrong_width_as_an_embedding_error() -> None:
     vectors = {text: [0.1] * 10 for text in REFERENCE_TEXTS}
-    with pytest.raises(ConfigError, match="item 0"):
+    with pytest.raises(EmbeddingError, match="item 0"):
         record(REFERENCE_TEXTS, ReferenceEmbedder(vectors), provenance())
+
+
+def test_record_rejects_a_non_finite_embedding_and_names_the_item() -> None:
+    vectors = reference_vectors()
+    broken = {**vectors, REFERENCE_TEXTS[BAD_INDEX]: [math.inf] * DIMENSIONS}
+    with pytest.raises(EmbeddingError, match=rf"item {BAD_INDEX}.*finite"):
+        record(REFERENCE_TEXTS, ReferenceEmbedder(broken), provenance())
+
+
+@pytest.mark.parametrize(
+    "bad_vector",
+    [[0.1] * (DIMENSIONS - 1), [math.nan] * DIMENSIONS],
+    ids=["wrong-width", "nan"],
+)
+def test_score_rejects_a_bad_embedding_as_an_embedding_error(bad_vector: list[float]) -> None:
+    vectors = reference_vectors()
+    references = references_from(vectors)
+    broken = {**vectors, REFERENCE_TEXTS[BAD_INDEX]: bad_vector}
+    with pytest.raises(EmbeddingError, match=rf"item {BAD_INDEX}"):
+        score(references, ReferenceEmbedder(broken))
 
 
 # -- the command line (test 5) ---------------------------------------------------
@@ -409,8 +490,8 @@ def test_cli_record_writes_the_built_in_texts(
     assert code == 0
     assert capsys.readouterr().out.strip() == f"recorded 10 references to {path}"
     loaded = load_references(path)
-    assert loaded.machine == "home-pc"
-    assert loaded.model == MODEL
+    assert loaded.provenance.machine == "home-pc"
+    assert loaded.provenance.model == MODEL
     assert [item.text for item in loaded.items] == list(REFERENCE_TEXTS)
 
 
@@ -421,7 +502,175 @@ def test_cli_record_labels_the_machine_unknown_without_the_variable(
     use_embedder(monkeypatch, ReferenceEmbedder(reference_vectors()))
     monkeypatch.delenv("HARNESS_MACHINE", raising=False)
     assert main(["embed-check", "--record", "--file", str(path)]) == 0
-    assert load_references(path).machine == "unknown"
+    assert load_references(path).provenance.machine == "unknown"
+
+
+@pytest.mark.parametrize("label", ["home-pc", "laptop2", "a", "x" * 32])
+def test_cli_record_accepts_a_hooks_style_machine_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, label: str
+) -> None:
+    path = tmp_path / "embeddings.json"
+    use_embedder(monkeypatch, ReferenceEmbedder(reference_vectors()))
+    monkeypatch.setenv("HARNESS_MACHINE", label)
+    assert main(["embed-check", "--record", "--file", str(path)]) == 0
+    assert load_references(path).provenance.machine == label
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["DESKTOP-4F2K9QX", "home_pc", "laptop.local", "-leading-dash", "x" * 33],
+)
+def test_cli_record_refuses_a_machine_name_the_hooks_would_refuse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    label: str,
+) -> None:
+    path = tmp_path / "embeddings.json"
+    use_embedder(monkeypatch, ReferenceEmbedder(reference_vectors()))
+    monkeypatch.setenv("HARNESS_MACHINE", label)
+
+    assert main(["embed-check", "--record", "--file", str(path)]) == 2
+    assert "HARNESS_MACHINE" in capsys.readouterr().err
+    assert not path.exists()
+
+
+def write_machine_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cache: Path) -> None:
+    machine = tmp_path / "machine.env"
+    machine.write_text(
+        "\n".join(
+            [
+                "HARNESS_MACHINE=laptop",
+                f"FASTEMBED_CACHE_DIR={cache.as_posix()}",
+                f"DATABASE_URL=postgresql://harness:{SECRET}@localhost:5432/harness",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HARNESS_MACHINE_ENV", str(machine))
+    for name in ("HARNESS_MACHINE", "FASTEMBED_CACHE_DIR", "DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+
+
+class CacheRecorder:
+    """build_embedder stand-in that notes the cache dir the live embedder would use."""
+
+    def __init__(self, embedder: ReferenceEmbedder) -> None:
+        self.embedder = embedder
+        self.cache_dirs: list[str] = []
+
+    def __call__(self) -> ReferenceEmbedder:
+        self.cache_dirs.append(embedding_cache_dir())
+        return self.embedder
+
+
+def test_cli_record_reads_the_machine_file_before_building_the_embedder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "model-cache"
+    write_machine_file(tmp_path, monkeypatch, cache)
+    recorder = CacheRecorder(ReferenceEmbedder(reference_vectors()))
+    monkeypatch.setattr(embed_check, "build_embedder", recorder)
+    path = tmp_path / "embeddings.json"
+
+    assert main(["embed-check", "--record", "--file", str(path)]) == 0
+
+    assert load_references(path).provenance.machine == "laptop"
+    assert [Path(d) for d in recorder.cache_dirs] == [cache]
+
+
+def test_cli_check_reads_the_machine_file_before_building_the_embedder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "model-cache"
+    vectors = reference_vectors()
+    path = reference_file(tmp_path, vectors)
+    write_machine_file(tmp_path, monkeypatch, cache)
+    recorder = CacheRecorder(ReferenceEmbedder(vectors))
+    monkeypatch.setattr(embed_check, "build_embedder", recorder)
+
+    assert main(["embed-check", "--file", str(path)]) == 0
+    assert [Path(d) for d in recorder.cache_dirs] == [cache]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [["-v"], ["-v", "--json"], ["-v", "--record", "--force"], ["--threshold", "2"]],
+    ids=["check", "json", "record", "usage-error"],
+)
+def test_cli_never_prints_a_value_from_the_machine_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+    extra: list[str],
+) -> None:
+    vectors = reference_vectors()
+    path = reference_file(tmp_path, vectors)
+    write_machine_file(tmp_path, monkeypatch, tmp_path / "model-cache")
+    use_embedder(monkeypatch, ReferenceEmbedder(vectors))
+    caplog.set_level(logging.DEBUG)
+
+    main(["embed-check", "--file", str(path), *extra])
+    captured = capsys.readouterr()
+
+    for output in (captured.out, captured.err, caplog.text, path.read_text(encoding="utf-8")):
+        assert SECRET not in output
+
+
+def test_cli_reports_an_unreadable_env_file_as_a_usage_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    use_embedder(monkeypatch, ReferenceEmbedder(reference_vectors()))
+    code = main(["embed-check", "--env-file", str(tmp_path / "absent.env")])
+    assert code == 2
+    assert "env file" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "bad_vector",
+    [[0.1] * (DIMENSIONS - 1), [math.nan] * DIMENSIONS],
+    ids=["wrong-width", "nan"],
+)
+def test_cli_check_fails_with_exit_1_on_a_bad_embedding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    bad_vector: list[float],
+) -> None:
+    vectors = reference_vectors()
+    path = reference_file(tmp_path, vectors)
+    use_embedder(
+        monkeypatch, ReferenceEmbedder({**vectors, REFERENCE_TEXTS[BAD_INDEX]: bad_vector})
+    )
+
+    assert main(["embed-check", "--file", str(path)]) == 1
+    assert f"item {BAD_INDEX}" in capsys.readouterr().err
+
+
+def test_cli_check_reports_a_bad_reference_vector_as_a_usage_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    payload = raw_payload(reference_vectors())
+    payload["items"][BAD_INDEX]["vector"][0] = math.nan
+    path = write_json(tmp_path / "refs.json", payload)
+    use_embedder(monkeypatch, ReferenceEmbedder(reference_vectors()))
+
+    assert main(["embed-check", "--file", str(path)]) == 2
+    assert f"item {BAD_INDEX}" in capsys.readouterr().err
+
+
+def test_cli_record_with_a_bad_embedding_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vectors = reference_vectors()
+    broken = {**vectors, REFERENCE_TEXTS[BAD_INDEX]: [math.nan] * DIMENSIONS}
+    use_embedder(monkeypatch, ReferenceEmbedder(broken))
+    path = tmp_path / "embeddings.json"
+
+    assert main(["embed-check", "--record", "--file", str(path)]) == 1
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_cli_record_refuses_an_existing_file_without_force(
@@ -451,5 +700,13 @@ def test_the_committed_reference_file_is_well_formed() -> None:
     references = load_references(DEFAULT_REFERENCES)
     assert len(references.items) == 10
     assert references.dimensions == 384
-    assert references.model == MODEL
+    assert references.provenance.model == MODEL
+    assert references.provenance.machine == "home-pc"
     assert [item.text for item in references.items] == list(REFERENCE_TEXTS)
+
+
+def test_the_committed_reference_file_round_trips_byte_for_byte(tmp_path: Path) -> None:
+    """The Provenance refactor maps onto the same flat layout the committed file uses."""
+    copy = tmp_path / "embeddings.json"
+    write_references(load_references(DEFAULT_REFERENCES), copy)
+    assert copy.read_bytes() == DEFAULT_REFERENCES.read_bytes()

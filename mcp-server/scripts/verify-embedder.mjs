@@ -14,17 +14,25 @@
  * a report, not a gate: it exits 0 whatever the numbers are. Only a failure of
  * the dimension and norm checks above it exits 1.
  *
+ * The embedder is built the way `search_context` builds it: the repo `.env` and
+ * ~/.harness/machine.env are read as the server reads them, and the embedding
+ * settings (cache dir, RAG_QUERY_PREFIX) come from `loadEmbeddingConfig`. So a
+ * prefix set for the server shows in the header and in the numbers. Only the
+ * embedding settings are used; no other value from those files is printed.
+ *
  * All output goes to stdout here; this is a CLI, not the stdio server.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID } from '../dist/config.js';
-import { FastEmbedEmbedder } from '../dist/embedder.js';
+import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID, loadEmbeddingConfig } from '../dist/config.js';
+import { loadEnvFiles } from '../dist/env-file.js';
 import {
   compatibilityProblem,
+  embedderFromConfig,
   embedReferences,
   formatReport,
+  formatReportHeader,
   parseReferences,
   REFERENCE_AGREEMENT_THRESHOLD,
   scoreReferences,
@@ -37,6 +45,9 @@ const SAMPLES = [
 
 /** Repo-root `ingest/eval/embeddings.json`, resolved from this script (mcp-server/scripts/). */
 const REFERENCE_PATH = fileURLToPath(new URL('../../ingest/eval/embeddings.json', import.meta.url));
+
+/** The repo root, where the server looks for `.env` (dist/index.js resolves the same folder). */
+const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 async function checkShape(embedder) {
   for (const sample of SAMPLES) {
@@ -78,19 +89,14 @@ function loadReferences(embedder) {
   return references;
 }
 
-async function reportReferenceAgreement(embedder) {
+async function reportReferenceAgreement(embedder, queryPrefix) {
   const references = loadReferences(embedder);
   if (!references) return;
 
-  const recordedOn = [
-    references.recorded_at && `recorded ${references.recorded_at}`,
-    references.machine && `on ${references.machine}`,
-    references.fastembed && `fastembed ${references.fastembed}`,
-    references.onnxruntime && `onnxruntime ${references.onnxruntime}`,
-  ].filter(Boolean);
-  console.log(`reference:  ${REFERENCE_PATH}`);
-  if (recordedOn.length > 0) console.log(`            ${recordedOn.join(', ')}`);
-  console.log(`items:      ${references.items.length}\n`);
+  for (const line of formatReportHeader(references, REFERENCE_PATH, queryPrefix)) {
+    console.log(line);
+  }
+  console.log('');
 
   const vectors = await embedReferences(embedder, references);
   const scores = scoreReferences(references, vectors);
@@ -99,19 +105,26 @@ async function reportReferenceAgreement(embedder) {
   }
 }
 
+/** A file that exists but will not parse is reported and skipped, as the server does. */
+function reportEnvProblem(message) {
+  console.log(`env: ${message}`);
+}
+
 async function main() {
+  const embedding = loadEmbeddingConfig(
+    loadEnvFiles(process.env, { repoRoot: REPO_ROOT, report: reportEnvProblem }),
+  );
+
   console.log(`model:      ${EMBEDDING_MODEL_ID}`);
   console.log(`expected:   ${EMBEDDING_DIMENSIONS} dimensions`);
-  console.log(`cache dir:  ${process.env.FASTEMBED_CACHE_DIR ?? '(default ./local_cache)'}`);
+  console.log(`cache dir:  ${embedding.cacheDir ?? '(default ./local_cache)'}`);
   console.log('First run downloads ~130 MB from Hugging Face.\n');
 
-  const embedder = new FastEmbedEmbedder({
-    cacheDir: process.env.FASTEMBED_CACHE_DIR,
-  });
+  const embedder = embedderFromConfig(embedding);
 
   try {
     await checkShape(embedder);
-    await reportReferenceAgreement(embedder);
+    await reportReferenceAgreement(embedder, embedding.queryPrefix);
   } finally {
     await embedder.close();
   }

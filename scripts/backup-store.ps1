@@ -102,10 +102,13 @@ $script:DumpMagic = 'PGDMP'
 
 # Container, database and role names go into a cmd.exe command line, so only
 # characters with no meaning to cmd are allowed. Docker and Postgres names fit.
-$script:SafeNamePattern = '^[A-Za-z0-9][A-Za-z0-9_.-]*$'
+# \A and \z, used with -cmatch: `$` would also accept a trailing newline, which
+# ends a cmd.exe command line early and drops the redirect.
+$script:SafeNamePattern = '\A[A-Za-z0-9][A-Za-z0-9_.-]*\z'
 
-# Only files of exactly this form are ever pruned.
-$script:DumpNamePattern = '^harness-\d{8}-\d{6}\.dump$'
+# Only files of exactly this form are ever pruned. [0-9], not \d, which in .NET
+# also matches non-ASCII digits.
+$script:DumpNamePattern = '\Aharness-[0-9]{8}-[0-9]{6}\.dump\z'
 $script:TimestampFormat = 'yyyyMMdd-HHmmss'
 $script:PartialSuffix = '.partial'
 
@@ -121,39 +124,9 @@ function Fail {
     exit $script:ExitNoBackup
 }
 
-# ~/.harness/machine.env: what this machine is. KEY=value, the same file the
-# hook and ingest read. A parameter passed explicitly still wins.
-function Read-MachineEnv {
-    $file = if ($env:HARNESS_MACHINE_ENV) { $env:HARNESS_MACHINE_ENV } else { Join-Path $env:USERPROFILE '.harness\machine.env' }
-    $values = @{}
-    if (-not (Test-Path $file)) { return $values }
-    foreach ($raw in Get-Content $file -Encoding UTF8) {
-        $line = $raw.Trim()
-        if (-not $line -or $line.StartsWith('#')) { continue }
-        if ($line.StartsWith('export ')) { $line = $line.Substring(7).Trim() }
-        $at = $line.IndexOf('=')
-        if ($at -lt 1) { continue }
-        $key = $line.Substring(0, $at).Trim()
-        $value = $line.Substring($at + 1).Trim()
-        if ($value.Length -ge 2 -and (($value[0] -eq '"' -and $value[-1] -eq '"') -or ($value[0] -eq "'" -and $value[-1] -eq "'"))) {
-            $value = $value.Substring(1, $value.Length - 2)
-        }
-        $values[$key] = $value
-    }
-    return $values
-}
-
-function Get-MachineSetting {
-    param([hashtable] $Machine, [string] $Key, [string] $Default)
-    $fromEnv = [Environment]::GetEnvironmentVariable($Key)
-    if ($fromEnv) { return $fromEnv }
-    if ($Machine.ContainsKey($Key) -and $Machine[$Key]) { return $Machine[$Key] }
-    return $Default
-}
-
 function Assert-SafeName {
     param([string] $Value, [string] $Label)
-    if ($Value -notmatch $script:SafeNamePattern) {
+    if ($Value -cnotmatch $script:SafeNamePattern) {
         Fail "-$Label '$Value' has characters this script will not pass to cmd.exe." "Use letters, digits, '_', '.' and '-' only."
     }
 }
@@ -187,7 +160,7 @@ function Get-OldDumps {
     param([string] $Directory, [string] $Skip)
     if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { return @() }
     return @(Get-ChildItem -LiteralPath $Directory -File |
-        Where-Object { $_.Name -match $script:DumpNamePattern -and $_.FullName -ne $Skip } |
+        Where-Object { $_.Name -cmatch $script:DumpNamePattern -and $_.FullName -ne $Skip } |
         Sort-Object -Property @{ Expression = 'LastWriteTimeUtc'; Descending = $true }, @{ Expression = 'Name'; Descending = $true })
 }
 
@@ -211,12 +184,14 @@ function Test-DumpMagic {
 }
 
 # cmd /s /c "<inner>": /s strips exactly the outer quotes, so the quoted docker
-# path and dump path inside survive; /d skips any AutoRun command.
+# path and dump path inside survive; /d skips any AutoRun command; /v:off keeps
+# delayed expansion off even where the registry turns it on, since it would
+# rewrite a `!` in the dump path even inside quotes.
 function Invoke-Dump {
     param([string] $CommandLine)
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'
-    $startInfo.Arguments = "/d /s /c `"$CommandLine`""
+    $startInfo.Arguments = "/d /v:off /s /c `"$CommandLine`""
     $startInfo.UseShellExecute = $false
     $process = [System.Diagnostics.Process]::Start($startInfo)
     try { $process.WaitForExit(); return $process.ExitCode } finally { $process.Dispose() }
@@ -232,6 +207,9 @@ function Remove-Partial {
 # never PowerShell's default exit 1, which here means "dump good, prune failed".
 
 try {
+    # ~/.harness/machine.env through the shared reader (Read-MachineEnv,
+    # Get-MachineSetting). Inside the try, so a missing lib is exit 2, not 1.
+    . (Join-Path $PSScriptRoot 'lib\machine-env.ps1')
     $machine = Read-MachineEnv
     if (-not $OutDir) { $OutDir = Join-Path $env:USERPROFILE 'backups\harness-store' }
     if (-not $PSBoundParameters.ContainsKey('Container')) { $Container = Get-MachineSetting $machine 'HARNESS_STORE_CONTAINER' $script:DefaultContainer }
@@ -241,7 +219,9 @@ try {
     Assert-SafeName $Container 'Container'
     Assert-SafeName $Database 'Database'
     Assert-SafeName $User 'User'
-    $outRoot = [System.IO.Path]::GetFullPath($OutDir)
+    # PowerShell's resolver, not [IO.Path]::GetFullPath: a relative -OutDir must
+    # follow Set-Location, which does not move the process's .NET working directory.
+    $outRoot = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
     if ($outRoot.Contains('%')) { Fail "-OutDir '$outRoot' contains '%', which cmd.exe would expand." 'Choose a folder without % in its path.' }
 
     $docker = Resolve-Docker

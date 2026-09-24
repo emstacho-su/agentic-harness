@@ -9,10 +9,12 @@
  * whatever the numbers say.
  *
  * Pure apart from `embedReferences`, which only calls the injected embedder,
- * so the script and the tests share every line of the scoring logic.
+ * and `embedderFromConfig`, which builds the live one the same way the server
+ * does, so the script and the tests share every line of the scoring logic.
  */
 
-import type { Embedder } from './embedder.js';
+import type { EmbeddingConfig } from './config.js';
+import { type Embedder, FastEmbedEmbedder } from './embedder.js';
 
 /**
  * Cosine the Python `embed-check` gate uses (R-D2). Same-model runs on
@@ -28,6 +30,9 @@ export const REPORT_TEXT_WIDTH = 60;
 const COSINE_DECIMALS = 6;
 
 const ELLIPSIS = '...';
+
+/** Label column of the report header, wide enough for its longest label. */
+const HEADER_LABEL_WIDTH = 'query prefix: '.length;
 
 export interface ReferenceItem {
   readonly text: string;
@@ -87,6 +92,49 @@ export function scoreReferences(
     text: item.text,
     cosine: cosine(item.vector, vectors[i] as readonly number[]),
   }));
+}
+
+/**
+ * The Node embedder exactly as `search_context` builds it (src/index.ts): same
+ * model, cache dir and RAG_QUERY_PREFIX, so the report measures what queries get.
+ */
+export function embedderFromConfig(embedding: EmbeddingConfig): Embedder {
+  return new FastEmbedEmbedder({
+    modelId: embedding.modelId,
+    dimensions: embedding.dimensions,
+    cacheDir: embedding.cacheDir,
+    queryPrefix: embedding.queryPrefix,
+  });
+}
+
+/**
+ * Header lines of the reference report: the file, its provenance, the item
+ * count and the query prefix. A set prefix is quoted (so trailing spaces show)
+ * and flagged, because the Python references never carry one.
+ */
+export function formatReportHeader(
+  references: References,
+  source: string,
+  queryPrefix: string,
+): readonly string[] {
+  const label = (name: string): string => `${name}:`.padEnd(HEADER_LABEL_WIDTH);
+  const recordedOn = [
+    references.recorded_at && `recorded ${references.recorded_at}`,
+    references.machine && `on ${references.machine}`,
+    references.fastembed && `fastembed ${references.fastembed}`,
+    references.onnxruntime && `onnxruntime ${references.onnxruntime}`,
+  ].filter(Boolean);
+
+  const lines = [`${label('reference')}${source}`];
+  if (recordedOn.length > 0) lines.push(`${' '.repeat(HEADER_LABEL_WIDTH)}${recordedOn.join(', ')}`);
+  lines.push(`${label('items')}${references.items.length}`);
+  lines.push(`${label('query prefix')}${queryPrefix ? JSON.stringify(queryPrefix) : 'none'}`);
+  if (queryPrefix) {
+    lines.push(
+      'note: RAG_QUERY_PREFIX is prepended on the Node side and the Python references were embedded without it, so the cosines below differ on purpose',
+    );
+  }
+  return lines;
 }
 
 /** Embed each reference text in order. Sequential: one ONNX session, no gain from overlap. */

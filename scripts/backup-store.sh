@@ -6,7 +6,8 @@
 #   scripts/backup-store.sh             # dump, check, prune
 #   scripts/backup-store.sh --dry-run   # print the command and the prune list
 #
-# Settings, environment first, then ~/.harness/machine.env, then the default:
+# Settings, from the environment, else the default. HARNESS_STORE_CONTAINER and
+# HARNESS_STORE_DB may also come from ~/.harness/machine.env (the environment wins):
 #   OUT_DIR    $HOME/backups/harness-store (a host folder, never inside Docker's disk)
 #   KEEP       14 dumps remain after a run, the new one included
 #   CONTAINER  $HARNESS_STORE_CONTAINER, else harness-postgres
@@ -45,16 +46,11 @@ for arg in "$@"; do
   esac
 done
 
-machine_env="${HARNESS_MACHINE_ENV:-$HOME/.harness/machine.env}"
-if [ -f "$machine_env" ]; then
-  # KEY=value only; the file is ours, but it is still not sourced as code.
-  while IFS='=' read -r key value; do
-    key="${key#export }"; key="${key// /}"
-    case "$key" in ''|\#*) continue ;; esac
-    value="${value%\"}"; value="${value#\"}"; value="${value%\'}"; value="${value#\'}"
-    [ -z "${!key:-}" ] && export "$key=$value"
-  done < "$machine_env"
-fi
+# The shared reader: HARNESS_* keys (and nothing dangerous) from the machine file.
+machine_env_lib="$(dirname "$0")/lib/machine-env.sh"
+# shellcheck source=lib/machine-env.sh
+. "$machine_env_lib" || fail "could not read $machine_env_lib." "Run the script from its checkout, beside its lib/ folder."
+load_machine_env
 
 OUT_DIR="${OUT_DIR:-$HOME/backups/harness-store}"
 KEEP="${KEEP:-14}"

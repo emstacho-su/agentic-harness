@@ -192,8 +192,8 @@ Exit 2 on a conflict, an error, a refusal or a held lock.
    see *Local store* above). Do not change the tag to `pg17` locally: the pin is what
    makes this machine's pgvector the same as the next one's. Then, in `ingest/`, with
    `DATABASE_URL` and `DATABASE_SSL=disable` in the machine file:
-   - `uv run ingest embed-check`, with `HARNESS_MACHINE` set in the shell, before the
-     first ingest. It embeds the ten texts in `ingest/eval/embeddings.json` and must exit
+   - `uv run ingest embed-check` before the first ingest; like every subcommand it reads
+     the machine file, so `HARNESS_MACHINE` and `FASTEMBED_CACHE_DIR` come from there. It embeds the ten texts in `ingest/eval/embeddings.json` and must exit
      0 (every cosine ≥ 0.999 against the references recorded on home-pc); exit 1 names
      the worst text, exit 2 is a file or model mismatch. On anything but 0, stop: an
      ingest on this machine would write vectors that do not match the other machine's.
