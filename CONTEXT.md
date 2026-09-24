@@ -440,3 +440,4 @@ OneDrive sync corrupt each other. Branch `main`. Public at
 | 7 Hermes Agent | deferred until 0–6 land |
 | 8 Self-evolution | deferred; repo currently unlicensed, re-check before adopting |
 | 9 Docs repo | done — public on GitHub, docs rewritten for the harness-memory relocation |
+| Memory sprint | proposed 2026-09-24 — `docs/memory-sprint-requirements.md`: phases N (hub names), H (`harness` realm, SessionStart brief, portable `~/.claude`), P (retrieval provenance), Q (store audit, location matrix), C (read-only curator); Hermes stays optional, the curator is tool-neutral |
