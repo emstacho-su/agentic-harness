@@ -435,12 +435,15 @@ Claude Code sessions in that window.
 
      ```
      powershell -File scripts/register-nightly-ingest.ps1 -RealmSync DryRun
-     powershell -File scripts/register-checkpoint-collect.ps1
+     & .\scripts\register-checkpoint-collect.ps1 -Authors @('noreply@anthropic.com', 'emstacho@syr.edu')
      ```
 
-     The same `Get-ScheduledTask` now shows `C:/Users/estac/vault` in both actions and
-     `-RealmSync DryRun` in the nightly one, and both tasks `Ready` again (a registration
-     replaces the disabled task).
+     The collector is registered from a PowerShell session, not through `powershell
+     -File`: `-File` cannot pass an array, so `-Authors a,b` would arrive as one
+     comma-joined string and the allow-list would match nobody (found at the cutover on
+     2026-09-23). The same `Get-ScheduledTask` now shows `C:/Users/estac/vault` in both
+     actions, two `--author` flags on the collector, `-RealmSync DryRun` on the nightly
+     one, and both tasks `Ready` again (a registration replaces the disabled task).
 
 10. **MANUAL: open the new vault in Obsidian.** Open another vault › Open folder as vault ›
     `C:\Users\estac\vault`. Open a note with a known wikilink and follow it; open the
@@ -608,16 +611,19 @@ step (`Measure-Command { … }`, or the transcript's timestamps).
 
 | Step | What | Time |
 | --- | --- | --- |
-| a | disable both tasks | (rehearsal: __ s) |
-| b | point the machine file at the archive | (rehearsal: __ s) |
-| c | `attrib -R` on the archive | (rehearsal: __ s) |
-| d | re-register both tasks with the archive path | (rehearsal: __ s) |
-| e | open the archive in Obsidian (MANUAL) | (rehearsal: __ s) |
-| f | `doctor.mjs` | (rehearsal: __ s) |
-| g | copy back post-cutover notes (list, then copy) | (rehearsal: __ s) |
-| | **total** | (rehearsal: __ s) |
+| a | disable both tasks | 0.6 s |
+| b | point the machine file at the archive | under 0.1 s |
+| c | `attrib -R` on the archive | 0.2 s |
+| d | re-register both tasks with the archive path | 3.7 s |
+| e | open the archive in Obsidian (MANUAL) | not rehearsed: needs a person |
+| f | `doctor.mjs` | 0.1 s |
+| g | copy back post-cutover notes (list, then copy) | 0.1 s |
+| | **total, a-g** | 4.7 s (whole rehearsal incl. copy and verify: 20.5 s) |
 
-Rehearsal log: `~/.claude/hooks/rollback-rehearsal.log` (rehearsal: run on __, by __).
+Rehearsal log: `~/.claude/hooks/rollback-rehearsal.log` (rehearsed 2026-09-23 23:14 local, by
+Claude Code for Stack, against a 769-file copy; `verify-copy.ps1` printed `identical` in
+5.3 s, reported one altered byte as `hash differs: projects/agentic-harness/index.md`, and
+`identical` again after the restore).
 
 ## Homelab, later
 
