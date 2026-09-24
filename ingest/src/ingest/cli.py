@@ -11,6 +11,10 @@
     uv run ingest embed-check         [--json] [--threshold 0.999] [--record [--force]]
     uv run ingest --health
 
+A session note's ``retrievals:`` frontmatter is projected into
+``rag.retrieval_events`` as part of any obsidian ingest; the summary reports the
+rows written, planned (``--dry-run``) or skipped (table not migrated yet).
+
 Windows note: always pass ``C:/Users/...``. An MSYS-style ``/c/Users/...`` path
 resolves to ``C:\\c\\Users\\...`` for anything that is not the bash shell itself.
 """
@@ -410,13 +414,15 @@ def _report_load(loaded: LoadedSource) -> None:
 
 def _report_stats(stats: IngestStats, *, dry_run: bool) -> None:
     print("\n--- dry run, nothing written ---" if dry_run else "\n--- ingest complete ---")
-    for action, count in stats.summary().items():
+    for action in Action:
+        count = stats.count(action)
         if count:
-            print(f"  {count:5}  {action}")
+            print(f"  {count:5}  {action.value}")
     if dry_run:
         print(f"  chunks that would be written: {stats.chunks_planned}")
     else:
         print(f"  chunks written: {stats.chunks_written}")
+    _report_events(stats)
 
     # Say what "metadata-updated" means where it is counted, rather than leaving
     # an unexplained action name in the nightly log.
@@ -431,6 +437,19 @@ def _report_stats(stats: IngestStats, *, dry_run: bool) -> None:
         )
 
     _report_failures(stats)
+
+
+def _report_events(stats: IngestStats) -> None:
+    """One line on rag.retrieval_events (R-P2), and only when there is something to say."""
+    parts = []
+    if stats.events_written:
+        parts.append(f"{stats.events_written} written")
+    if stats.events_planned:
+        parts.append(f"{stats.events_planned} would be written")
+    if stats.events_skipped:
+        parts.append(f"{stats.events_skipped} skipped (rag.retrieval_events missing)")
+    if parts:
+        print(f"  retrieval events: {', '.join(parts)}")
 
 
 def _report_prune(result: PruneResult, *, dry_run: bool) -> None:

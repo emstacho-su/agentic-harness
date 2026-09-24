@@ -437,3 +437,62 @@ def test_prune_on_a_realmless_vault_never_touches_the_legacy_rows(clean_env, vau
           "--prune", "--env-file", str(clean_env)])
     out = capsys.readouterr().out
     assert "legacy rows (no realm)" not in out
+
+
+def test_the_summary_reports_retrieval_events(capsys):
+    from ingest.cli import _report_stats
+    from ingest.pipeline import Action, DocumentOutcome, EventAction, IngestStats
+
+    written = IngestStats()
+    written.record(DocumentOutcome("a.md", Action.INSERTED, 1, event_count=37, event_action=EventAction.WRITTEN))
+    _report_stats(written, dry_run=False)
+    assert "retrieval events: 37 written" in capsys.readouterr().out
+
+    planned = IngestStats()
+    planned.record(DocumentOutcome("a.md", Action.PLANNED_NEW, 1, event_count=37, event_action=EventAction.PLANNED))
+    _report_stats(planned, dry_run=True)
+    assert "retrieval events: 37 would be written" in capsys.readouterr().out
+
+    skipped = IngestStats()
+    skipped.record(DocumentOutcome("a.md", Action.UNCHANGED, event_count=12, event_action=EventAction.SKIPPED))
+    _report_stats(skipped, dry_run=False)
+    out = capsys.readouterr().out
+    assert "retrieval events: 12 skipped (rag.retrieval_events missing)" in out
+    assert "events_skipped" not in out, "event counts are not printed as actions"
+
+
+def test_a_dry_run_reports_the_retrieval_events_it_would_write(clean_env, monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("HARNESS_REALMS", raising=False)
+    sessions = tmp_path / "vault" / "projects" / "agentic-harness" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "s1.md").write_text(
+        "---\n"
+        "session_id: s1\n"
+        "retrievals:\n"
+        "  - at: '2026-09-24T14:03:11Z'\n"
+        "    channel: tool\n"
+        "    tool: search_context\n"
+        "    query: 'prune'\n"
+        "    results: ['obsidian:a@0.81', 'claude-mem:summary:12@0.79']\n"
+        "  - at: '2026-09-24T14:04:00Z'\n"
+        "    channel: tool\n"
+        "    tool: search_context\n"
+        "    query: 'nothing'\n"
+        "    results: []\n"
+        "---\n\n# Session\n\nWhat happened.\n",
+        encoding="utf-8",
+    )
+    code = main(["--source", "obsidian", "--path", str(tmp_path / "vault"), "--dry-run",
+                 "--env-file", str(clean_env)])
+    assert code == 0
+    assert "retrieval events: 3 would be written" in capsys.readouterr().out
+
+
+def test_the_summary_is_silent_about_events_when_there_are_none(capsys):
+    from ingest.cli import _report_stats
+    from ingest.pipeline import Action, DocumentOutcome, IngestStats
+
+    stats = IngestStats()
+    stats.record(DocumentOutcome("a.md", Action.UNCHANGED))
+    _report_stats(stats, dry_run=False)
+    assert "retrieval events" not in capsys.readouterr().out
