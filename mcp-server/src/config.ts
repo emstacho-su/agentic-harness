@@ -78,19 +78,21 @@ export interface DatabaseConfig {
   ssl: boolean;
 }
 
+export interface EmbeddingConfig {
+  readonly modelId: string;
+  readonly dimensions: number;
+  readonly cacheDir: string | undefined;
+  /**
+   * Optional instruction prefix prepended to queries before embedding.
+   * Project convention is NO prefix, on either side. Changing it here without
+   * re-embedding the store is a silent-quality-loss bug.
+   */
+  readonly queryPrefix: string;
+}
+
 export interface Config {
   readonly database: DatabaseConfig;
-  readonly embedding: {
-    readonly modelId: string;
-    readonly dimensions: number;
-    readonly cacheDir: string | undefined;
-    /**
-     * Optional instruction prefix prepended to queries before embedding.
-     * Project convention is NO prefix, on either side. Changing it here without
-     * re-embedding the store is a silent-quality-loss bug.
-     */
-    readonly queryPrefix: string;
-  };
+  readonly embedding: EmbeddingConfig;
   readonly search: {
     readonly defaultMatchCount: number;
     readonly maxMatchCount: number;
@@ -202,6 +204,19 @@ function resolveDatabase(env: NodeJS.ProcessEnv, vectorType: string): DatabaseCo
 }
 
 /**
+ * The embedding part of the config alone. Needs no DATABASE_URL, so the offline
+ * `verify:embedder` script embeds exactly as `search_context` would.
+ */
+export function loadEmbeddingConfig(env: NodeJS.ProcessEnv = process.env): EmbeddingConfig {
+  return {
+    modelId: EMBEDDING_MODEL_ID,
+    dimensions: EMBEDDING_DIMENSIONS,
+    cacheDir: readOptional(env, 'FASTEMBED_CACHE_DIR'),
+    queryPrefix: env['RAG_QUERY_PREFIX'] ?? '',
+  };
+}
+
+/**
  * Build config from the environment. Throws `ConfigError` with an actionable
  * hint rather than starting up in a half-configured state.
  */
@@ -226,12 +241,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   return {
     database: resolveDatabase(env, vectorType),
-    embedding: {
-      modelId: EMBEDDING_MODEL_ID,
-      dimensions: EMBEDDING_DIMENSIONS,
-      cacheDir: readOptional(env, 'FASTEMBED_CACHE_DIR'),
-      queryPrefix: env['RAG_QUERY_PREFIX'] ?? '',
-    },
+    embedding: loadEmbeddingConfig(env),
     search: {
       defaultMatchCount,
       maxMatchCount,

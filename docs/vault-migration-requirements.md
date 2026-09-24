@@ -227,16 +227,40 @@ unrelated layout.
 ## Phase D — the store stays correct
 
 ### R-D1 Every row gains its realm; the legacy sweep runs once, here, and never again
-- **Requirement.** After R-C3 a full ingest tags every note (`metadata-updated` for all,
-  `would-update` for none), then `--prune-legacy --dry-run` is inspected and run for real
-  exactly once on this machine; afterwards `--prune-legacy` is not in any scheduled job.
+- **Requirement.** After R-C3 a full ingest tags every note: its dry run prints
+  `would-update-metadata` for every note already in the store and `would-update` for none
+  (no text changed, so nothing is re-embedded), and the live pass prints
+  `metadata-updated` for the same notes. Then `--prune-legacy --dry-run` is inspected and
+  run for real exactly once on this machine; afterwards `--prune-legacy` is not in any
+  scheduled job.
 - **Why.** The legacy bucket is unscoped; only the machine that owned the store before realms
   may sweep it (see `cli.py --prune-legacy`).
-- **Tests.** Dry run first, both steps. Live: `select count(*) from rag.documents where
-  source='obsidian' and not (metadata->'_ingest' ? 'realm')` is 0 afterwards; the note
-  count equals the on-disk count of ingestable notes.
+- **Tests.** Dry run first, both steps: the ingest dry run shows `would-update-metadata`
+  (the CLI's dry-run word; `metadata-updated` is the live one) and 0 `would-update`. Live:
+  `select count(*) from rag.documents where source='obsidian' and not
+  (metadata->'_ingest' ? 'realm')` is 0 afterwards; the note count equals the on-disk
+  count of ingestable notes.
 - **Done when.** That query returns 0, the eval still reads hit@3 ≥ 0.95 / negatives 5/5,
   and `--prune-legacy` appears in no task or script argument list.
+  **Done 2026-09-24** on home-pc (about 00:30 local, nightly task disabled for the run and
+  re-enabled unchanged with `-RealmSync DryRun` afterwards):
+  - eval before: hit@3 0.95 (19/20), MRR 0.775, negatives 5/5;
+  - ingest dry run on `C:/Users/estac/vault`: loaded 470, skipped 291 (the loader's rules:
+    SDK-origin sessions, `ingest: false`, duplicates), 468 `would-update-metadata`, 2
+    unchanged, 0 `would-update`, 0 `would-insert`, 0 chunks;
+  - live pass: 468 `metadata-updated`, 2 unchanged, 0 chunks written;
+  - `--prune-legacy --dry-run`: `Orphan sweep: nothing stale in source 'obsidian', legacy
+    rows (no realm)`, plus 1 `would-insert` for a session note that landed in between;
+  - the one real `--prune-legacy`: 1 inserted, 470 unchanged, 5 chunks written, nothing
+    stale;
+  - SQL afterwards: the query above returns 0 (and so does the store's own legacy
+    predicate); obsidian 472 documents = `projects` 464 + `classes` 8, 1,838 obsidian
+    chunks (3,848 in all with claude-mem's 2,010);
+    claude-mem 1,037 documents, untouched;
+  - eval after: hit@3 0.95, MRR 0.775, negatives 5/5, `returned` identical for all 25
+    cases;
+  - `--prune-legacy` appears only in `cli.py` and its tests (grep), in no scheduled task
+    and no script.
 
 ### R-D2 Rebuilt embeddings are checked, not assumed
 - **Requirement.** `ingest embed-check`: ten fixed texts with their reference vectors
@@ -253,6 +277,21 @@ unrelated layout.
   perturbed by 0.05 fails. Live: passes on this machine; passes on the VM before R-E2.
 - **Done when.** The command exists with tests, the reference file is committed from this
   machine, and both machines have a logged pass.
+  **Home-pc part done 2026-09-24.** `uv run ingest embed-check [--record] [--json]
+  [--threshold 0.999] [--file]` exists (exit 0 pass, 1 a cosine under the threshold, naming
+  the worst text, 2 a file or model mismatch); `--record` refuses to overwrite the file
+  without `--force` and takes the machine label from `HARNESS_MACHINE`, which must be set
+  in the shell. `tests/test_embed_check.py` covers the fake-embedder pass and fail.
+  `ingest/eval/embeddings.json` was recorded on home-pc with fastembed 0.8.0 and
+  onnxruntime 1.29.0, and `onnxruntime==1.29.0` is now an explicit pin in `pyproject.toml`,
+  not only a transitive one in `uv.lock`. Live pass on home-pc: every item 1.000000. The
+  VM's pass is still open (Phase E, R-E1).
+  Evidence that the two embedders agree: `npm run verify:embedder` in `mcp-server` now also
+  prints the cosine per reference text against the Node embedder, and the minimum (a
+  report, not a gate). On home-pc the minimum is 1.000000, so the Python cache (66 MB
+  quantized ONNX) and the Node cache (133 MB ONNX) embed alike although they hold
+  different artifacts. That matters because `search_context` embeds queries on the Node
+  side against vectors `ingest` wrote on the Python side.
 
 ### R-D3 The local store is pinned, backed up by dump, and sized for HNSW
 - **Requirement.** `db/docker-compose.yml` pins `pgvector/pgvector:0.8.6-pg17` (exact tag, the newest 0.8.x on Docker Hub today;
@@ -263,11 +302,19 @@ unrelated layout.
   ([docker/for-win #445](https://github.com/docker/for-win/issues/445)); HNSW builds fall out
   of the 64 MB default and slow 4× ([pgvector README](https://github.com/pgvector/pgvector/blob/master/README.md));
   a volume copy is only consistent stopped, a dump is portable across majors.
-- **Tests.** `docker compose config` shows the pinned tag and settings. Live on the VM:
-  `db migrate` from empty shows 6 applied; a full ingest then `pg_dump`; restore into a
-  second container and `select count(*)` matches.
+- **Tests.** `docker compose config` shows the pinned tag, the `command` with
+  `maintenance_work_mem=512MB` and `shm_size: "1073741824"` (1g, as compose prints it);
+  the backup script's self-test (`scripts/tests/backup-store.tests.ps1`) passes. Live on
+  the VM: `db migrate` from empty shows 6 applied; a full ingest then `pg_dump`; restore
+  into a second container and `select count(*)` matches.
 - **Done when.** Dump-and-restore round-trips the count on the VM and the backup script is
   in the VM's schedule.
+  **Home-pc part done 2026-09-24:** the tag `0.8.6-pg17` was verified active on Docker Hub
+  before pinning; `docker compose config` shows the tag, the command and
+  `shm_size: "1073741824"` (the Docker daemon is off here, and `config` needs none); the
+  named volume is unchanged; `scripts/backup-store.ps1` and `.sh` exist and the self-test
+  passes. The live dump-and-restore round trip and the VM's schedule stay open for Phase E
+  (decision 6).
 
 ## Phase E — the second machine
 
@@ -326,7 +373,7 @@ unrelated layout.
 | A | B | R-A1–A4 done in code and tests, on `main` |
 | B | C | R-B1–B4 done in code, unit and real-git tests, on `main`; the three-night nightly check moves after Phase C (decision 4, 2026-09-23) |
 | C | D | R-C1 identical copy, R-C2 remotes, R-C3 doctor clean, R-C4 rehearsed; then, before D, the checks Phase B deferred: three `committed -> pulled -> pushed` nights (R-B1) and the credential-less push test (R-B4) |
-| D | E | R-D1 query returns 0, eval unchanged, R-D2 references committed |
+| D | E | R-D1 query returns 0 (done 2026-09-24), eval unchanged, R-D2 references committed; R-D3 live round trip on the VM in E |
 | E | F | R-E1 green on the VM, R-E2 round trip |
 | F | — | R-F1 script exit 0; R-F2 after 21 days |
 
@@ -364,6 +411,18 @@ unrelated layout.
    folder. At R-F2 both the OneDrive folder (online) and the archive are deleted. Phase C's
    code, tests and docs are built on Opus 5.5 subagents, one per commit, reviewed and
    committed in one PR.
+6. (2026-09-24) Phase D. R-D1's dry-run word is `would-update-metadata`, because that is
+   what the CLI prints; `metadata-updated` is the live word, and the requirement said the
+   live word for the dry run. The nightly task was disabled for the hand-run ingest, so a
+   catch-up run could not interleave with it, and re-enabled unchanged
+   (`-RealmSync DryRun`) afterwards. R-D3's live dump-and-restore round trip and the
+   backup schedule belong to the VM, as the requirement already said, so they move to
+   Phase E; on home-pc the pin is checked with `docker compose config` and the backup
+   script with its self-test. `verify-embedder.mjs` also reports cosine against the same
+   reference vectors (a report, not a gate), because the Python and Node caches hold
+   different ONNX artifacts and `search_context` embeds its queries on the Node side.
+   (The 03:00 nightly of 2026-09-24 did not fire: the task is Interactive-only and nobody
+   was logged on, so the first DryRun night after Phase C is still ahead.)
 
 Follow-ups, not in Phase B:
 - `session-capture.mjs` and `sweep-transcripts.mjs` write into realms without taking the

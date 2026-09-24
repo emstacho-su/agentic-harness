@@ -6,7 +6,9 @@
 #   REALM_SYNC=skip scripts/nightly-ingest.sh # without the git steps
 #
 # Reads ~/.harness/machine.env (HARNESS_VAULT, HARNESS_INGEST_PROJECT,
-# HARNESS_HOOKS_DIR, HARNESS_NODE, HARNESS_UV) with the environment winning.
+# HARNESS_HOOKS_DIR, HARNESS_NODE, HARNESS_UV, HARNESS_NIGHTLY_LOG, REALM_SYNC,
+# TRANSCRIPT_IDLE_HOURS, STALE_AFTER_HOURS) with the environment winning. The
+# ingest and the hooks read the rest of that file (DATABASE_URL, ...) themselves.
 # Register with cron, e.g.  0 3 * * * /path/to/agentic-harness/scripts/nightly-ingest.sh
 # or with launchd on macOS; both are documented in docs/portable.md.
 #
@@ -14,16 +16,12 @@
 
 set -u
 
-machine_env="${HARNESS_MACHINE_ENV:-$HOME/.harness/machine.env}"
-if [ -f "$machine_env" ]; then
-  # KEY=value only; the file is ours, but it is still not sourced as code.
-  while IFS='=' read -r key value; do
-    key="${key#export }"; key="${key// /}"
-    case "$key" in ''|\#*) continue ;; esac
-    value="${value%\"}"; value="${value#\"}"; value="${value%\'}"; value="${value#\'}"
-    [ -z "${!key:-}" ] && export "$key=$value"
-  done < "$machine_env"
-fi
+# The shared reader: HARNESS_* keys, REALM_SYNC, TRANSCRIPT_IDLE_HOURS and
+# STALE_AFTER_HOURS from the machine file, nothing else (lib/machine-env.sh).
+machine_env_lib="$(dirname "$0")/lib/machine-env.sh"
+# shellcheck source=lib/machine-env.sh
+. "$machine_env_lib" || { echo "FATAL could not read $machine_env_lib" >&2; exit 2; }
+load_machine_env
 
 VAULT="${HARNESS_VAULT:-$HOME/vault}"
 PROJECT="${HARNESS_INGEST_PROJECT:-$HOME/agentic-harness/ingest}"

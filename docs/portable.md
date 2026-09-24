@@ -37,6 +37,28 @@ hub    = wherever the realm remotes live: private GitHub repos today, a homelab 
   The hook, the sweep, the collector, the nightly scripts and `ingest` all read it; the
   shell always wins; the repo `.env` (secrets) wins over it too. `HARNESS_REALMS` is an
   allowlist: a realm on disk that it does not name stops the run.
+- **Local store.** A machine without Supabase runs `db/docker-compose.yml`: the image is
+  pinned to `pgvector/pgvector:0.8.6-pg17`, not the moving `pg17` tag, so two machines
+  (and one machine after a `docker pull`) run the same pgvector. Two settings are there
+  for HNSW index builds: `maintenance_work_mem=512MB`, because a build that falls out of
+  the 64 MB default is about 4x slower, and `shm_size: 1g`, because a parallel build works
+  in shared memory and Docker gives a container only 64 MB of `/dev/shm`. The data sits
+  in a named volume, never a bind mount on a Windows drive, which fails Postgres'
+  ownership checks. The backup is a dump, not a volume copy, because a volume copy is only
+  consistent with the container stopped and a dump restores across Postgres major
+  versions: `scripts/backup-store.ps1` (or `.sh`) runs `pg_dump -Fc` through
+  `docker exec harness-postgres` into `~\backups\harness-store` by default, writes to a
+  `.partial` file, checks it is non-empty and starts with `PGDMP`, then renames it and
+  keeps the newest 14 (`-Keep`). `-DryRun` prints the command. It never starts Docker or
+  the container; exit 0 is a good dump, 1 a good dump whose pruning failed, 2 no backup.
+  `HARNESS_STORE_CONTAINER` and `HARNESS_STORE_DB` override the names, from the shell or
+  the machine file. The dump folder must be an ordinary host folder, outside Docker's
+  VHDX: a dump inside the disk it backs up is lost with it. Restore, from cmd or bash
+  (PowerShell 5.1 has no `<`):
+
+  ```
+  docker exec -i harness-postgres pg_restore -U harness -d harness --clean --if-exists < <file>
+  ```
 - **Nightly:** commit and merge-pull every realm → sweep transcripts → collect
   checkpoints → conclude stale sessions → ingest with realm-scoped prune → commit,
   merge-pull and push the `push` realms. A merge that conflicts is aborted with the local
@@ -165,9 +187,22 @@ Exit 2 on a conflict, an error, a refusal or a held lock.
 1. Install per-user: Node 22+, `uv`, git, Claude Code, Docker Desktop.
 2. Clone `agentic-harness` to `~/agentic-harness`; `uv sync` in `ingest/`,
    `npm ci && npm run build` in `mcp-server/`.
-3. The store: `cd db && docker compose up -d`, then in `ingest/`
-   `uv run ingest db migrate` with `DATABASE_URL` and `DATABASE_SSL=disable` in the
-   machine file. `--dry-run` first: a fresh store shows 6 pending.
+3. The store: `cd db && docker compose up -d`, using the compose file as committed (the
+   pinned `pgvector/pgvector:0.8.6-pg17`, `maintenance_work_mem=512MB`, `shm_size: 1g`;
+   see *Local store* above). Do not change the tag to `pg17` locally: the pin is what
+   makes this machine's pgvector the same as the next one's. Then, in `ingest/`, with
+   `DATABASE_URL` and `DATABASE_SSL=disable` in the machine file:
+   - `uv run ingest embed-check` before the first ingest; like every subcommand it reads
+     the machine file, so `HARNESS_MACHINE` and `FASTEMBED_CACHE_DIR` come from there. It embeds the ten texts in `ingest/eval/embeddings.json` and must exit
+     0 (every cosine ≥ 0.999 against the references recorded on home-pc); exit 1 names
+     the worst text, exit 2 is a file or model mismatch. On anything but 0, stop: an
+     ingest on this machine would write vectors that do not match the other machine's.
+     It needs the model, so on a machine without that egress do step 9 first. The
+     Node-side counterpart is `npm run verify:embedder` in `mcp-server/`, which prints
+     the cosine per reference text and the minimum (a report, not a gate); read its
+     minimum too, because `search_context` embeds queries on the Node side.
+   - `uv run ingest db migrate --dry-run`: a fresh store shows 6 pending. Then the same
+     without `--dry-run`.
 4. The vault: `mkdir ~/vault`, then clone the realms this machine may hold into it,
    e.g. `git clone <private remote>/work-vm ~/vault/work-vm` and, if permitted, a
    read-only clone of `projects`. Each clone already carries its `.realm`.
@@ -185,6 +220,14 @@ Exit 2 on a conflict, an error, a refusal or a held lock.
    `scripts/nightly-ingest.sh`. For the first night pass `-RealmSync DryRun`, read the
    log, then re-register with `-RealmSync Apply`; the switch is a re-registration, not a
    script edit (step 12 of the home migration below does the same).
+   Then the store backup (R-D3): `powershell -File scripts/backup-store.ps1 -DryRun` prints
+   the `pg_dump` command and writes nothing; run it once live and check a
+   `harness-<yyyyMMdd-HHmmss>.dump` appears in `~\backups\harness-store`. Schedule it daily
+   after the nightly, e.g. 04:00, as `powershell -NoProfile -File
+   <repo>\scripts\backup-store.ps1 -Keep 14` (Task Scheduler; cron or launchd with
+   `scripts/backup-store.sh` elsewhere). There is no register script for it, so this is a
+   hand-made task. The script never starts Docker or the container, so a night when
+   Docker Desktop is not running is an exit 2 with no backup, never a half-written file.
 8. The push credential: create a fine-grained GitHub PAT scoped to the realm repos only
    (Contents: read and write) with an expiry, and store it once with
    `printf 'protocol=https\nhost=github.com\nusername=<user>\npassword=<PAT>\n' | git credential approve`.
@@ -498,6 +541,12 @@ copies go, so the vault exists only in `C:\Users\estac\vault` and the realm remo
 
 - Record the date in R-F2 and mark the *Rollback* section below expired: it re-points at
   the archive, which no longer exists.
+
+**Phase D record (R-D1, 2026-09-24, nightly disabled for the run).** Full ingest: 470 loaded,
+468 `metadata-updated`, 2 unchanged, 0 re-embedded; the one real `--prune-legacy` found
+nothing stale (1 new session note inserted). Now 0 obsidian rows without a realm, 472
+documents (`projects` 464, `classes` 8), 1,838 obsidian chunks, claude-mem 1,037 untouched; eval
+hit@3 0.95, MRR 0.775, 5/5 before and after, `returned` identical. Details in R-D1.
 
 ## Rollback
 

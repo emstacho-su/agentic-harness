@@ -44,7 +44,7 @@ or duplicating capability that is now native.
 | Location | schema `rag` | schema `public` |
 | Model | **`bge-small-en-v1.5`** (local fastembed) | **`gte-small`** (Supabase server-side) |
 | Dims | 384 | 384 |
-| State | **live — 1,319 docs, 2,312 chunks, 27 collections** (2026-09-10) | **fully embedded** — 534/534 texts, 1,195 chunks; retrieval via Edge Function `search` + MCP server `bb2dash` (see bb2dash repo) |
+| State | **live — obsidian 472 docs (realms `projects` 464 / `classes` 8), 1,838 chunks; claude-mem 1,037 docs, 2,010 chunks**; every obsidian row carries `_ingest.realm` (2026-09-24) | **fully embedded** — 534/534 texts, 1,195 chunks; retrieval via Edge Function `search` + MCP server `bb2dash` (see bb2dash repo) |
 
 **Both are 384-dim, so mixing them raises no error — it silently returns confidently-ranked garbage.**
 They are different vector spaces. A `bge` query vector must never be run against `gte` vectors or the
@@ -54,6 +54,10 @@ reverse. Keep the two pipelines, clients and connection strings entirely separat
 already built and running server-side.
 
 `harness-memory`: region `us-east-1`, Postgres 17, pgvector 0.8.2.
+
+A machine without Supabase runs its own store from `db/docker-compose.yml` (pinned
+`pgvector/pgvector:0.8.6-pg17`) and backs it up with `scripts/backup-store.ps1|sh`; before its
+first ingest it runs `uv run ingest embed-check` (see `docs/portable.md`, *Local store*).
 
 ```
 rag.documents                              rag.chunks
