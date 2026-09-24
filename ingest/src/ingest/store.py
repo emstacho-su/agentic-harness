@@ -138,8 +138,13 @@ _SELECT_EXTERNAL_IDS = f"SELECT external_id FROM {DOCUMENTS_TABLE} WHERE source 
 _DELETE_DOCUMENTS = f"DELETE FROM {DOCUMENTS_TABLE} WHERE source = %s AND external_id = ANY(%s) AND "
 
 
-def _realm_clause(realm: str | None) -> tuple[str, tuple[Any, ...]]:
-    """The SQL predicate and its parameters for one realm, or for the legacy rows."""
+def realm_clause(realm: str | None) -> tuple[str, tuple[Any, ...]]:
+    """The SQL predicate and its parameters for one realm, or for the legacy rows.
+
+    Public because the store audit (``verify_store``) scopes its reads with the
+    same predicate, so the audit and the orphan sweep can never disagree about
+    which rows belong to a realm.
+    """
     if realm is None:
         return _NO_REALM, ()
     return _IN_REALM, (json.dumps({"_ingest": {"realm": realm}}),)
@@ -437,7 +442,7 @@ class PostgresStore:
     # -- orphan sweep ------------------------------------------------------
 
     def list_external_ids(self, source: str, realm: str | None = None) -> set[str]:
-        clause, params = _realm_clause(realm)
+        clause, params = realm_clause(realm)
         try:
             with self._conn.cursor() as cur:
                 cur.execute(_SELECT_EXTERNAL_IDS + clause, (source, *params))
@@ -454,7 +459,7 @@ class PostgresStore:
         ids = list(external_ids)
         if not ids:
             return 0
-        clause, params = _realm_clause(realm)
+        clause, params = realm_clause(realm)
         try:
             with self._conn.cursor() as cur:
                 cur.execute(_DELETE_DOCUMENTS + clause, (source, ids, *params))

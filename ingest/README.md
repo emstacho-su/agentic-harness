@@ -363,6 +363,41 @@ A failed document is logged and counted; the run continues and exits `1`.
 
 ---
 
+## Store audit (`verify`)
+
+```bash
+uv run ingest verify --path C:/Users/estac/vault            # the nightly job runs this after ingest
+uv run ingest verify --path C:/Users/estac/vault --seed 1   # reproducible re-embed sample
+uv run ingest verify --path C:/Users/estac/vault --json     # every finding, machine-readable
+```
+
+A read-only audit of what is actually in the store (R-Q1). The connection's first
+statement is `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`, so a write
+would raise. It loads the repo `.env` and `~/.harness/machine.env` first, like
+`embed-check`, so `FASTEMBED_CACHE_DIR` and `HARNESS_REALMS` apply. It loads the
+embedding model, because two of the checks need it.
+
+| Check | Finds |
+| --- | --- |
+| `chunks` | a document with no chunks, or `chunk_index` values that are not exactly `0..n-1` |
+| `embeddings` | a null embedding, or a stored vector whose L2 norm (`vector_norm`) is more than 1e-3 from 1 |
+| `token-count` | a chunk that the model's own tokenizer, recounting it with truncation off, puts over 512 tokens; also, marked `info`, a stored `token_count` more than 10% from the recount |
+| `vault` | per realm: an ingestable note with no row, a row with no note (or whose note the walk skips, with the reason), and a row whose `content_hash` differs from the note. Only `source = 'obsidian'` rows are compared. Legacy rows with no `_ingest.realm` are counted, not reported. An unmarked vault is compared as one scope. |
+| `duplicate-ids` | a note the walk refused because an earlier note already holds its `external_id` |
+| `re-embed` | among `--sample` chunks (default 50; `--seed` makes the draw reproducible), one whose fresh embedding scores cosine < 0.999 against the stored vector |
+
+The text report lists every check with its count, notes that give context, and
+up to 20 findings. It ends with one line the nightly log can grep:
+`verify: clean` or `verify: N finding(s) in K check(s)`. An `info` finding still
+counts.
+
+Exit codes: `0` clean, `1` at least one finding, `2` could not run (vault
+missing, database unreachable or not configured, model or tokenizer
+unavailable, a realm not in `HARNESS_REALMS`, or bad arguments). The reason is
+given in one `error:` line on stderr.
+
+---
+
 ## Tests
 
 ```bash
@@ -397,6 +432,7 @@ ingest/
     store.py            the only SQL in the package
     pipeline.py         hash -> skip -> chunk -> embed -> write
     prune.py            guarded orphan sweep
+    verify*.py          read-only store audit: types, checks, SQL, CLI
     envfile.py          minimal .env reader
     cli.py              argument parsing and reporting
     loaders/
