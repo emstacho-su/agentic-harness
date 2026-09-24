@@ -73,6 +73,8 @@ pnpm-debug.log*
 data/
 exports/
 *.dump
+# Per-machine eval record (`ingest eval --history`), like the nightly log.
+ingest/eval/history.jsonl
 
 # ---------------------------------------------------------------------------
 # Editors / tooling

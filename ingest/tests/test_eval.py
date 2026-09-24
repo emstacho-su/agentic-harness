@@ -7,6 +7,7 @@ the embedder is the suite's FakeEmbedder.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -23,8 +24,17 @@ from ingest.eval import (
 from ingest.eval_cli import run_eval_command
 
 
-def hit(external_id: str, content: str = "", source: str = "obsidian") -> Hit:
-    return Hit(source=source, external_id=external_id, title=None, content=content, similarity=0.8)
+def hit(
+    external_id: str, content: str = "", source: str = "obsidian", collection: str | None = None
+) -> Hit:
+    return Hit(
+        source=source,
+        external_id=external_id,
+        title=None,
+        content=content,
+        similarity=0.8,
+        collection=collection,
+    )
 
 
 class FakeSearcher:
@@ -56,9 +66,12 @@ cases:
   - id: reconcile
     query: how does the nightly reconcile job work
     expect: [session-abc]
+    collection: agentic-harness
+    realm: projects
   - id: floor
     query: why is the similarity floor 0.70
     expect_contains: ["relevance floor"]
+    collection: estac
   - id: sourdough
     query: best sourdough hydration
     negative: true
@@ -69,6 +82,9 @@ cases:
     assert cases[0].expect == ("session-abc",)
     assert cases[1].expect_contains == ("relevance floor",)
     assert cases[2].negative is True
+    assert (cases[0].collection, cases[0].realm) == ("agentic-harness", "projects")
+    assert (cases[1].collection, cases[1].realm) == ("estac", None)
+    assert (cases[2].collection, cases[2].realm) == (None, None)
 
 
 @pytest.mark.parametrize(
@@ -80,10 +96,18 @@ cases:
         ("cases:\n  - id: a\n    query: q\n    negative: true\n    expect: [x]\n", "negative"),
         ("cases:\n  - id: a\n    expect: [x]\n", "query"),
         (
-            "cases:\n  - id: a\n    query: q\n    expect: [x]\n  - id: a\n    query: r\n    expect: [y]\n",
+            "cases:\n  - id: a\n    query: q\n    expect: [x]\n    collection: c\n"
+            "  - id: a\n    query: r\n    expect: [y]\n    collection: c\n",
             "duplicate",
         ),
         ("cases:\n  - id: a\n    query: q\n    expect: [x]\n    surprise: 1\n", "surprise"),
+        ("cases:\n  - id: a\n    query: q\n    expect: [x]\n", "collection"),
+        ("cases:\n  - id: a\n    query: q\n    expect: [x]\n    collection: '  '\n", "collection"),
+        ("cases:\n  - id: a\n    query: q\n    expect: [x]\n    collection: [c]\n", "collection"),
+        ("cases:\n  - id: a\n    query: q\n    expect: [x]\n    collection: c\n    realm: Bad Realm\n", "realm"),
+        ("cases:\n  - id: a\n    query: q\n    expect: [x]\n    collection: c\n    realm: 3\n", "realm"),
+        ("cases:\n  - id: a\n    query: q\n    negative: true\n    collection: c\n", "negative"),
+        ("cases:\n  - id: a\n    query: q\n    negative: true\n    realm: projects\n", "negative"),
     ],
 )
 def test_load_golden_refuses_a_malformed_file(tmp_path: Path, text: str, message: str) -> None:
@@ -164,6 +188,51 @@ def test_a_report_with_no_cases_of_a_kind_scores_that_kind_as_perfect(fake_embed
     assert report.negative_pass_rate == 1.0
 
 
+# -- label check and per-collection scores -------------------------------------
+
+
+def test_a_hit_from_another_collection_is_flagged_as_mislabelled() -> None:
+    case = GoldenCase(id="a", query="q", expect=("want",), collection="bb2dash")
+    moved = score_case(case, [hit("other", collection="bb2dash"), hit("want", collection="memory")])
+    assert moved.passed(k=3) is True
+    assert moved.mislabelled is True
+    assert moved.matched_hit is not None and moved.matched_hit.collection == "memory"
+
+    same = score_case(case, [hit("want", collection="bb2dash")])
+    assert same.mislabelled is False
+
+
+def test_a_miss_or_a_negative_is_never_mislabelled() -> None:
+    miss = score_case(GoldenCase(id="a", query="q", expect=("want",), collection="c"), [hit("x", collection="d")])
+    negative = score_case(GoldenCase(id="n", query="q", negative=True), [hit("x", collection="d")])
+    assert miss.mislabelled is False
+    assert miss.matched_hit is None
+    assert negative.mislabelled is False
+
+
+def test_by_collection_scores_each_realm_and_collection_and_skips_negatives(fake_embedder) -> None:
+    cases = [
+        GoldenCase(id="b1", query="one", expect=("a",), collection="bb2dash", realm="projects"),
+        GoldenCase(id="b2", query="two", expect=("b",), collection="bb2dash", realm="projects"),
+        GoldenCase(id="i1", query="three", expect=("c",), collection="ist323", realm="classes"),
+        GoldenCase(id="m1", query="four", expect=("d",), collection="ai-news-agent"),
+        GoldenCase(id="neg", query="five", negative=True),
+    ]
+    searcher = FakeSearcher({"one": [hit("a")], "two": [hit("x"), hit("b")], "four": [hit("d")]})
+    report = run_eval(cases, searcher, fake_embedder, k=3, limit=10)
+
+    table = report.by_collection()
+
+    assert list(table) == [("-", "ai-news-agent"), ("classes", "ist323"), ("projects", "bb2dash")]
+    bb2dash = table[("projects", "bb2dash")]
+    assert (bb2dash.realm, bb2dash.collection, bb2dash.cases) == ("projects", "bb2dash", 2)
+    assert bb2dash.hit_rate == pytest.approx(1.0)
+    assert bb2dash.mrr == pytest.approx((1 + 0.5) / 2)
+    ist323 = table[("classes", "ist323")]
+    assert (ist323.cases, ist323.hit_rate, ist323.mrr) == (1, 0.0, 0.0)
+    assert table[("-", "ai-news-agent")].realm == "-"
+
+
 # -- command line ------------------------------------------------------------
 
 GOLDEN = """
@@ -171,9 +240,13 @@ cases:
   - id: found
     query: one
     expect: [a]
+    collection: bb2dash
+    realm: projects
   - id: lost
     query: two
     expect: [b]
+    collection: ist323
+    realm: classes
 """
 
 
@@ -211,3 +284,108 @@ def test_the_command_reports_a_bad_golden_file_as_a_usage_error(tmp_path: Path, 
     )
     assert code == 2
     assert "not found" in capsys.readouterr().err
+
+
+def test_the_json_report_carries_the_per_collection_table_and_the_label_check(
+    tmp_path: Path, fake_embedder, capsys
+) -> None:
+    golden = write_golden(tmp_path, GOLDEN)
+    searcher = FakeSearcher({"one": [hit("a", collection="memory")]})
+
+    run_eval_command(["--golden", str(golden), "--json"], searcher=searcher, embedder=fake_embedder)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["per_collection"] == [
+        {"realm": "classes", "collection": "ist323", "cases": 1, "hit_rate": 0.0, "mrr": 0.0},
+        {"realm": "projects", "collection": "bb2dash", "cases": 1, "hit_rate": 1.0, "mrr": 1.0},
+    ]
+    by_id = {case["id"]: case for case in payload["cases"]}
+    assert by_id["found"]["mislabelled"] is True
+    assert by_id["lost"]["mislabelled"] is False
+
+
+def test_the_text_report_prints_the_table_and_a_label_check_block(tmp_path: Path, fake_embedder, capsys) -> None:
+    golden = write_golden(tmp_path, GOLDEN)
+    searcher = FakeSearcher({"one": [hit("a", collection="memory")]})
+
+    run_eval_command(["--golden", str(golden)], searcher=searcher, embedder=fake_embedder)
+    lines = capsys.readouterr().out.splitlines()
+
+    header = next(line for line in lines if line.startswith("realm"))
+    assert header.split() == ["realm", "collection", "cases", "hit@3", "MRR"]
+    rows = [line.split() for line in lines if line.startswith(("classes", "projects"))]
+    assert rows == [["classes", "ist323", "1", "0.00", "0.00"], ["projects", "bb2dash", "1", "1.00", "1.00"]]
+    assert "label check:" in lines
+    assert "  found: expected bb2dash, hit came from memory" in lines
+
+
+def test_the_text_report_omits_the_label_check_when_every_label_holds(tmp_path: Path, fake_embedder, capsys) -> None:
+    golden = write_golden(tmp_path, GOLDEN)
+    searcher = FakeSearcher({"one": [hit("a", collection="bb2dash")]})
+    run_eval_command(["--golden", str(golden)], searcher=searcher, embedder=fake_embedder)
+    assert "label check" not in capsys.readouterr().out
+
+
+# -- history -----------------------------------------------------------------
+
+
+def test_history_appends_one_line_per_run(tmp_path: Path, fake_embedder, capsys) -> None:
+    golden = write_golden(tmp_path, GOLDEN)
+    history = tmp_path / "history.jsonl"
+    searcher = FakeSearcher({"one": [hit("a", collection="memory")]})
+    argv = ["--golden", str(golden), "--history", str(history)]
+
+    assert run_eval_command(argv, searcher=searcher, embedder=fake_embedder) == 0
+    first = history.read_text(encoding="utf-8").splitlines()
+    assert len(first) == 1
+    record = json.loads(first[0])
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", record["at"])
+    assert record["k"] == 3
+    assert record["hit_rate"] == pytest.approx(0.5)
+    assert record["mrr"] == pytest.approx(0.5)
+    assert record["negative_pass_rate"] == 1.0
+    assert record["cases"] == 2
+    assert [row["collection"] for row in record["per_collection"]] == ["ist323", "bb2dash"]
+    assert record["failures"] == ["lost"]
+    assert record["mislabelled"] == ["found"]
+
+    assert run_eval_command(argv, searcher=searcher, embedder=fake_embedder) == 0
+    assert history.read_text(encoding="utf-8").endswith("\n")
+    assert len(history.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_the_history_flag_alone_uses_the_default_path() -> None:
+    from ingest.eval_cli import DEFAULT_GOLDEN, DEFAULT_HISTORY, build_eval_parser
+
+    assert DEFAULT_HISTORY == DEFAULT_GOLDEN.parent / "history.jsonl"
+    assert build_eval_parser().parse_args(["--history"]).history == str(DEFAULT_HISTORY)
+    assert build_eval_parser().parse_args([]).history is None
+
+
+@pytest.mark.parametrize(("gate", "expected_code"), [([], 0), (["--min-hit-rate", "0.9"], 1)])
+def test_an_unwritable_history_warns_and_keeps_the_exit_code(
+    tmp_path: Path, fake_embedder, capsys, gate: list[str], expected_code: int
+) -> None:
+    golden = write_golden(tmp_path, GOLDEN)
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("", encoding="utf-8")
+    argv = ["--golden", str(golden), "--history", str(blocker / "history.jsonl"), *gate]
+
+    code = run_eval_command(argv, searcher=FakeSearcher({"one": [hit("a")]}), embedder=fake_embedder)
+
+    captured = capsys.readouterr()
+    assert code == expected_code
+    assert "warning" in captured.err
+    assert "history" in captured.err
+    assert "hit@3" in captured.out
+
+
+def test_no_history_is_written_when_the_eval_does_not_run(tmp_path: Path, fake_embedder) -> None:
+    history = tmp_path / "history.jsonl"
+    code = run_eval_command(
+        ["--golden", str(tmp_path / "absent.yaml"), "--history", str(history)],
+        searcher=FakeSearcher({}),
+        embedder=fake_embedder,
+    )
+    assert code == 2
+    assert not history.exists()

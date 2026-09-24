@@ -15,6 +15,12 @@ external ids) or by ``expect_contains`` (text that must appear in a returned
 chunk). The second form lets a case be written before the document that answers
 it exists.
 
+Every positive case is also labelled with the ``collection`` (and, for vault
+notes, the ``realm``) its answer lives in. The labels give a per-collection
+table, so a regression in one project or class is not averaged away, and a
+label check: a hit that came from a different collection than the label says
+is reported, which is how a note moving between realms or collections shows up.
+
 Scoring is pure; only :class:`PostgresSearcher` touches the database, and it
 calls ``rag.search`` with the MCP server's defaults so the eval measures what a
 client actually gets.
@@ -22,14 +28,14 @@ client actually gets.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 import yaml
 
-from .config import DbSettings
+from .config import REALM_NAME, DbSettings
 from .embedding import Embedder, vector_literal
 from .errors import ConfigError, StoreError
 from .store import connect_kwargs
@@ -40,7 +46,11 @@ DEFAULT_K = 3
 DEFAULT_LIMIT = 10
 INCLUDE_SUPERSEDED = False
 
-_CASE_KEYS = frozenset({"id", "query", "expect", "expect_contains", "negative", "note"})
+_CASE_KEYS = frozenset(
+    {"id", "query", "expect", "expect_contains", "negative", "note", "collection", "realm"}
+)
+# Table key for a case with no realm (claude-mem rows have none).
+NO_REALM = "-"
 
 
 @dataclass(frozen=True)
@@ -50,6 +60,8 @@ class GoldenCase:
     expect: tuple[str, ...] = ()
     expect_contains: tuple[str, ...] = ()
     negative: bool = False
+    collection: str | None = None
+    realm: str | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +71,7 @@ class Hit:
     title: str | None
     content: str
     similarity: float | None
+    collection: str | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +85,30 @@ class CaseResult:
         if self.case.negative:
             return not self.hits
         return self.rank is not None and self.rank <= k
+
+    @property
+    def matched_hit(self) -> Hit | None:
+        """The first hit that satisfied the case; ``None`` on a miss or a negative case."""
+        return self.hits[self.rank - 1] if self.rank else None
+
+    @property
+    def mislabelled(self) -> bool:
+        """The case hit, but in a different collection than its label says.
+
+        Not a failure: the answer was found. It means the label (or the note's
+        home) moved, and a person should look."""
+        matched = self.matched_hit
+        return matched is not None and matched.collection != self.case.collection
+
+
+@dataclass(frozen=True)
+class CollectionScore:
+    realm: str
+    """The case's realm, or ``NO_REALM`` when it has none."""
+    collection: str
+    cases: int
+    hit_rate: float
+    mrr: float
 
 
 @dataclass(frozen=True)
@@ -105,6 +142,30 @@ class EvalReport:
     @property
     def failures(self) -> tuple[CaseResult, ...]:
         return tuple(r for r in self.results if not r.passed(self.k))
+
+    @property
+    def mislabelled(self) -> tuple[CaseResult, ...]:
+        return tuple(r for r in self.results if r.mislabelled)
+
+    def by_collection(self) -> Mapping[tuple[str, str], CollectionScore]:
+        """hit@k and MRR per ``(realm, collection)``, sorted by that key.
+
+        Negative cases have no collection and are left out."""
+        groups: dict[tuple[str, str], list[CaseResult]] = {}
+        for result in self.positives:
+            key = (result.case.realm or NO_REALM, result.case.collection or "")
+            groups.setdefault(key, []).append(result)
+        scores = {}
+        for key in sorted(groups):
+            group = EvalReport(results=tuple(groups[key]), k=self.k)
+            scores[key] = CollectionScore(
+                realm=key[0],
+                collection=key[1],
+                cases=len(group.results),
+                hit_rate=group.hit_rate,
+                mrr=group.mrr,
+            )
+        return scores
 
 
 def _share(results: Sequence[CaseResult], k: int) -> float:
@@ -166,8 +227,23 @@ def _parse_case(entry: Any, index: int) -> GoldenCase:
         raise ConfigError(f"case {case_id}: a negative case expects nothing; drop expect/expect_contains")
     if not negative and not (expect or expect_contains):
         raise ConfigError(f"case {case_id}: needs expect, expect_contains, or negative: true")
+
+    collection = _optional_text(entry, "collection", case_id)
+    realm = _optional_text(entry, "realm", case_id)
+    if negative and (collection or realm):
+        raise ConfigError(f"case {case_id}: a negative case belongs to no collection; drop collection/realm")
+    if not negative and not collection:
+        raise ConfigError(f"case {case_id}: needs a `collection` (where the answer lives)")
+    if realm is not None and not REALM_NAME.match(realm):
+        raise ConfigError(f"case {case_id}: realm {realm!r} is not a valid realm name")
     return GoldenCase(
-        id=case_id, query=query, expect=expect, expect_contains=expect_contains, negative=negative
+        id=case_id,
+        query=query,
+        expect=expect,
+        expect_contains=expect_contains,
+        negative=negative,
+        collection=collection,
+        realm=realm,
     )
 
 
@@ -175,6 +251,15 @@ def _required_text(entry: dict[str, Any], key: str, index: int) -> str:
     value = entry.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"case {index} needs a non-empty `{key}`")
+    return value.strip()
+
+
+def _optional_text(entry: dict[str, Any], key: str, case_id: str) -> str | None:
+    value = entry.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"case {case_id}: `{key}` must be a non-empty string")
     return value.strip()
 
 
@@ -224,7 +309,7 @@ def run_eval(
 # Bound by name, never positionally: the signature has changed before and a
 # positional call silently shifts one parameter into another.
 _SEARCH_SQL = """
-SELECT doc_source, doc_external, doc_title, chunk_content, vector_similarity
+SELECT doc_source, doc_external, doc_title, chunk_content, vector_similarity, doc_collection
 FROM rag.search(
     query_embedding    => %(embedding)s::extensions.vector,
     query_text         => %(query)s,
@@ -268,7 +353,14 @@ class PostgresSearcher:
         except psycopg.Error as exc:
             raise StoreError(f"rag.search failed for {query!r}: {exc}") from exc
         return [
-            Hit(source=row[0], external_id=row[1], title=row[2], content=row[3], similarity=row[4])
+            Hit(
+                source=row[0],
+                external_id=row[1],
+                title=row[2],
+                content=row[3],
+                similarity=row[4],
+                collection=row[5],
+            )
             for row in rows
         ]
 
