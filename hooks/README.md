@@ -272,14 +272,19 @@ stream exists to fix.
 ## The hub rename
 
 ```bash
-node hooks/rename-hubs.mjs --dry-run   # list the moves and link rewrites
-node hooks/rename-hubs.mjs --apply
+node hooks/rename-hubs.mjs --dry-run [--vault <dir>]   # list the moves and link rewrites
+node hooks/rename-hubs.mjs --apply   [--vault <dir>]
+node hooks/rename-hubs.mjs --check   [--vault <dir>]   # 0 broken hub links, or exit 2
 ```
 
 Names each collection's hub note after its folder, `<collection>/<collection>.md`,
-with one `git mv` per realm, and rewrites every `up:` link that names a hub and
-nothing else. `type: index` and the UUID `id` stay, so ingest sees a metadata
-update. A second run changes nothing.
+with one `git mv` per realm (a plain rename for a hub the realm does not track
+yet), and rewrites every `up:` link that names a hub and nothing else: one
+textual edit of that line, never a re-serialised block. `type: index` and the
+UUID `id` stay, so ingest sees a metadata update. A second run changes nothing.
+`--check` verifies the result: every hub link resolves, or it exits 2; a worker
+link whose parent session is not captured yet is only reported as pending,
+because that is the ordinary state of a worker note.
 
 ## Tests
 

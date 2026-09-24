@@ -541,7 +541,9 @@ maps them to `bb2dash`; nothing is inferred from a folder name.
 `node hooks/rename-hubs.mjs --dry-run`, then `--apply`, names each collection's hub
 note after its folder: one `git mv` per realm, and every `up:` link that names a
 hub rewritten to the new path, nothing else touched. The hub keeps its `id`, so the
-store sees a metadata update, not a re-embed. A second run changes nothing.
+store sees a metadata update, not a re-embed. A second run changes nothing, and
+`--check` afterwards must report 0 broken hub links (worker links whose parent is
+not captured yet are listed as pending, not broken).
 
 ### Ingest on capture
 
