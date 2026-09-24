@@ -4,10 +4,28 @@
 #   cd ../ingest && DATABASE_URL=postgresql://harness:harness@localhost:5433/harness \
 #                   DATABASE_SSL=disable uv run ingest db migrate
 #
-# The data directory is a named volume: the store survives `docker compose
-# down` and container rebuilds, and is removed only by `docker compose down -v`.
+# The image is an exact tag, not `pg17`: a floating tag changes pgvector (and
+# the Postgres minor) under a running store on the next pull, and an upgrade
+# should be a reviewed edit to this line (R-D3).
+#
+# The data directory is a named volume, never a bind mount on a Windows drive:
+# Postgres refuses a data directory it does not own with 0700 permissions, and
+# NTFS bind mounts cannot give it that, so they fail at initdb or on the next
+# upgrade (docker/for-win#445). The volume survives `docker compose down` and
+# container rebuilds, and is removed only by `docker compose down -v`.
 # Everything in it is rebuilt from the vault by one full ingest, so losing it
 # costs minutes, not notes.
+#
+# Backups are a dump, not a copy of the volume: scripts/backup-store.ps1 (or
+# .sh) runs `pg_dump -Fc` through `docker exec` into a host folder outside the
+# Docker VHDX. A volume copy is only consistent with the server stopped and only
+# restores into the same Postgres major; a dump is taken live and restores into
+# any later major.
+#
+# maintenance_work_mem and shm_size are for the HNSW index: a build that does
+# not fit in maintenance_work_mem falls back to a much slower path (the pgvector
+# README), and parallel builds share memory through /dev/shm, which Docker caps
+# at 64 MB by default. 512 MB of build memory needs the larger /dev/shm behind it.
 #
 # Port 5433, not 5432, so it never collides with a Postgres already installed.
 # The password is a local default; set POSTGRES_PASSWORD in the environment to
@@ -15,9 +33,12 @@
 
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:0.8.6-pg17
     container_name: harness-postgres
     restart: unless-stopped
+    # The image's own entrypoint still runs; this only adds a server setting.
+    command: ["postgres", "-c", "maintenance_work_mem=512MB"]
+    shm_size: 1g
     environment:
       POSTGRES_DB: harness
       POSTGRES_USER: harness
