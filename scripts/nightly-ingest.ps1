@@ -8,6 +8,9 @@
       0. transcript sweep — hooks/sweep-transcripts.mjs writes a note for every
          idle transcript under ~/.claude/projects that has none: SDK workers,
          sessions killed with their terminal, teleported cloud sessions.
+      0a. state sweep    — hooks/sweep-state.mjs removes SessionStart records
+         (~/.harness/state/session-start/*.json) older than a week. Capture
+         reads them and deletes nothing, so this is what keeps the folder small.
       0b. checkpoints    — hooks/collect-checkpoints.mjs fetches the notes the
          /checkpoint skill pushed from cloud sessions and files them in the vault.
       1. sweep-concluded  — sets status: concluded and concluded_at on session
@@ -41,6 +44,14 @@
     DryRun  - report what it would conclude, change nothing
     Skip    - do not sweep at all
 
+.PARAMETER StateSweep
+    Apply   - remove session-start records older than -StateMaxAgeDays
+    DryRun  - list what it would remove, remove nothing
+    Skip    - do not sweep the state folder
+
+.PARAMETER StateMaxAgeDays
+    Age in days past which a session-start record is removed (default 7).
+
 .EXAMPLE
     ./nightly-ingest.ps1 -SweepMode DryRun
 #>
@@ -63,6 +74,12 @@ param(
     [string] $TranscriptSweep = 'Apply',
     [ValidateRange(0, 8760)]
     [int] $TranscriptIdleHours = 6,
+    # Step 0a: the SessionStart records under ~/.harness/state/session-start
+    # (hooks/sweep-state.mjs). Capture never deletes them; this does, after a week.
+    [ValidateSet('Apply', 'DryRun', 'Skip')]
+    [string] $StateSweep = 'Apply',
+    [ValidateRange(1, 365)]
+    [int] $StateMaxAgeDays = 7,
     # Step 0b: /checkpoint notes pushed by cloud sessions, collected out of git
     # (hooks/collect-checkpoints.mjs). Empty means the collector's own defaults.
     [string[]] $CheckpointRepos = @(),
@@ -285,6 +302,30 @@ if ($TranscriptSweep -eq 'Skip') {
 }
 if ($transcriptCode -ne 0) { Write-Log "transcript sweep failed with $transcriptCode; continuing to the ingest" }
 
+# Step 0a: session-start records older than a week. Same runner as step 0;
+# a failure is logged and never fatal, and a missing folder is exit 0.
+$stateCode = 0
+if ($StateSweep -eq 'Skip') {
+    Write-Log 'state: skipped by -StateSweep Skip'
+} else {
+    $stateScript = Join-Path $HooksDir 'sweep-state.mjs'
+    if (-not (Test-Path $stateScript)) {
+        Write-Log "state: no sweep script at $stateScript; continuing to the ingest"
+        $stateCode = 2
+    } else {
+        try {
+            $node = Resolve-Node -Explicit $NodePath
+            $stateArgs = @('--max-age-days', "$StateMaxAgeDays")
+            if ($StateSweep -eq 'DryRun') { $stateArgs += '--dry-run' }
+            $stateCode = Invoke-TranscriptSweep -Node $node -Script $stateScript -SweepArgs $stateArgs -Label 'state'
+        } catch {
+            Write-Log "state: $($_.Exception.Message); continuing to the ingest"
+            $stateCode = 2
+        }
+    }
+}
+if ($stateCode -ne 0) { Write-Log "state sweep failed with $stateCode; continuing to the ingest" }
+
 # Step 0b: notes the /checkpoint skill pushed from cloud sessions. Same
 # runner as step 0; a refused note or a failed fetch is exit 1, never fatal.
 $checkpointCode = 0
@@ -335,7 +376,7 @@ $ingestCode = Invoke-Ingest -Uv $uv -Project $ProjectDir -IngestArgs $ingestArgs
 $pushCode = Invoke-RealmSync -Mode 'push' -Label 'realms-push'
 if ($pushCode -ne 0) { Write-Log "realm push ended with $pushCode; the notes are on disk and will go next time" }
 
-Write-Log "=== nightly reconcile finished (realms-pull $pullCode, transcripts $transcriptCode, checkpoints $checkpointCode, sweep $sweepCode, ingest $ingestCode, realms-push $pushCode) ==="
+Write-Log "=== nightly reconcile finished (realms-pull $pullCode, transcripts $transcriptCode, state $stateCode, checkpoints $checkpointCode, sweep $sweepCode, ingest $ingestCode, realms-push $pushCode) ==="
 
 # Task Scheduler shows this as the last result, so it has to mean "the reconcile
 # worked". Only the ingest decides that.
