@@ -11,6 +11,7 @@ Read in this order if you are new to the project.
 | [retrieval.md](./retrieval.md) | Hybrid vector + full-text search fused with Reciprocal Rank Fusion, the 0.70 relevance floor, the per-document cap, and the full `rag.search()` contract |
 | [portable.md](./portable.md) | The harness on more than one machine: realms, the machine file, a local store, git sync — and the runbooks for a second machine and for migrating the home vault |
 | [vault-migration-requirements.md](./vault-migration-requirements.md) | The migration contract: requirements with tests and definitions of done for moving the home vault into realms, bringing up the VM, and keeping the store correct — with the research each one rests on |
+| [memory-sprint-requirements.md](./memory-sprint-requirements.md) | The next contract: a `harness` realm and dev-time RAG, hub notes named after their folder, store audits and a location matrix, retrieval provenance, and the read-only curator (issue ledger, plan status, history, scores) on the road to automatic condense and prune |
 | [tags.md](./tags.md) | The controlled tag vocabulary for session notes: what raises each term, the five-tag cap, and the weekly `unclassified` review |
 
 Database specifics — project ref, connection gotchas, migration mirror, access
