@@ -85,7 +85,9 @@ $ErrorActionPreference = 'Stop'
 
 function Fail {
     param([string] $Message, [string] $Fix)
-    Write-Error "$Message`n  Fix: $Fix"
+    # Not Write-Error: with $ErrorActionPreference = 'Stop' that would end the
+    # script before `exit 2`, and the caller would see exit 1 instead.
+    [Console]::Error.WriteLine("$Message`n  Fix: $Fix")
     exit 2
 }
 

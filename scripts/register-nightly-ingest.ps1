@@ -21,12 +21,20 @@
     Passed through to nightly-ingest.ps1. Apply is the intended production
     setting (R-27.2). DryRun registers the task without letting it edit notes.
 
+.PARAMETER RealmSync
+    Passed through to nightly-ingest.ps1 (steps -1 and 3, hooks/sync-realms.mjs).
+    Apply commits, merge-pulls and pushes the realms. DryRun reports what the
+    sync would do, so the first night after a cutover can run without writing;
+    switching to Apply is then a re-registration, not a script edit. Skip leaves
+    the realms alone.
+
 .PARAMETER Unregister
     Remove the task and exit.
 
 .EXAMPLE
     ./register-nightly-ingest.ps1
     ./register-nightly-ingest.ps1 -At 02:30 -SweepMode DryRun
+    ./register-nightly-ingest.ps1 -RealmSync DryRun
     ./register-nightly-ingest.ps1 -Unregister
 #>
 [CmdletBinding(PositionalBinding = $false)]
@@ -40,6 +48,8 @@ param(
     [string] $PowerShellPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe",
     [ValidateSet('Apply', 'DryRun', 'Skip')]
     [string] $SweepMode = 'Apply',
+    [ValidateSet('Apply', 'DryRun', 'Skip')]
+    [string] $RealmSync = 'Apply',
     [switch] $Unregister
 )
 
@@ -82,7 +92,9 @@ $ErrorActionPreference = 'Stop'
 
 function Fail {
     param([string] $Message, [string] $Fix)
-    Write-Error "$Message`n  Fix: $Fix"
+    # Not Write-Error: with $ErrorActionPreference = 'Stop' that would end the
+    # script before `exit 2`, and the caller would see exit 1 instead.
+    [Console]::Error.WriteLine("$Message`n  Fix: $Fix")
     exit 2
 }
 
@@ -147,6 +159,7 @@ $arguments = @(
     '-ProjectDir', "`"$ProjectDir`""
     '-UvPath', "`"$UvPath`""
     '-SweepMode', $SweepMode
+    '-RealmSync', $RealmSync
 ) -join ' '
 
 $action = New-ScheduledTaskAction -Execute $PowerShellPath -Argument $arguments -WorkingDirectory $ProjectDir
@@ -172,7 +185,7 @@ $principal = New-ScheduledTaskPrincipal `
 
 $description = @(
     "Agentic harness nightly reconcile (R-27.5): conclude stale session notes, then re-ingest the vault into harness-memory."
-    "Sweep mode: $SweepMode. Health check: uv --directory `"$ProjectDir`" run ingest --health (fails past 36 h)."
+    "Sweep mode: $SweepMode. Realm sync: $RealmSync. Health check: uv --directory `"$ProjectDir`" run ingest --health (fails past 36 h)."
     "Log: $env:USERPROFILE\.claude\hooks\nightly-ingest.log"
 ) -join ' '
 
