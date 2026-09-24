@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { indexLink, noteStem, sessionLink, withLinks } from '../lib/links.mjs';
+import { hubFilename, hubLink, noteStem, sessionLink, withLinks } from '../lib/links.mjs';
 
 const UUID = '422db168-8894-4b80-ac32-384e765cad3c';
 
@@ -44,32 +44,44 @@ test('sessionLink: the short form, because a UUID stem is unique vault-wide', ()
   assert.equal(sessionLink('a]]b'), '');
 });
 
-test('indexLink: the full path, because every collection has a note called index', () => {
-  assert.equal(indexLink('projects', 'bb2dash'), '[[projects/bb2dash/index|bb2dash]]');
-  assert.equal(indexLink('classes', 'ist323'), '[[classes/ist323/index|ist323]]');
+test('hubFilename: a hub note is named after its collection folder', () => {
+  assert.equal(hubFilename('bb2dash'), 'bb2dash.md');
+  assert.equal(hubFilename('ist323'), 'ist323.md');
 });
 
-test('indexLink: an unknown area or an unsafe collection yields no link', () => {
-  assert.equal(indexLink('elsewhere', 'bb2dash'), '');
-  assert.equal(indexLink('projects', 'a|b'), '');
-  assert.equal(indexLink('projects', ''), '');
-  assert.equal(indexLink('', 'bb2dash'), '');
+test('hubFilename: an unsafe collection yields no filename', () => {
+  assert.equal(hubFilename(''), '');
+  assert.equal(hubFilename('a|b'), '');
+  assert.equal(hubFilename('../x'), '');
+  assert.equal(hubFilename(undefined), '');
 });
 
-test('withLinks: a top-level session links up to its collection index', () => {
+test('hubLink: the full path to the hub, labelled with the collection', () => {
+  assert.equal(hubLink('projects', 'bb2dash'), '[[projects/bb2dash/bb2dash|bb2dash]]');
+  assert.equal(hubLink('classes', 'ist323'), '[[classes/ist323/ist323|ist323]]');
+});
+
+test('hubLink: an unknown area or an unsafe collection yields no link', () => {
+  assert.equal(hubLink('elsewhere', 'bb2dash'), '');
+  assert.equal(hubLink('projects', 'a|b'), '');
+  assert.equal(hubLink('projects', ''), '');
+  assert.equal(hubLink('', 'bb2dash'), '');
+});
+
+test('withLinks: a top-level session links up to its collection hub', () => {
   const linked = withLinks(BASE, 'projects');
-  assert.equal(linked.up, '[[projects/agentic-harness/index|agentic-harness]]');
+  assert.equal(linked.up, '[[projects/agentic-harness/agentic-harness|agentic-harness]]');
   assert.deepEqual(linked.related, []);
 });
 
-test('withLinks: a worker links up to its parent session, not the index', () => {
+test('withLinks: a worker links up to its parent session, not the hub', () => {
   const linked = withLinks({ ...BASE, parent_session: UUID }, 'projects');
   assert.equal(linked.up, `[[${UUID}]]`);
 });
 
-test('withLinks: a hostile parent id falls back to the index', () => {
+test('withLinks: a hostile parent id falls back to the hub', () => {
   const linked = withLinks({ ...BASE, parent_session: 'x]]|[[evil' }, 'projects');
-  assert.equal(linked.up, '[[projects/agentic-harness/index|agentic-harness]]');
+  assert.equal(linked.up, '[[projects/agentic-harness/agentic-harness|agentic-harness]]');
 });
 
 test('withLinks: a parent that is filename-safe but not a session id is not followed', () => {
@@ -77,13 +89,13 @@ test('withLinks: a parent that is filename-safe but not a session id is not foll
   // note in the vault this note's parent.
   for (const parent of ['README', 'index', `${UUID}-r2`, `session-${UUID}`]) {
     const linked = withLinks({ ...BASE, parent_session: parent }, 'projects');
-    assert.equal(linked.up, '[[projects/agentic-harness/index|agentic-harness]]', parent);
+    assert.equal(linked.up, '[[projects/agentic-harness/agentic-harness|agentic-harness]]', parent);
   }
 });
 
-test('withLinks: the index is where the note is filed, when the caller knows better', () => {
+test('withLinks: the hub is where the note is filed, when the caller knows better', () => {
   const linked = withLinks({ ...BASE, collection: 'misc' }, 'projects', 'bb2dash');
-  assert.equal(linked.up, '[[projects/bb2dash/index|bb2dash]]');
+  assert.equal(linked.up, '[[projects/bb2dash/bb2dash|bb2dash]]');
   assert.equal(linked.collection, 'misc', 'the field itself is a fact and is left alone');
 });
 
@@ -102,7 +114,7 @@ test('withLinks: related is resumed_from then supersedes, de-duplicated', () => 
 test('withLinks: links are recomputed, never accumulated', () => {
   const stale = { ...BASE, up: '[[old]]', related: ['[[gone]]'] };
   const linked = withLinks(stale, 'projects');
-  assert.equal(linked.up, '[[projects/agentic-harness/index|agentic-harness]]');
+  assert.equal(linked.up, '[[projects/agentic-harness/agentic-harness|agentic-harness]]');
   assert.deepEqual(linked.related, []);
 });
 

@@ -50,7 +50,7 @@ tools_used:
   Edit: 2
   Bash: 1
   mcp__plugin_supabase_supabase__apply_migration: 1
-up: '[[projects/bb2dash/index|bb2dash]]'
+up: '[[projects/bb2dash/bb2dash|bb2dash]]'
 related: []
 machine: ''
 ---

@@ -17,9 +17,9 @@
  *      reported and left alone.
  *   4. A second run changes nothing.
  *
- * `--ensure-indexes` also writes a minimal `index.md` for each collection that
- * has session notes and no index, so no `up` link points at nothing. An index
- * that exists is never touched.
+ * `--ensure-indexes` also writes a minimal hub note, `<collection>.md`, for each
+ * collection that has session notes and no hub, so no `up` link points at
+ * nothing. A hub that exists is never touched.
  *
  * It never runs `ingest`.
  */
@@ -29,8 +29,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { DEFAULT_VAULT_SEGMENTS, INDEX_FILENAME, VAULT_ENV_VAR } from './lib/constants.mjs';
+import { DEFAULT_VAULT_SEGMENTS, VAULT_ENV_VAR } from './lib/constants.mjs';
 import { relinkNote } from './lib/link-notes.mjs';
+import { hubFilename } from './lib/links.mjs';
 import { ensureIndex } from './lib/notes-io.mjs';
 import { readSessionNotes } from './untagged-sessions.mjs';
 
@@ -119,15 +120,15 @@ export function linkSessions({ vault, backup = '', dryRun = false, ensureIndexes
   if (ensureIndexes) {
     const collections = new Map(notes.map((note) => [`${note.area}/${note.collection}`, note]));
     for (const [key, note] of collections) {
-      const indexPath = path.join(vault, note.area, note.collection, INDEX_FILENAME);
-      if (fs.existsSync(indexPath)) continue;
+      const hubPath = path.join(vault, note.area, note.collection, hubFilename(note.collection));
+      if (fs.existsSync(hubPath)) continue;
       if (dryRun) {
         report.indexes.push(key);
         continue;
       }
       const created = ensureIndex(vault, note.area, note.collection);
       if (created.ok) report.indexes.push(key);
-      else report.refused.push({ path: indexPath, error: created.error });
+      else report.refused.push({ path: hubPath, error: created.error });
     }
   }
 
@@ -147,8 +148,8 @@ function main() {
   console.log(`  refused: ${report.refused.length}`);
   for (const refusal of report.refused) console.log(`    ${path.relative(args.vault, refusal.path)}: ${refusal.error}`);
   if (args.ensureIndexes) {
-    console.log(`  ${args.dryRun ? 'would create' : 'created'} index notes: ${report.indexes.length}`);
-    for (const key of report.indexes) console.log(`    ${key}/${INDEX_FILENAME}`);
+    console.log(`  ${args.dryRun ? 'would create' : 'created'} hub notes: ${report.indexes.length}`);
+    for (const key of report.indexes) console.log(`    ${key}/${hubFilename(key.split('/').pop())}`);
   }
   if (!args.dryRun && report.linked.length) console.log(`  originals backed up to ${args.backup}`);
 

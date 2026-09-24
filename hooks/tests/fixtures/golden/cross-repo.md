@@ -55,7 +55,7 @@ generator: 'session-capture.mjs 2.2.0'
 tools_used:
   Edit: 3
   Bash: 1
-up: '[[projects/bb2dash/index|bb2dash]]'
+up: '[[projects/bb2dash/bb2dash|bb2dash]]'
 related: []
 machine: ''
 ---

@@ -46,7 +46,7 @@ generator: 'session-capture.mjs 2.2.0'
 tools_used:
   Bash: 2
   Write: 1
-up: '[[projects/agentic-harness/index|agentic-harness]]'
+up: '[[projects/agentic-harness/agentic-harness|agentic-harness]]'
 related: []
 machine: ''
 ---

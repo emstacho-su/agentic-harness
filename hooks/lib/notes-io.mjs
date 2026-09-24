@@ -10,8 +10,9 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { AREAS, INDEX_FILENAME, SESSIONS_DIR } from './constants.mjs';
+import { AREAS, HUB_NOTE_TYPE, SESSIONS_DIR } from './constants.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
+import { hubFilename } from './links.mjs';
 import { noteFilename } from './note.mjs';
 import { isSafeFilenameSegment, yamlStr } from './text.mjs';
 
@@ -147,13 +148,13 @@ export function resolveChainHead(sessionsDir, sessionId) {
 }
 
 /**
- * Make sure `<area>/<collection>/index.md` exists. Never throws, never
- * overwrites.
+ * Make sure the collection's hub note, `<area>/<collection>/<collection>.md`,
+ * exists. Never throws, never overwrites.
  *
  * Every session note links `up` to this note, and a collection the hook creates
- * on demand does not have one. The body carries no links on purpose: an index
- * is ingested like any other note, and a list of links would be embedded as
- * text. The `wx` flag is what makes "never overwrites" true even when two hooks
+ * on demand does not have one. The body carries no links on purpose: a hub is
+ * ingested like any other note, and a list of links would be embedded as text.
+ * The `wx` flag is what makes "never overwrites" true even when two hooks
  * finish at once.
  *
  * @returns {{ok: boolean, created: boolean, path: string, error: string}}
@@ -162,15 +163,15 @@ export function ensureIndex(vaultRoot, area, collection) {
   if (!vaultRoot || !AREAS.includes(area) || !isSafeFilenameSegment(collection)) {
     return { ok: false, created: false, path: '', error: 'not a collection folder' };
   }
-  const indexPath = path.join(vaultRoot, area, collection, INDEX_FILENAME);
+  const hubPath = path.join(vaultRoot, area, collection, hubFilename(collection));
   // The ordinary case, answered with one stat. `wx` below is for the race.
-  if (fs.existsSync(indexPath)) return { ok: true, created: false, path: indexPath, error: '' };
+  if (fs.existsSync(hubPath)) return { ok: true, created: false, path: hubPath, error: '' };
   const text = [
     '---',
     `id: ${yamlStr(randomUUID())}`,
     `title: ${yamlStr(collection)}`,
     `collection: ${yamlStr(collection)}`,
-    'type: index',
+    `type: ${HUB_NOTE_TYPE}`,
     '---',
     '',
     `# ${collection}`,
@@ -179,11 +180,11 @@ export function ensureIndex(vaultRoot, area, collection) {
     '',
   ].join('\n');
   try {
-    fs.mkdirSync(path.dirname(indexPath), { recursive: true });
-    fs.writeFileSync(indexPath, text, { encoding: 'utf8', flag: 'wx' });
-    return { ok: true, created: true, path: indexPath, error: '' };
+    fs.mkdirSync(path.dirname(hubPath), { recursive: true });
+    fs.writeFileSync(hubPath, text, { encoding: 'utf8', flag: 'wx' });
+    return { ok: true, created: true, path: hubPath, error: '' };
   } catch (err) {
-    if (err?.code === 'EEXIST') return { ok: true, created: false, path: indexPath, error: '' };
-    return { ok: false, created: false, path: indexPath, error: err?.code || err?.message || 'unknown' };
+    if (err?.code === 'EEXIST') return { ok: true, created: false, path: hubPath, error: '' };
+    return { ok: false, created: false, path: hubPath, error: err?.code || err?.message || 'unknown' };
   }
 }

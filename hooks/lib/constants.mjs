@@ -138,9 +138,12 @@ export const SESSIONS_DIR = 'sessions';
 /** Claude Code's folder for worker transcripts: `<project dir>/<session id>/subagents/`. */
 export const SUBAGENTS_DIR = 'subagents';
 
-/** Every collection's hub note: what a session links `up` to. */
-export const INDEX_NOTE = 'index';
-export const INDEX_FILENAME = `${INDEX_NOTE}.md`;
+/**
+ * The `type:` of every collection's hub note, the note a session links `up` to.
+ * The hub itself is named after its folder, `<collection>.md` (SC-3; see
+ * `hubFilename` in links.mjs), because Obsidian labels graph nodes by filename.
+ */
+export const HUB_NOTE_TYPE = 'index';
 
 /** `collection_source:` — how the collection name was decided. */
 export const COLLECTION_FROM_GIT = 'git';

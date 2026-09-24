@@ -59,7 +59,7 @@ tools_used:
   Bash: 1
   Read: 1
   Write: 1
-up: '[[projects/bb2dash/index|bb2dash]]'
+up: '[[projects/bb2dash/bb2dash|bb2dash]]'
 related: []
 machine: ''
 ---

@@ -44,7 +44,7 @@ captured_by: 'hook'
 generator: 'session-capture.mjs 2.2.0'
 tools_used:
   Write: 1
-up: '[[classes/ist323/index|ist323]]'
+up: '[[classes/ist323/ist323|ist323]]'
 related: []
 machine: ''
 ---

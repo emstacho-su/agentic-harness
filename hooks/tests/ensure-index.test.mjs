@@ -1,8 +1,9 @@
 /**
- * `ensureIndex`: a collection's `index.md` exists, and is never overwritten.
+ * `ensureIndex`: a collection's hub note, `<collection>.md`, exists, and is
+ * never overwritten.
  *
- * Every session links up to `<area>/<collection>/index`. A collection the hook
- * creates on demand has no such note, and a link to nothing is a ghost node.
+ * Every session links up to `<area>/<collection>/<collection>`. A collection the
+ * hook creates on demand has no such note, and a link to nothing is a ghost node.
  */
 
 import assert from 'node:assert/strict';
@@ -25,7 +26,7 @@ test('an absent index is created with the documented index shape', (t) => {
   const result = ensureIndex(vault, 'projects', 'bb2dash');
 
   assert.deepEqual({ ok: result.ok, created: result.created }, { ok: true, created: true });
-  const raw = fs.readFileSync(path.join(vault, 'projects', 'bb2dash', 'index.md'), 'utf8');
+  const raw = fs.readFileSync(path.join(vault, 'projects', 'bb2dash', 'bb2dash.md'), 'utf8');
   const parsed = parseFrontmatter(raw);
   assert.ok(parsed.ok);
   assert.equal(parsed.fields.title, 'bb2dash');
@@ -33,11 +34,12 @@ test('an absent index is created with the documented index shape', (t) => {
   assert.equal(parsed.fields.type, 'index');
   assert.match(parsed.fields.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   assert.ok(!raw.includes('[['), 'an index body must not carry links: they would be embedded');
+  assert.ok(!fs.existsSync(path.join(vault, 'projects', 'bb2dash', 'index.md')), 'the hub is named after its folder');
 });
 
 test('an existing index is left byte for byte alone', (t) => {
   const vault = scratchVault(t);
-  const indexPath = path.join(vault, 'classes', 'ist323', 'index.md');
+  const indexPath = path.join(vault, 'classes', 'ist323', 'ist323.md');
   fs.mkdirSync(path.dirname(indexPath), { recursive: true });
   fs.writeFileSync(indexPath, 'handwritten\n', 'utf8');
 
