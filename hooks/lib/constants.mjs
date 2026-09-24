@@ -132,6 +132,12 @@ export const AREA_CLASSES = 'classes';
 /** The vault's two top-level areas. A collection folder lives in exactly one. */
 export const AREAS = Object.freeze([AREA_PROJECTS, AREA_CLASSES]);
 
+/** The folder inside every collection that holds its session and worker notes. */
+export const SESSIONS_DIR = 'sessions';
+
+/** Claude Code's folder for worker transcripts: `<project dir>/<session id>/subagents/`. */
+export const SUBAGENTS_DIR = 'subagents';
+
 /** Every collection's hub note: what a session links `up` to. */
 export const INDEX_NOTE = 'index';
 export const INDEX_FILENAME = `${INDEX_NOTE}.md`;

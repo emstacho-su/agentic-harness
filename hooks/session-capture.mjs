@@ -88,6 +88,9 @@ function main() {
     projectsRoot: path.join(os.homedir(), '.claude', 'projects'),
     startedAtMs: STARTED_AT_MS,
     deadlineAt: DEADLINE_AT,
+    // Only `captureSubagent` has anything to say besides its outcome (a
+    // duplicate or unreadable copy elsewhere); `capture` ignores it.
+    log,
   });
 
   if (!outcome.written) {

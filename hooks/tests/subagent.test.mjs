@@ -17,7 +17,8 @@ import test from 'node:test';
 
 import { parseFrontmatter } from '../lib/frontmatter.mjs';
 import { looksRedacted } from '../lib/redact.mjs';
-import { createSandbox, installTranscript, readNote } from './helpers/sandbox.mjs';
+import { parentPlacement } from '../lib/subagent.mjs';
+import { collectionsHolding, createSandbox, installTranscript, readNote, toPosix } from './helpers/sandbox.mjs';
 import { SCENARIOS, runScenario, runSubagentStop } from './helpers/scenarios.mjs';
 
 const PARENT = SCENARIOS.find((scenario) => scenario.name === 'subagent-parent');
@@ -271,21 +272,34 @@ test('the same worker stopping twice with nothing new to say enqueues nothing', 
 const VAULT_SESSIONS = 'projects/vault/sessions';
 const VAULT_CWD = '__SANDBOX__/vault';
 
-function stopIn(sandbox, transcriptPath, agentId, cwd) {
-  return runSubagentStop(sandbox, { sessionId: SESSION_ID, agentId, agentType: 'general-purpose', cwd, transcriptPath });
+function stopIn(sandbox, transcriptPath, agentId, cwd, log = undefined) {
+  return runSubagentStop(sandbox, { sessionId: SESSION_ID, agentId, agentType: 'general-purpose', cwd, transcriptPath, log });
 }
 
-/** Every copy of a note with this filename, anywhere in the sandbox vault. */
-function copiesOf(sandbox, filename) {
-  const found = [];
-  for (const area of ['projects', 'classes']) {
-    const areaDir = path.join(sandbox.vaultRoot, area);
-    for (const collection of fs.readdirSync(areaDir)) {
-      if (fs.existsSync(path.join(areaDir, collection, 'sessions', filename))) found.push(`${area}/${collection}`);
-    }
-  }
-  return found;
+/** A worker note as an older hook filed it: under the folder the worker stopped in. */
+function writeStray(sandbox, agentId, text) {
+  const notePath = path.join(sandbox.vaultRoot, VAULT_SESSIONS, `${SESSION_ID}--${agentId}.md`);
+  fs.mkdirSync(path.dirname(notePath), { recursive: true });
+  fs.writeFileSync(notePath, text, 'utf8');
+  return notePath;
 }
+
+const STRAY_NOTE = [
+  '---',
+  `id: "session-${SESSION_ID}--c0ffee01"`,
+  'collection: "vault"',
+  'collection_source: "folder"',
+  `session_id: "${SESSION_ID}"`,
+  'status: "concluded"',
+  `parent_session: "${SESSION_ID}"`,
+  '---',
+  '',
+  '# Earlier note',
+  '',
+].join('\n');
+
+/** Frontmatter the parser refuses: a note somebody hand-edited into a shape it does not know. */
+const BROKEN_NOTE = '---\ntags: [unterminated\n---\n\n# hand-edited\n';
 
 test("a worker that cd'd into the vault is filed under its parent's collection, by the parent transcript's cwd", () => {
   const sandbox = createSandbox();
@@ -297,30 +311,46 @@ test("a worker that cd'd into the vault is filed under its parent's collection, 
     const child = fieldsAt(sandbox, WORKER_ONE);
     assert.equal(child.collection, 'bb2dash');
     assert.equal(child.collection_source, 'git');
+    // The repository follows the worker's declared cwd, never the vault it stopped in.
+    assert.equal(child.repo, 'emstacho-su/bb2dash');
+    assert.equal(child.branch, 'feat/phase7-retrieval');
     // Where the worker actually was stays on the note: that is provenance.
     assert.equal(child.cwd, `${sandbox.root}/vault`);
-    assert.deepEqual(copiesOf(sandbox, `${SESSION_ID}--c0ffee01.md`), ['projects/bb2dash']);
+    assert.deepEqual(collectionsHolding(sandbox.vaultRoot, `${SESSION_ID}--c0ffee01.md`), ['projects/bb2dash']);
     assert.equal(fs.existsSync(path.join(sandbox.vaultRoot, 'projects', 'vault')), false, 'no folder-named collection was grown');
   } finally {
     sandbox.cleanup();
   }
 });
 
-test('a worker whose parent transcript cannot be read, or declares no cwd, falls back to its own directory', () => {
+/** Rewrite a worker transcript with every record's `cwd` removed. */
+function stripCwd(transcriptPath) {
+  const lines = fs.readFileSync(transcriptPath, 'utf8').split('\n').filter(Boolean);
+  const stripped = lines.map((line) => {
+    const { cwd: _dropped, ...rest } = JSON.parse(line);
+    return JSON.stringify(rest);
+  });
+  fs.writeFileSync(transcriptPath, `${stripped.join('\n')}\n`, 'utf8');
+}
+
+test("a worker whose parent transcript says nothing files by its own transcript's cwd, then by its stdin cwd", () => {
   const sandbox = createSandbox();
   try {
     const transcriptPath = installParent(sandbox);
 
-    // No parent transcript at all: today's rule, the worker's own cwd.
+    // No parent transcript at all: the worker's own transcript declares bb2dash.
     fs.rmSync(transcriptPath);
     const gone = stopIn(sandbox, transcriptPath, 'c0ffee01', VAULT_CWD);
     assert.equal(gone.written, true, `${gone.action}: ${gone.skip}`);
-    const orphan = fieldsAt(sandbox, `${VAULT_SESSIONS}/${SESSION_ID}--c0ffee01.md`);
-    assert.equal(orphan.collection, 'vault');
-    assert.equal(orphan.collection_source, 'folder');
+    const orphan = fieldsAt(sandbox, WORKER_ONE);
+    assert.equal(orphan.collection, 'bb2dash');
+    assert.equal(orphan.collection_source, 'git');
+    assert.equal(orphan.cwd, `${sandbox.root}/vault`, 'the stdin cwd stays on the note as provenance');
 
-    // A parent transcript whose head carries no cwd: the same fallback.
+    // A parent head with no cwd, and a worker transcript that declares none
+    // either: only then does the worker's stdin cwd decide.
     fs.writeFileSync(transcriptPath, '{"type":"user","message":{"role":"user","content":"hi"}}\n', 'utf8');
+    stripCwd(path.join(sandbox.transcriptsDir, SESSION_ID, 'subagents', 'agent-c0ffee02.jsonl'));
     stopIn(sandbox, transcriptPath, 'c0ffee02', '__SANDBOX__/repos/agentic-harness');
     const fallback = fieldsAt(sandbox, `projects/agentic-harness/sessions/${SESSION_ID}--c0ffee02.md`);
     assert.equal(fallback.collection, 'agentic-harness');
@@ -361,7 +391,7 @@ test('a note already filed for this worker in another collection is merged there
     const outcome = stopIn(sandbox, transcriptPath, 'c0ffee01', '__SANDBOX__/repos/bb2dash');
     assert.equal(outcome.action, 'merge', `${outcome.action}: ${outcome.skip}`);
     assert.equal(outcome.notePath, earlier);
-    assert.deepEqual(copiesOf(sandbox, `${SESSION_ID}--c0ffee01.md`), ['projects/vault']);
+    assert.deepEqual(collectionsHolding(sandbox.vaultRoot, `${SESSION_ID}--c0ffee01.md`), ['projects/vault']);
 
     const merged = fieldsAt(sandbox, `${VAULT_SESSIONS}/${SESSION_ID}--c0ffee01.md`);
     // The note keeps describing the folder it sits in.
@@ -369,6 +399,113 @@ test('a note already filed for this worker in another collection is merged there
     assert.equal(merged.collection_source, 'folder');
     assert.ok(merged.tags.includes('kept-by-hand'), 'a merge, not a rewrite');
     assert.ok(merged.files_modified.includes('web/src/lib/retrieval/filter.ts'));
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('a stray copy beside the home copy is logged by name, and only the home copy is merged', () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    assert.equal(stopIn(sandbox, transcriptPath, 'c0ffee01', VAULT_CWD).action, 'create');
+    const stray = writeStray(sandbox, 'c0ffee01', STRAY_NOTE);
+
+    const lines = [];
+    const outcome = stopIn(sandbox, transcriptPath, 'c0ffee01', VAULT_CWD, (line) => lines.push(line));
+
+    assert.equal(outcome.action, 'merge', `${outcome.action}: ${outcome.skip}`);
+    assert.equal(outcome.notePath, path.join(sandbox.vaultRoot, WORKER_ONE));
+    const name = `${SESSION_ID}--c0ffee01.md`;
+    assert.deepEqual(lines, [`duplicate worker note left at ${VAULT_SESSIONS}/${name}; merged into ${WORKER_ONE}`]);
+    assert.equal(fs.readFileSync(stray, 'utf8'), STRAY_NOTE, 'a stray is reported, never deleted or rewritten');
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('an unreadable stray does not block capture: the worker is written beside its parent', () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    const stray = writeStray(sandbox, 'c0ffee01', BROKEN_NOTE);
+
+    const lines = [];
+    const outcome = stopIn(sandbox, transcriptPath, 'c0ffee01', VAULT_CWD, (line) => lines.push(line));
+
+    assert.equal(outcome.written, true, `${outcome.action}: ${outcome.skip}`);
+    assert.equal(outcome.action, 'create');
+    assert.equal(outcome.notePath, path.join(sandbox.vaultRoot, WORKER_ONE));
+    const name = `${SESSION_ID}--c0ffee01.md`;
+    assert.deepEqual(lines, [`existing note unreadable at ${VAULT_SESSIONS}/${name}; writing beside the parent`]);
+    assert.equal(fs.readFileSync(stray, 'utf8'), BROKEN_NOTE, 'the hand-edited note is left alone');
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('an unreadable note at the home path is never overwritten, as for a session note', () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    const home = path.join(sandbox.vaultRoot, WORKER_TWO);
+    fs.writeFileSync(home, BROKEN_NOTE, 'utf8');
+
+    const outcome = stopIn(sandbox, transcriptPath, 'c0ffee02', VAULT_CWD);
+    assert.equal(outcome.written, false);
+    assert.match(outcome.skip, /existing note unreadable/);
+    assert.equal(fs.readFileSync(home, 'utf8'), BROKEN_NOTE);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test("a worker is linked into the head of its parent's resume chain, never the superseded base", () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    const note = (suffix, status) =>
+      ['---', `id: "session-${SESSION_ID}${suffix}"`, `session_id: "${SESSION_ID}"`, `status: "${status}"`, '---', '', `# ${status}`, ''].join('\n');
+    const basePath = path.join(sandbox.vaultRoot, PARENT_NOTE);
+    const headPath = path.join(sandbox.vaultRoot, `${SESSIONS}/${SESSION_ID}-r2.md`);
+    fs.writeFileSync(basePath, note('', 'superseded'), 'utf8');
+    fs.writeFileSync(headPath, note('-r2', 'active'), 'utf8');
+
+    const outcome = stop(sandbox, transcriptPath, 'c0ffee01', 'general-purpose');
+
+    assert.match(outcome.detail, /parent=linked/);
+    assert.deepEqual(fieldsAt(sandbox, `${SESSIONS}/${SESSION_ID}-r2.md`).child_sessions, [`session-${SESSION_ID}--c0ffee01`]);
+    assert.equal(fs.readFileSync(basePath, 'utf8'), note('', 'superseded'), 'the superseded base is untouched');
+    assert.ok(outcome.touchedPaths.includes(headPath));
+    assert.ok(!outcome.touchedPaths.includes(basePath));
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('the parent transcript is read once per distinct file, and the worker transcript never', () => {
+  const sandbox = createSandbox();
+  try {
+    const dir = toPosix(sandbox.transcriptsDir);
+    const agent = `${dir}/${SESSION_ID}/subagents/agent-c0ffee01.jsonl`;
+    const parentFile = `${dir}/${SESSION_ID}.jsonl`;
+    const windows = (file) => file.replace(/\//g, '\\');
+    const calls = [];
+    const readHead = (file) => {
+      calls.push(file);
+      return { cwd: '', entrypoint: '' };
+    };
+    const place = (transcriptPath) =>
+      parentPlacement({ input: { sessionId: SESSION_ID, transcriptPath }, agentTranscriptPath: agent, vaultRoot: sandbox.vaultRoot, readHead });
+
+    // The payload names the parent transcript in Windows spelling: one file, one read.
+    assert.equal(place(windows(parentFile)), null);
+    assert.deepEqual(calls, [parentFile]);
+
+    // The payload names the worker's own transcript: it is not a parent candidate.
+    calls.length = 0;
+    assert.equal(place(windows(agent)), null);
+    assert.deepEqual(calls, [parentFile]);
   } finally {
     sandbox.cleanup();
   }

@@ -16,12 +16,12 @@ import {
   excludedBy,
   indexNotedSessions,
   listCandidateTranscripts,
-  readTranscriptHead,
   runSweep,
   sessionIdFromNoteName,
 } from '../lib/sweep.mjs';
+import { readTranscriptHead } from '../lib/transcript-head.mjs';
 import { EXIT_OK, EXIT_USAGE, LOG_ENV_VAR, parseArgs } from '../sweep-transcripts.mjs';
-import { createSandbox, installTranscript, noGit, readNote } from './helpers/sandbox.mjs';
+import { collectionsHolding, createSandbox, installTranscript, noGit, readNote } from './helpers/sandbox.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(HERE, '..', 'sweep-transcripts.mjs');
@@ -248,18 +248,6 @@ test('a session killed with its terminal — worker notes on disk, no parent not
   }
 });
 
-/** The collections holding a note with this filename, anywhere in the vault. */
-function collectionsHolding(sandbox, filename) {
-  const found = [];
-  for (const area of ['projects', 'classes']) {
-    const areaDir = path.join(sandbox.vaultRoot, area);
-    for (const collection of fs.readdirSync(areaDir)) {
-      if (fs.existsSync(path.join(areaDir, collection, 'sessions', filename))) found.push(`${area}/${collection}`);
-    }
-  }
-  return found;
-}
-
 /** A worker note as an older hook filed it: under the folder the worker stopped in. */
 function fileWorkerElsewhere(sandbox, sessionId, agentId) {
   const notePath = path.join(sandbox.vaultRoot, 'projects', 'vault', 'sessions', `${sessionId}--${agentId}.md`);
@@ -296,7 +284,7 @@ test('a worker note already filed in another collection is merged where it is, n
     const children = Object.fromEntries(summary.results[0].children.map((child) => [child.agentId, child.action]));
     assert.deepEqual(children, { aaa111: 'merge', bbb222: 'create' });
 
-    assert.deepEqual(collectionsHolding(sandbox, `${MAIN}--aaa111.md`), ['projects/vault'], 'one note, at the old path');
+    assert.deepEqual(collectionsHolding(sandbox.vaultRoot, `${MAIN}--aaa111.md`), ['projects/vault'], 'one note, at the old path');
     const worker = fields(sandbox, `projects/vault/sessions/${MAIN}--aaa111.md`);
     assert.equal(worker.collection, 'vault', 'the note still describes the folder it sits in');
     assert.equal(worker.up, `[[${MAIN}]]`);
@@ -317,7 +305,7 @@ test('with no earlier worker note, the sweep files the worker beside its parent'
     const summary = sweep(sandbox);
     const children = Object.fromEntries(summary.results[0].children.map((child) => [child.agentId, child.action]));
     assert.deepEqual(children, { aaa111: 'create', bbb222: 'create' });
-    assert.deepEqual(collectionsHolding(sandbox, `${MAIN}--aaa111.md`), ['projects/bb2dash']);
+    assert.deepEqual(collectionsHolding(sandbox.vaultRoot, `${MAIN}--aaa111.md`), ['projects/bb2dash']);
   } finally {
     sandbox.cleanup();
   }

@@ -25,7 +25,9 @@ import {
   AREA_PROJECTS,
   CAPTURED_BY_SWEEP,
   SESSION_END_EVENT,
+  SESSIONS_DIR,
   SUBAGENT_STOP_EVENT,
+  SUBAGENTS_DIR,
   SWEEP_BUDGET_MS,
   SWEEP_EXCLUDED_CWD_SEGMENTS,
   SWEEP_GIT_TIMEOUT_MS,
@@ -44,10 +46,6 @@ import { parseHookInput } from './stdin.mjs';
 import { captureSubagent } from './subagent.mjs';
 import { toPosix } from './text.mjs';
 import { readTranscriptHead } from './transcript-head.mjs';
-
-// The head reader moved to its own module so `SubagentStop` can share it; the
-// sweep still answers for it, and its tests import it from here.
-export { TRANSCRIPT_HEAD_BYTES, readTranscriptHead } from './transcript-head.mjs';
 
 const TRANSCRIPT_SUFFIX = '.jsonl';
 const NOTE_SUFFIX = '.md';
@@ -73,7 +71,7 @@ export function indexNotedSessions(vaultRoot) {
   const noted = new Set();
   for (const area of [AREA_PROJECTS, AREA_CLASSES]) {
     for (const collection of readDirNames(path.join(vaultRoot, area))) {
-      const sessionsDir = path.join(vaultRoot, area, collection, 'sessions');
+      const sessionsDir = path.join(vaultRoot, area, collection, SESSIONS_DIR);
       for (const name of readDirNames(sessionsDir)) {
         const sessionId = sessionIdFromNoteName(name);
         if (sessionId) noted.add(sessionId);
@@ -136,7 +134,7 @@ export function listCandidateTranscripts({ projectsRoot, noted, minIdleMs, now =
 
 /** The worker transcripts beside a session's own, by Claude Code's layout. */
 export function listSubagentTranscripts(transcriptPath, sessionId) {
-  const dir = path.join(path.dirname(transcriptPath), sessionId, 'subagents');
+  const dir = path.join(path.dirname(transcriptPath), sessionId, SUBAGENTS_DIR);
   return readDirNames(dir)
     .filter((name) => name.startsWith(AGENT_PREFIX) && name.endsWith(TRANSCRIPT_SUFFIX))
     .sort()
@@ -163,6 +161,7 @@ export function sweepOne({
   runGit = sweepGit,
   budgetMs = SWEEP_BUDGET_MS,
   excludes = SWEEP_EXCLUDED_CWD_SEGMENTS,
+  log = () => {},
 }) {
   const base = { sessionId: candidate.sessionId, transcriptPath: candidate.transcriptPath };
   try {
@@ -199,7 +198,7 @@ export function sweepOne({
     });
 
     const children = listSubagentTranscripts(candidate.transcriptPath, candidate.sessionId).map((worker) =>
-      sweepWorker({ worker, head, candidate, vaultRoot, projectsRoot, runGit, budgetMs }),
+      sweepWorker({ worker, head, candidate, vaultRoot, projectsRoot, runGit, budgetMs, log }),
     );
 
     return {
@@ -214,7 +213,7 @@ export function sweepOne({
   }
 }
 
-function sweepWorker({ worker, head, candidate, vaultRoot, projectsRoot, runGit, budgetMs }) {
+function sweepWorker({ worker, head, candidate, vaultRoot, projectsRoot, runGit, budgetMs, log }) {
   const now = Date.now();
   const parsed = parseHookInput(
     JSON.stringify({
@@ -238,6 +237,7 @@ function sweepWorker({ worker, head, candidate, vaultRoot, projectsRoot, runGit,
     deadlineAt: now + budgetMs,
     runGit,
     capturedBy: CAPTURED_BY_SWEEP,
+    log: (line) => log(`  note ${candidate.sessionId}--${worker.agentId}: ${line}`),
   });
   return {
     agentId: worker.agentId,
@@ -281,7 +281,7 @@ export function runSweep({
   const results = dryRun
     ? []
     : selected.map((candidate) => {
-        const result = sweepOne({ candidate, vaultRoot, projectsRoot, runGit, excludes });
+        const result = sweepOne({ candidate, vaultRoot, projectsRoot, runGit, excludes, log });
         log(`${result.action} ${result.sessionId} ${result.detail}`);
         for (const child of result.children) {
           log(`  ${child.action} ${result.sessionId}--${child.agentId} ${child.detail}`);

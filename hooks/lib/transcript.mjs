@@ -22,6 +22,7 @@ import {
   READ_TOOLS,
   SHELL_TOOLS,
   SUBAGENT_BUDGET_BYTES,
+  SUBAGENTS_DIR,
   ORIGIN_PATTERN,
 } from './constants.mjs';
 import { findSecretValues, redact } from './redact.mjs';
@@ -396,7 +397,7 @@ function toolUseIdOf(entry) {
  * because a complete note that arrives after session exit is worth nothing.
  */
 export function extractSubagentTools({ transcriptPath, sessionId, into, deadlineAt }) {
-  const dir = path.join(path.dirname(transcriptPath), sessionId, 'subagents');
+  const dir = path.join(path.dirname(transcriptPath), sessionId, SUBAGENTS_DIR);
   let names;
   try {
     names = fs.readdirSync(dir).filter((name) => name.endsWith('.jsonl'));
