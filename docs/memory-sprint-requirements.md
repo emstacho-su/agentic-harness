@@ -390,7 +390,7 @@ function behind a `Judge` interface: text and a JSON schema in, JSON out, **no t
 backend is `claude -p --json-schema --output-format json --model <m>`, run on Stack's login
 ([headless](https://code.claude.com/docs/en/headless)). An API Batches backend (50% off,
 [batches](https://platform.claude.com/docs/en/build-with-claude/batch-processing)) and a Hermes cron
-job calling the same commands are later options, not this sprint. It runs weekly, Sunday 04:00, after
+job calling the same commands are later options, not this sprint. It runs weekly, Sunday 04:30, after
 the nightly job and the store backup. Registering the task is Stack's to do with the `!` prefix.
 
 **One trajectory for every realm.** Each hub note gains `kind: project | class` and `plan_sources:`
