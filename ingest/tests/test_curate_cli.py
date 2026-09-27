@@ -151,10 +151,17 @@ def test_a_stage_is_required(capsys) -> None:
     assert info.value.code == 2
 
 
-def test_extract_and_ledger_are_not_stages_yet(capsys) -> None:
+def test_extract_and_ledger_refuse_to_run_without_their_required_arguments(capsys) -> None:
     for stage in ("extract", "ledger"):
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as info:
             run_curate([stage])
+        assert info.value.code == 2
+    assert set(curate_cli.STAGES) == {"inventory", "extract", "ledger"}
+
+
+def test_an_unknown_stage_is_refused(capsys) -> None:
+    with pytest.raises(SystemExit):
+        run_curate(["status"])
 
 
 def test_the_real_collector_is_only_built_when_git_is_wanted(monkeypatch, capsys) -> None:

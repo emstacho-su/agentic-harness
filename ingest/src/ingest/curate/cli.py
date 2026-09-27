@@ -5,21 +5,26 @@
     uv run ingest curate inventory --path C:/Users/you/vault --realm classes --no-git
     uv run ingest curate extract --path C:/Users/you/vault --collection agentic-harness --dry-run
     uv run ingest curate extract --path C:/Users/you/vault --all --max-calls 10
+    uv run ingest curate ledger --path C:/Users/you/vault --collection agentic-harness --dry-run
 
-Stages today: ``inventory`` (R-C1), read-only whatever the flags; ``--dry-run``
-is accepted because the spec calls this stage's report a dry run. ``extract``
+Stages: ``inventory`` (R-C1), read-only whatever the flags; ``--dry-run`` is
+accepted because the spec calls this stage's report a dry run. ``extract``
 (R-C2) asks the judge about every note not yet cached and writes the cache;
 with ``--dry-run`` it calls nothing, writes nothing, and prints the plan.
-``ledger`` (R-C3) is registered in :data:`STAGES` by the task that builds it;
-until then argparse refuses it.
+``ledger`` (R-C3) clusters the cached issue items into issues, appends their
+events and writes ``<realm>/<collection>/ledger.md``; with ``--dry-run`` the
+store is only read, no judge is called and no file is written.
 
 Inventory: exit 0 clean, 1 a collection's session count differs from the files
 in its ``sessions/`` folder, 2 could not run (bad path or filter, a hub that
 cannot be read). Extract: 0 every pending note done, 1 a note failed or the run
 stopped after consecutive failed batches, 2 could not run (bad arguments, vault,
 store unreachable when not a dry run, a hub that cannot be read), 3 stopped by
-budget. Both load the repo ``.env`` and ``~/.harness/machine.env`` first and
-never print a value from either.
+budget. Ledger: 0 done, 1 an item could not be placed (no date, a failed judge
+call, or the run stopped after consecutive failures), 2 could not run (bad
+arguments, vault, the store unreachable even for a dry run, a ledger.md the
+curator may not overwrite), 3 stopped by budget. Every stage loads the repo
+``.env`` and ``~/.harness/machine.env`` first and never prints a value from either.
 """
 
 from __future__ import annotations
@@ -30,19 +35,23 @@ import json
 import logging
 import sys
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from ..config import load_db_settings
 from ..envfile import load_env_file
 from ..errors import ConfigError, IngestError
-from . import extract, extract_report
+from . import extract, extract_report, ledger
 from .extract import Budget, extractor_version, plan_extraction, run_extraction
 from .inventory import GitCollector, Inventory, VaultInventory, build_inventory
 from .judge import Judge
+from .ledger import CollectionLedger, DryRunStore, Spend, build_ledger
+from .render import ledger_body, ledger_frontmatter
 from .note_records import NoteRecord
 from .profile import Runner, default_runner
-from .store_models import CurateStore, Extraction, ExtractionKey
+from .store_models import ISSUE_STATES, CurateStore, Extraction, ExtractionKey, to_utc_iso
+from .writer import WriteResult, write_curator_note
 
 SUBCOMMAND = "curate"
 
@@ -68,7 +77,7 @@ def build_curate_parser() -> argparse.ArgumentParser:
     inventory.add_argument("--dry-run", action="store_true", help="accepted; the inventory never writes")
     _common(inventory)
     _extract_parser(stages)
-    # Later stages add their parsers here: `ledger` (R-C3).
+    _ledger_parser(stages)
     return parser
 
 
@@ -89,6 +98,29 @@ def _extract_parser(stages: argparse._SubParsersAction) -> None:
     stage.add_argument("--max-tokens", type=_positive_int, default=extract.DEFAULT_MAX_TOKENS,
                        help=f"input plus output tokens per run (default {extract.DEFAULT_MAX_TOKENS})")
     stage.add_argument("--dry-run", action="store_true", help="no judge call, no write: print the plan")
+    stage.add_argument("--json", action="store_true", help="the report as JSON")
+    _common(stage)
+
+
+def _ledger_parser(stages: argparse._SubParsersAction) -> None:
+    from .claude_cli import DEFAULT_MODEL
+
+    stage = stages.add_parser(
+        "ledger", help="R-C3: cluster issues across notes, record their events, write ledger.md"
+    )
+    stage.add_argument("--path", required=True, help="vault directory (C:/Users/... on Windows)")
+    which = stage.add_mutually_exclusive_group(required=True)
+    which.add_argument("--collection", default=None, help="only this collection (its folder name)")
+    which.add_argument("--all", action="store_true", help="every collection (explicit, because it costs calls)")
+    stage.add_argument("--realm", default=None, help="only this realm (name or top-level folder)")
+    stage.add_argument("--model", default=DEFAULT_MODEL, help=f"judge model (default {DEFAULT_MODEL})")
+    stage.add_argument("--max-calls", type=_positive_int, default=ledger.DEFAULT_MAX_CALLS,
+                       help=f"confirmation calls per run (default {ledger.DEFAULT_MAX_CALLS})")
+    stage.add_argument("--max-tokens", type=_positive_int, default=ledger.DEFAULT_MAX_TOKENS,
+                       help=f"input plus output tokens per run (default {ledger.DEFAULT_MAX_TOKENS})")
+    stage.add_argument("--no-git", action="store_true", help="skip git and gh: no commit or PR events")
+    stage.add_argument("--dry-run", action="store_true",
+                       help="read the store only, call no judge, write no file: print what would change")
     stage.add_argument("--json", action="store_true", help="the report as JSON")
     _common(stage)
 
@@ -119,10 +151,13 @@ def run_curate(
     judge: Judge | None = None,
     store: CurateStore | None = None,
     store_factory: Callable[[], CurateStore] | None = None,
+    embedder: Any = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> int:
     """Run one stage. Every dependency is injectable for tests; without them the
     real ones are built lazily: the git collector only when git is wanted, the
-    judge only when there is a call to make, the store only for ``extract``."""
+    judge only when there is a call to make, the store only for ``extract`` and
+    ``ledger``, the embedder only when there is an item to embed."""
     args = build_curate_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -131,7 +166,8 @@ def run_curate(
     )
     return STAGES[args.stage](
         args, git_collector=git_collector, runner=runner or default_runner,
-        judge=judge, store=store, store_factory=store_factory,
+        judge=judge, store=store, store_factory=store_factory, embedder=embedder,
+        clock=clock or (lambda: datetime.now(timezone.utc)),
     )
 
 
@@ -269,8 +305,180 @@ def _close(store: CurateStore | None) -> None:
         store.close()
 
 
-# Stage name -> handler(args, **dependencies). Later stages register here.
-STAGES: dict[str, Callable[..., int]] = {"inventory": _run_inventory, "extract": _run_extract}
+# -- ledger (R-C3) ------------------------------------------------------------------------
+
+
+def real_embedder() -> Any:
+    """The local bge model; the weights load on the first embed, not here."""
+    from ..embedding import FastEmbedEmbedder
+
+    return FastEmbedEmbedder()
+
+
+def _once(build: Callable[[], Any]) -> Callable[[], Any]:
+    """``build`` called on first use only, then the same object every time."""
+    held: list[Any] = []
+
+    def get() -> Any:
+        if not held:
+            held.append(build())
+        return held[0]
+
+    return get
+
+
+def _run_ledger(
+    args: argparse.Namespace, *, git_collector: GitCollector | None, runner: Runner, judge: Judge | None,
+    store: CurateStore | None, store_factory: StoreFactory | None, embedder: Any,
+    clock: Callable[[], datetime], **_: Any,
+) -> int:
+    try:
+        load_env_file(Path(args.env_file) if args.env_file else None)
+        budget = Budget(args.max_calls, args.max_tokens)
+        collector = None if args.no_git else (git_collector or real_git_collector())
+        found = build_inventory(args.path, realm=args.realm, collection=args.collection,
+                                git_collector=collector, runner=runner)
+    except IngestError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return ledger.EXIT_UNAVAILABLE
+    for item in found.errors:
+        print(f"error: {item.path}: {item.reason}", file=sys.stderr)
+
+    owned = None
+    try:
+        if store is None:
+            store = owned = (store_factory or real_store)()
+    except IngestError as exc:
+        reason = " (a dry run reads the store, so the ledger has nothing to work from)" if args.dry_run else ""
+        print(f"error: {exc}{reason}", file=sys.stderr)
+        return ledger.EXIT_UNAVAILABLE
+    spend = Spend(budget)
+    try:
+        results, writes = _ledger_run(args, found, store, spend, judge, embedder, clock)
+    except IngestError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return ledger.EXIT_UNAVAILABLE
+    finally:
+        _close(owned)
+    refused = [write for write in writes if isinstance(write, str)]
+    for message in refused:
+        print(f"error: {message}", file=sys.stderr)
+    code = ledger.exit_code(results, spend, refused=bool(found.errors or refused))
+    if args.json:
+        print(json.dumps(ledger_json(results, writes, spend, args.dry_run, code), indent=2))
+    else:
+        print(ledger_text(results, writes, spend, args.dry_run, code))
+    return code
+
+
+def _ledger_run(args: argparse.Namespace, found: VaultInventory, store: CurateStore, spend: Spend,
+                judge: Judge | None, embedder: Any, clock: Callable[[], datetime]):
+    """Every selected collection's ledger, and its write: a WriteResult, a refusal message, or None."""
+    version = extractor_version()
+    working = DryRunStore(store) if args.dry_run else store
+    judge_source = None if args.dry_run else _once(lambda: judge or real_judge(args.model))
+    embedder_source = _once(lambda: embedder or real_embedder())
+    results = tuple(build_ledger(inventory, working, embedder_source, judge_source, spend, version=version)
+                    for inventory in found.collections)
+    if args.dry_run:
+        return results, tuple(None for _ in results)
+    generated_at = to_utc_iso(clock())
+    return results, tuple(_write_ledger(found.root, result, generated_at, version) for result in results)
+
+
+def _write_ledger(root: str, result: CollectionLedger, generated_at: str, version: str) -> WriteResult | str:
+    fields = ledger_frontmatter(result.realm_folder, result.collection, generated_at, version)
+    body = ledger_body(result.collection, result.entries, result.collected.note_index)
+    try:
+        return write_curator_note(root, result.realm_folder, result.collection, "ledger", fields, body)
+    except IngestError as exc:
+        return f"{result.folder}/ledger.md: {exc}"
+
+
+def ledger_text(results, writes, spend: Spend, dry_run: bool, code: int) -> str:
+    """Ids, paths and counts only: summaries and quotes are note-derived and stay in ledger.md."""
+    lines = ["ledger" + (" dry run" if dry_run else "") + f" (version {extractor_version()})"]
+    for result, write in zip(results, writes):
+        lines.extend(_ledger_lines(result, write, dry_run))
+    last = f"ledger: {len(results)} collection(s), judge calls {spend.calls}, tokens {spend.tokens}, exit {code}"
+    if spend.stopped == ledger.STOP_BUDGET:
+        last += "; stopped by budget: rerun to continue"
+    elif spend.stopped == ledger.STOP_FAILURES:
+        last += f"; stopped after {ledger.MAX_CONSECUTIVE_FAILURES} consecutive judge failures"
+    return "\n".join([*lines, last])
+
+
+def _ledger_lines(result: CollectionLedger, write: Any, dry_run: bool) -> list[str]:
+    c = result.collected
+    asked = f"would ask {result.would_ask}" if dry_run else f"judge calls {result.judge_calls}"
+    lines = [
+        f"{result.folder}: notes {c.notes}, extracted {c.extracted}, not extracted yet {len(c.not_extracted)}, "
+        f"issue items {len(c.items)}; new issues {len(result.new_issues)}, new members {result.new_members}, "
+        f"new events {result.new_events}; {asked} (cached verdicts {result.cached_verdicts}); "
+        f"unresolved fix refs {result.unresolved_refs}",
+        "    states: " + ", ".join(f"{state} {n}" for state, n in _state_counts(result).items()),
+    ]
+    if c.not_extracted:
+        lines.append(f"    {len(c.not_extracted)} note(s) not extracted yet: run curate extract")
+    if result.new_issues:
+        lines.append("    new issues: " + ", ".join(result.new_issues))
+    lines.extend(f"    unplaced: {p.path} ({p.reason})" for p in result.unplaced)
+    lines.extend(f"    conflict: {conflict}" for conflict in result.conflicts)
+    lines.append(f"    ledger: {result.folder}/ledger.md {_write_word(write)}")
+    return lines
+
+
+def _write_word(write: Any) -> str:
+    if write is None:
+        return "not written (dry run)"
+    if isinstance(write, WriteResult):
+        return "written" if write.written else "unchanged"
+    return "refused"
+
+
+def _state_counts(result: CollectionLedger) -> dict[str, int]:
+    held = result.states
+    return {state: held.get(state, 0) for state in ISSUE_STATES}
+
+
+def ledger_json(results, writes, spend: Spend, dry_run: bool, code: int) -> dict[str, Any]:
+    return {
+        "version": extractor_version(),
+        "dry_run": dry_run,
+        "collections": [_ledger_json(result, write) for result, write in zip(results, writes)],
+        "judge_calls": spend.calls,
+        "tokens": spend.tokens,
+        "stopped": spend.stopped,
+        "exit_code": code,
+    }
+
+
+def _ledger_json(result: CollectionLedger, write: Any) -> dict[str, Any]:
+    c = result.collected
+    written = isinstance(write, WriteResult) and write.written
+    return {
+        "folder": result.folder,
+        "collection": result.collection,
+        "notes": c.notes,
+        "extracted": c.extracted,
+        "not_extracted": list(c.not_extracted),
+        "issue_items": len(c.items),
+        "new_issues": list(result.new_issues),
+        "new_members": result.new_members,
+        "new_events": result.new_events,
+        "judge_calls": result.judge_calls,
+        "cached_verdicts": result.cached_verdicts,
+        "would_ask": result.would_ask,
+        "unplaced": [{"path": p.path, "reason": p.reason} for p in result.unplaced],
+        "unresolved_fix_refs": result.unresolved_refs,
+        "conflicts": list(result.conflicts),
+        "states": _state_counts(result),
+        "ledger": {"path": f"{result.folder}/ledger.md", "written": written, "outcome": _write_word(write)},
+    }
+
+
+# Stage name -> handler(args, **dependencies).
+STAGES: dict[str, Callable[..., int]] = {"inventory": _run_inventory, "extract": _run_extract, "ledger": _run_ledger}
 
 
 # -- the text report ---------------------------------------------------------------------
