@@ -266,7 +266,7 @@ def test_a_member_of_an_unknown_issue_is_a_store_error() -> None:
 # -- in-memory: events -------------------------------------------------------------
 
 
-def test_events_are_unique_on_issue_kind_and_cause() -> None:
+def test_events_are_unique_on_issue_kind_cause_and_state() -> None:
     store = InMemoryCurateStore(clock=clock)
     issue = new_issue(store)
 
@@ -274,6 +274,26 @@ def test_events_are_unique_on_issue_kind_and_cause() -> None:
     assert store.add_event(event(issue.issue_id, evidence="different text")) is False
     assert store.add_event(event(issue.issue_id, ref="sessions/b.md")) is True
     assert len(store.events("agentic-harness")) == 2
+
+
+def test_one_cause_with_two_claims_is_two_facts() -> None:
+    """A commit matched by its files (claimed-fixed) and named by a fix ref (verified)."""
+    store = InMemoryCurateStore(clock=clock)
+    issue = new_issue(store)
+    commit = dict(kind="fix-commit", ref="abc1234", cause_type="commit")
+
+    assert store.add_event(event(issue.issue_id, to_state="claimed-fixed", **commit)) is True
+    assert store.add_event(event(issue.issue_id, to_state="verified", **commit)) is True
+    assert store.add_event(event(issue.issue_id, to_state="verified", **commit)) is False
+    assert [e.to_state for e in store.events("agentic-harness")] == ["claimed-fixed", "verified"]
+
+
+def test_annotations_with_no_state_are_unique_too() -> None:
+    """Nulls not distinct: a second null-state event for the same cause is a duplicate."""
+    store = InMemoryCurateStore(clock=clock)
+    issue = new_issue(store)
+    assert store.add_event(event(issue.issue_id, kind="claim-wontfix")) is True
+    assert store.add_event(event(issue.issue_id, kind="claim-wontfix")) is False
 
 
 def test_events_are_ordered_by_effective_time_then_id() -> None:
@@ -467,7 +487,7 @@ def test_postgres_add_member_and_event_report_whether_a_row_landed() -> None:
     store = PostgresCurateStore(landed)
     assert store.add_member(IssueMember("ISSUE-x-001", "n1", "h1", "v1", 0)) is True
     assert store.add_event(event("ISSUE-x-001")) is True
-    assert "ON CONFLICT (issue_id, event_kind, cause_type, cause_ref) DO NOTHING" in landed.log[1][0]
+    assert "ON CONFLICT (issue_id, event_kind, cause_type, cause_ref, to_state) DO NOTHING" in landed.log[1][0]
     assert_parameterized(landed.log, "ISSUE-x-001", "sessions/a.md")
 
     skipped = PostgresCurateStore(FakeConnection())
@@ -609,7 +629,7 @@ def test_the_migration_carries_the_contract_constraints() -> None:
     assert "primary key (note_id, content_hash, extractor_version)" in sql
     assert "unique (collection, seq)" in sql
     assert "primary key (note_id, content_hash, extractor_version, item_index)" in sql
-    assert "unique (issue_id, event_kind, cause_type, cause_ref)" in sql
+    assert "unique nulls not distinct (issue_id, event_kind, cause_type, cause_ref, to_state)" in sql
     assert "primary key (item_key, issue_id, extractor_version)" in sql
     assert "on delete cascade" not in sql
     for state in ("'open'", "'claimed-fixed'", "'verified'", "'regressed'"):

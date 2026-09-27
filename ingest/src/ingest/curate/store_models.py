@@ -41,6 +41,7 @@ ISSUE_ID_PREFIX = "ISSUE"
 ISSUE_SEQ_WIDTH = 3
 
 ExtractionKey = tuple[str, str, str]  # (note_id, content_hash, extractor_version)
+EventKey = tuple[str, str, str, str, "str | None"]  # (issue_id, event_kind, cause_type, cause_ref, to_state)
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -217,9 +218,10 @@ class IssueEvent:
         object.__setattr__(self, "recorded_at", _optional_instant(self.recorded_at))
 
     @property
-    def unique_key(self) -> tuple[str, str, str, str]:
-        """What makes a rerun insert nothing: the same cause for the same issue and kind."""
-        return (self.issue_id, self.event_kind, self.cause_type, self.cause_ref)
+    def unique_key(self) -> EventKey:
+        """What makes a rerun insert nothing: the same cause claiming the same state for the
+        same issue and kind. Two None states are equal (``nulls not distinct``)."""
+        return (self.issue_id, self.event_kind, self.cause_type, self.cause_ref, self.to_state)
 
 
 class CurateStore(Protocol):
@@ -252,7 +254,7 @@ class CurateStore(Protocol):
     def members(self, collection: str) -> tuple[IssueMember, ...]: ...
 
     def add_event(self, event: IssueEvent) -> bool:
-        """False when (issue_id, event_kind, cause_type, cause_ref) is already recorded."""
+        """False when (issue_id, event_kind, cause_type, cause_ref, to_state) is already recorded."""
         ...
 
     def events(self, collection: str) -> tuple[IssueEvent, ...]:
@@ -287,7 +289,7 @@ class InMemoryCurateStore:
         self._issues: dict[str, Issue] = {}
         self._members: dict[tuple[str, str, str, int], IssueMember] = {}
         self._events: list[IssueEvent] = []
-        self._event_keys: set[tuple[str, str, str, str]] = set()
+        self._event_keys: set[EventKey] = set()
         self._confirmations: dict[tuple[str, str, str], bool] = {}
 
     def _now(self) -> str:

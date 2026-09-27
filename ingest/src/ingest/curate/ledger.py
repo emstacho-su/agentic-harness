@@ -22,8 +22,8 @@ stop leaves the remaining items unplaced (the next run continues); after
 :data:`MAX_CONSECUTIVE_FAILURES` failed calls in a row the run stops, because a
 broken backend should not burn the budget.
 
-A dry run gets a :class:`DryRunStore`: every read reaches the real store, every
-write stays in memory, and no judge is called; an item that would need one is
+A dry run gets a :class:`~.dry_run_store.DryRunStore`: every read reaches the real
+store, every write stays in memory, and no judge is called; an item that would need one is
 counted as "would ask" and left unplaced.
 """
 
@@ -33,9 +33,7 @@ import math
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
 
-from ..errors import StoreError
 from . import prompts
 from .extract_plan import Budget
 from .inventory import Inventory
@@ -50,7 +48,7 @@ from .ledger_events import (
 )
 from .ledger_state import reduce_issue
 from .render import LedgerEntry
-from .store_models import CurateStore, Issue, IssueEvent, IssueMember, new_issue
+from .store_models import CurateStore, Issue, IssueEvent, IssueMember
 
 SAME_ISSUE_MIN_COSINE = 0.85
 MAX_CANDIDATES = 3
@@ -89,88 +87,6 @@ CONFIRM_NOTICE = (
 )
 
 
-# -- the dry-run store --------------------------------------------------------------------------
-
-
-class DryRunStore:
-    """Reads from ``base``; keeps writes in memory and never calls a write method of ``base``."""
-
-    def __init__(self, base: CurateStore) -> None:
-        self._base = base
-        self._issues: list[Issue] = []
-        self._members: dict[tuple[str, str, str, int], IssueMember] = {}
-        self._events: list[IssueEvent] = []
-        self._confirmations: dict[tuple[str, str, str], bool] = {}
-        self._base_members: dict[str, set[tuple[str, str, str, int]]] = {}
-        self._base_event_keys: dict[str, set[tuple[str, str, str, str]]] = {}
-        self._owner: dict[str, str] = {}  # issue id -> collection, learned from list_issues
-
-    def get_extraction(self, note_id, content_hash, extractor_version):
-        return self._base.get_extraction(note_id, content_hash, extractor_version)
-
-    def get_extractions(self, keys):
-        return self._base.get_extractions(keys)
-
-    def put_extraction(self, extraction) -> None:
-        raise AssertionError("the ledger never writes extractions")
-
-    def list_issues(self, collection: str) -> tuple[Issue, ...]:
-        base = self._base.list_issues(collection)
-        self._owner.update({issue.issue_id: collection for issue in base})
-        return (*base, *(i for i in self._issues if i.collection == collection))
-
-    def create_issue(self, collection, kind, summary, files, first_seen_at) -> Issue:
-        seq = max((i.seq for i in self.list_issues(collection)), default=0) + 1
-        issue = new_issue(collection, seq, kind, summary, files, first_seen_at)
-        self._issues.append(issue)
-        self._owner[issue.issue_id] = collection
-        return issue
-
-    def add_member(self, member: IssueMember) -> bool:
-        collection = self._collection_of(member.issue_id)
-        if collection not in self._base_members:
-            self._base_members[collection] = {m.item_key for m in self._base.members(collection)}
-        if member.item_key in self._members or member.item_key in self._base_members[collection]:
-            return False
-        self._members[member.item_key] = member
-        return True
-
-    def members(self, collection: str) -> tuple[IssueMember, ...]:
-        mine = [m for m in self._members.values() if self._collection_of(m.issue_id) == collection]
-        return (*self._base.members(collection), *mine)
-
-    def add_event(self, event: IssueEvent) -> bool:
-        collection = self._collection_of(event.issue_id)
-        if collection not in self._base_event_keys:
-            self._base_event_keys[collection] = {e.unique_key for e in self._base.events(collection)}
-        if event.unique_key in self._base_event_keys[collection] or \
-                any(e.unique_key == event.unique_key for e in self._events):
-            return False
-        self._events.append(event)
-        return True
-
-    def events(self, collection: str) -> tuple[IssueEvent, ...]:
-        mine = [e for e in self._events if self._collection_of(e.issue_id) == collection]
-        merged = (*self._base.events(collection), *mine)
-        return tuple(sorted(merged, key=lambda e: datetime.fromisoformat(e.effective_at)))
-
-    def get_confirmation(self, item_key, issue_id, extractor_version):
-        held = self._confirmations.get((item_key, issue_id, extractor_version))
-        return held if held is not None else self._base.get_confirmation(item_key, issue_id, extractor_version)
-
-    def put_confirmation(self, item_key, issue_id, extractor_version, same, model) -> None:
-        self._confirmations.setdefault((item_key, issue_id, extractor_version), bool(same))
-
-    def close(self) -> None:
-        return None
-
-    def _collection_of(self, issue_id: str) -> str:
-        collection = self._owner.get(issue_id)
-        if collection is None:
-            raise StoreError(f"{issue_id} is not an issue (foreign key)")
-        return collection
-
-
 # -- the run ------------------------------------------------------------------------------------
 
 
@@ -203,7 +119,6 @@ class CollectionLedger:
     unplaced: tuple[Problem, ...]
     left: int  # items left for the next run by a budget or failure stop
     unresolved_refs: int
-    conflicts: tuple[str, ...]
     entries: tuple[LedgerEntry, ...]
 
     @property
@@ -237,7 +152,7 @@ def build_ledger(inventory: Inventory, store: CurateStore, embedder: EmbedderSou
                  nonce: Callable[[Iterable[str]], str] = prompts.new_nonce) -> CollectionLedger:
     """Place the collection's new items, append their events, and replay every issue's state.
 
-    ``judge`` None is a dry run (``store`` should then be a :class:`DryRunStore`).
+    ``judge`` None is a dry run (``store`` should then be a ``DryRunStore``).
     """
     collection = inventory.profile.collection
     collected = collect_items(inventory, store.get_extractions, version)
@@ -254,7 +169,7 @@ def build_ledger(inventory: Inventory, store: CurateStore, embedder: EmbedderSou
         if item.member_key in membership:
             by_issue.setdefault(membership[item.member_key], []).append(item)
     derived = derive_events(issues, by_issue, git if git is not None else inventory.git)
-    new_events, conflicts = _append(store, collection, derived.events)
+    new_events = _append(store, derived.events)
 
     events = store.events(collection)
     entries = tuple(
@@ -267,7 +182,7 @@ def build_ledger(inventory: Inventory, store: CurateStore, embedder: EmbedderSou
         collected=collected, new_issues=tuple(placing.new_issues), new_members=placing.new_members,
         new_events=new_events, judge_calls=placing.calls, cached_verdicts=placing.cached,
         would_ask=placing.would_ask, unplaced=(*collected.unplaced, *placing.unplaced), left=placing.left,
-        unresolved_refs=derived.unresolved_refs, conflicts=conflicts, entries=entries,
+        unresolved_refs=derived.unresolved_refs, entries=entries,
     )
 
 
@@ -373,21 +288,9 @@ def _confirm(placing: _Placing, item: LedgerItem, pending: Sequence[Issue]) -> o
     return chosen
 
 
-def _append(store: CurateStore, collection: str, derived: Sequence[IssueEvent]) -> tuple[int, tuple[str, ...]]:
-    """(events added, conflicts): a derived claim whose key is stored with a different state."""
-    stored = {e.unique_key: e for e in store.events(collection)}
-    added = 0
-    conflicts = []
-    for event in derived:
-        held = stored.get(event.unique_key)
-        if held is not None:
-            if held.to_state != event.to_state:
-                conflicts.append(f"{event.issue_id}: {event.event_kind} {event.cause_type} {event.cause_ref[:12]} "
-                                 f"is stored as {held.to_state}, now derived as {event.to_state}")
-            continue
-        if store.add_event(event):
-            added += 1
-    return added, tuple(conflicts)
+def _append(store: CurateStore, derived: Sequence[IssueEvent]) -> int:
+    """How many derived events were new; the store's unique key turns a repeat into a no-op."""
+    return sum(1 for event in derived if store.add_event(event))
 
 
 # -- the confirmation call ----------------------------------------------------------------------

@@ -110,7 +110,7 @@ _INSERT_EVENT = """
 INSERT INTO curate.issue_events
     (issue_id, to_state, event_kind, effective_at, recorded_at, cause_type, cause_ref, evidence)
 VALUES (%s, %s, %s, %s::timestamptz, coalesce(%s::timestamptz, now()), %s, %s, %s)
-ON CONFLICT (issue_id, event_kind, cause_type, cause_ref) DO NOTHING
+ON CONFLICT (issue_id, event_kind, cause_type, cause_ref, to_state) DO NOTHING
 RETURNING id
 """
 

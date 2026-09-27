@@ -31,8 +31,11 @@
 -- intervals: effective_at is when a thing happened (the note, commit or merge
 -- date), recorded_at is when the curator learned it. An issue's state is the
 -- fold of its events; a fixed issue gets an end, never a delete. to_state is
--- null for an annotation that moves no state. The unique key is the cause, so
--- a rerun over the same notes and commits inserts nothing.
+-- null for an annotation that moves no state. The unique key is the cause and
+-- the state it claims (nulls not distinct, so an annotation is unique too): a
+-- rerun over the same notes and commits inserts nothing, while one cause that
+-- makes two claims, such as a fix commit matched by its files (claimed-fixed)
+-- and later named by a note's fix reference (verified), is two facts.
 --
 -- judge_confirmations caches the judge's "same issue?" verdicts, keyed by the
 -- item, the candidate issue and the extractor version. It is a pure cache and
@@ -105,7 +108,8 @@ create table curate.issue_events (
   cause_type   text        not null check (cause_type in ('note', 'commit', 'pr')),
   cause_ref    text        not null,     -- note id, commit sha, or PR number
   evidence     text,
-  constraint issue_events_cause_uniq unique (issue_id, event_kind, cause_type, cause_ref)
+  constraint issue_events_cause_uniq unique nulls not distinct
+    (issue_id, event_kind, cause_type, cause_ref, to_state)
 );
 
 create table curate.judge_confirmations (

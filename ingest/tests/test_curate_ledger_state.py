@@ -181,3 +181,14 @@ def test_the_state_is_frozen() -> None:
 def test_a_stored_regressed_claim_reads_as_a_sighting() -> None:
     state = reduce_issue(ISSUE, (found(1), verified(2), event("recurrence", "regressed", 3, "n3")))
     assert state.state == "regressed" and state.intervals == ((at(1), at(2)), (at(3), None))
+
+
+def test_one_cause_claiming_fixed_and_verified_replays_the_same_in_either_order() -> None:
+    """A commit matched by its files and named by a fix ref: two facts, one instant, one cause."""
+    claimed = event("fix-commit", "claimed-fixed", 2, "abc1234", cause="commit")
+    proven = event("fix-commit", "verified", 2, "abc1234", cause="commit")
+    one = reduce_issue(ISSUE, (found(1), claimed, proven))
+    other = reduce_issue(ISSUE, (found(1), proven, claimed))
+    assert one == other
+    assert one.state == "verified" and one.intervals == ((at(1), at(2)),)
+    assert [t.to_state for t in one.transitions] == ["open", "claimed-fixed", "verified"]

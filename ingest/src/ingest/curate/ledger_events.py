@@ -27,11 +27,10 @@ unique key inserts nothing):
 ``/``; they match when one ends with the other on a path-segment boundary, so
 ``store.py`` matches ``ingest/store.py`` but never ``restore.py``.
 
-**One key, two claims.** The store's unique key is ``(issue, kind, cause type,
-cause ref)`` without the state, so a commit matched by its files (claimed-fixed)
-and named by a note's ``fix_ref`` (verified) is one key. Within a run the
-verified one wins; if the claimed-fixed one was stored by an earlier run, the
-verified one cannot be added and the run reports it as a conflict.
+**One cause, two claims.** The store's unique key includes the state, so a
+commit matched by its files (claimed-fixed) and named by a note's ``fix_ref``
+(verified) is two facts, stored in the same run or in two runs alike; the
+reducer ends at verified either way.
 """
 
 from __future__ import annotations
@@ -46,7 +45,7 @@ from .extract_plan import collection_notes
 from .extract_schema import TYPE_ISSUE
 from .inventory import Inventory
 from .note_records import NoteRecord
-from .store_models import Extraction, ExtractionKey, Issue, IssueEvent, to_utc_iso
+from .store_models import EventKey, Extraction, ExtractionKey, Issue, IssueEvent, to_utc_iso
 
 EVIDENCE_LIMIT = 300
 MIN_SHA_PREFIX = 7
@@ -64,9 +63,6 @@ CLAIM_EVENTS: dict[str, tuple[str, str | None]] = {
     "workaround": ("claim-workaround", None),
     "wontfix": ("claim-wontfix", None),
 }
-# Which of two events with the same unique key is kept.
-_STATE_RANK = {"verified": 3, "claimed-fixed": 2, "regressed": 1, "open": 1, None: 0}
-
 _SHA = re.compile(r"(?<![0-9A-Za-z])[0-9a-fA-F]{7,40}(?![0-9A-Za-z])")
 _PR = re.compile(r"(?:#|\bPR\s*#?\s*)(\d+)\b", re.IGNORECASE)
 
@@ -284,19 +280,14 @@ def fix_ref_event(issue_id: str, fix_ref: str, commits: Sequence[Any], prs: Sequ
 
 
 def _one_per_key(events: Iterable[IssueEvent]) -> tuple[IssueEvent, ...]:
-    """The strongest claim per unique key; on a tie, the earliest, then the first derived."""
-    chosen: dict[tuple[str, str, str, str], IssueEvent] = {}
+    """One event per unique key: the earliest, then the first derived (two items of one
+    note with the same claim are one fact)."""
+    chosen: dict[EventKey, IssueEvent] = {}
     for event in events:
         held = chosen.get(event.unique_key)
-        if held is None or _stronger(event, held):
+        if held is None or datetime.fromisoformat(event.effective_at) < datetime.fromisoformat(held.effective_at):
             chosen[event.unique_key] = event
     return tuple(chosen.values())
-
-
-def _stronger(new: IssueEvent, held: IssueEvent) -> bool:
-    if _STATE_RANK[new.to_state] != _STATE_RANK[held.to_state]:
-        return _STATE_RANK[new.to_state] > _STATE_RANK[held.to_state]
-    return datetime.fromisoformat(new.effective_at) < datetime.fromisoformat(held.effective_at)
 
 
 def _cut(text: str | None) -> str | None:

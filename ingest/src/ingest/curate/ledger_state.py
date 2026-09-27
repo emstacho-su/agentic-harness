@@ -4,9 +4,10 @@ An issue's state is never stored; it is replayed from the issue's events every
 run, so an event that arrives late (an earlier note extracted after a later one)
 lands in its right place and the answer is the same as if it had come in order.
 
-**Order.** Events are sorted by ``(effective_at, kind order, cause_ref)``. The
-kind order puts a sighting before any fix on the same instant, so one note that
-says "found X and fixed it" is not read as a regression.
+**Order.** Events are sorted by ``(effective_at, kind order, cause_ref, state
+order)``. The kind order puts a sighting before any fix on the same instant, so
+one note that says "found X and fixed it" is not read as a regression; the state
+order puts one cause's claimed-fixed before its verified.
 
 **Rules** (``to_state`` is the event's claim, ``state`` the issue's current one):
 
@@ -55,6 +56,11 @@ KIND_ORDER = {
 # regressions) is read as a sighting, so no valid row can break a replay.
 SIGHTING_STATES = (STATE_OPEN, STATE_REGRESSED)
 
+# One cause claiming two states on the same instant (a commit both matched by its
+# files and named by a fix reference): the weaker claim first, so replay order
+# never depends on which the store returned first.
+STATE_ORDER = {None: 0, STATE_OPEN: 1, STATE_REGRESSED: 1, STATE_CLAIMED_FIXED: 2, STATE_VERIFIED: 3}
+
 Interval = tuple[str, "str | None"]  # (valid_from, valid_to); None while still open
 
 
@@ -80,9 +86,9 @@ class IssueState:
     sightings: int
 
 
-def event_order(event: IssueEvent) -> tuple[datetime, int, str]:
+def event_order(event: IssueEvent) -> tuple[datetime, int, str, int]:
     return (datetime.fromisoformat(event.effective_at), KIND_ORDER.get(event.event_kind, len(KIND_ORDER)),
-            event.cause_ref)
+            event.cause_ref, STATE_ORDER.get(event.to_state, len(STATE_ORDER)))
 
 
 def reduce_issue(issue_id: str, events: Iterable[IssueEvent]) -> IssueState:

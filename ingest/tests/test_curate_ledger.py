@@ -18,7 +18,8 @@ from ingest.curate.extract_plan import Budget
 from ingest.curate.gitfacts import Commit, GitFacts, PullRequest
 from ingest.curate.inventory import build_inventory
 from ingest.curate.judge import FakeJudge, JudgeError
-from ingest.curate.ledger import DryRunStore, Spend, build_ledger, confirm_prompt, cosine
+from ingest.curate.dry_run_store import DryRunStore
+from ingest.curate.ledger import Spend, build_ledger, confirm_prompt, cosine
 from ingest.curate.ledger_events import (
     EVIDENCE_LIMIT,
     NO_DATE,
@@ -443,6 +444,22 @@ def test_a_dry_run_asks_nothing_writes_nothing_and_counts_would_ask(vault: Path)
     assert base.members("demo") == () and base.events("demo") == ()
 
 
+def test_the_dry_run_store_keeps_one_cause_with_two_claims_apart_from_the_base() -> None:
+    from ingest.curate.store_models import IssueEvent
+
+    base = InMemoryCurateStore()
+    issue = base.create_issue("demo", "bug", "A", (), "2026-09-01")
+    claimed = IssueEvent(issue.issue_id, "claimed-fixed", "fix-commit", "2026-09-02", "commit", "abc1234")
+    base.add_event(claimed)
+    overlay = DryRunStore(base)
+    overlay.list_issues("demo")
+    assert overlay.add_event(claimed) is False
+    assert overlay.add_event(IssueEvent(issue.issue_id, "verified", "fix-commit", "2026-09-02", "commit",
+                                        "abc1234")) is True
+    assert [e.to_state for e in overlay.events("demo")] == ["claimed-fixed", "verified"]
+    assert [e.to_state for e in base.events("demo")] == ["claimed-fixed"]
+
+
 # -- events -------------------------------------------------------------------------------------
 
 
@@ -553,28 +570,41 @@ def test_a_fix_ref_on_a_found_claim_is_ignored(vault: Path) -> None:
     assert [e.event_kind for e in store.events("demo")] == ["found"] and result.unresolved_refs == 0
 
 
-def test_a_commit_matched_by_files_and_by_fix_ref_is_one_verified_event(vault: Path) -> None:
+def test_a_commit_matched_by_files_and_by_fix_ref_is_two_facts_in_one_run(vault: Path) -> None:
     store = InMemoryCurateStore()
     sha = "0123abcd" + "0" * 32
     seed(store, vault, {"s1": [issue("A", files=["store.py"])],
                         "s3": [issue("A fixed", claim="fixed", files=["store.py"], fix_ref=sha[:8])]})
     facts = git([commit(sha, "2026-09-02T09:00:00Z", ["ingest/store.py"])])
-    build(vault, store, MapEmbedder({"A": [1, 0], "A fixed": angle(0.95)}), FakeJudge([answer("C1")]), git=facts)
+    result, _ = build(vault, store, MapEmbedder({"A": [1, 0], "A fixed": angle(0.95)}), FakeJudge([answer("C1")]),
+                      git=facts)
     commit_events = [e for e in store.events("demo") if e.cause_type == "commit"]
-    assert [(e.event_kind, e.to_state) for e in commit_events] == [("fix-commit", "verified")]
+    assert sorted((e.event_kind, e.to_state) for e in commit_events) == [
+        ("fix-commit", "claimed-fixed"), ("fix-commit", "verified")]
+    assert result.entries[0].state.state == "verified"
 
 
-def test_a_later_fix_ref_for_a_commit_already_stored_as_claimed_is_a_reported_conflict(vault: Path) -> None:
+def test_a_later_fix_ref_for_a_commit_already_stored_as_claimed_adds_the_verification(vault: Path) -> None:
+    """Run 1 knows only the commit's files (claimed-fixed); run 2 learns a note names it (verified)."""
     store = InMemoryCurateStore()
     sha = "0123abcd" + "0" * 32
     facts = git([commit(sha, "2026-09-02T09:00:00Z", ["ingest/store.py"])])
     seed(store, vault, {"s1": [issue("A", files=["store.py"])]})
-    build(vault, store, git=facts)
+    first, _ = build(vault, store, git=facts)
+    assert [(e.event_kind, e.to_state) for e in store.events("demo") if e.cause_type == "commit"] == [
+        ("fix-commit", "claimed-fixed")]
+    assert first.entries[0].state.state == "claimed-fixed"
+
     seed(store, vault, {"s3": [issue("A fixed", claim="fixed", fix_ref=sha[:8])]})
-    result, _ = build(vault, store, MapEmbedder({"A": [1, 0], "A fixed": angle(0.95)}), FakeJudge([answer("C1")]),
-                      git=facts)
-    assert len(result.conflicts) == 1
-    assert "stored as claimed-fixed, now derived as verified" in result.conflicts[0]
+    second, _ = build(vault, store, MapEmbedder({"A": [1, 0], "A fixed": angle(0.95)}),
+                      FakeJudge([answer("C1")]), git=facts)
+    commit_events = [e for e in store.events("demo") if e.cause_type == "commit"]
+    assert [(e.event_kind, e.to_state, e.cause_ref) for e in commit_events] == [
+        ("fix-commit", "claimed-fixed", sha), ("fix-commit", "verified", sha)]
+    assert second.new_events == 2  # the note's claim-fixed and the commit's verification
+    state = second.entries[0].state
+    assert state.state == "verified"
+    assert state.intervals == (("2026-09-01T00:00:00+00:00", "2026-09-02T09:00:00+00:00"),)
 
 
 # -- stability ----------------------------------------------------------------------------------

@@ -46,7 +46,8 @@ from . import extract, extract_report, ledger
 from .extract import Budget, extractor_version, plan_extraction, run_extraction
 from .inventory import GitCollector, Inventory, VaultInventory, build_inventory
 from .judge import Judge
-from .ledger import CollectionLedger, DryRunStore, Spend, build_ledger
+from .dry_run_store import DryRunStore
+from .ledger import CollectionLedger, Spend, build_ledger
 from .render import ledger_body, ledger_frontmatter
 from .note_records import NoteRecord
 from .profile import Runner, default_runner
@@ -423,7 +424,6 @@ def _ledger_lines(result: CollectionLedger, write: Any, dry_run: bool) -> list[s
     if result.new_issues:
         lines.append("    new issues: " + ", ".join(result.new_issues))
     lines.extend(f"    unplaced: {p.path} ({p.reason})" for p in result.unplaced)
-    lines.extend(f"    conflict: {conflict}" for conflict in result.conflicts)
     lines.append(f"    ledger: {result.folder}/ledger.md {_write_word(write)}")
     return lines
 
@@ -471,7 +471,6 @@ def _ledger_json(result: CollectionLedger, write: Any) -> dict[str, Any]:
         "would_ask": result.would_ask,
         "unplaced": [{"path": p.path, "reason": p.reason} for p in result.unplaced],
         "unresolved_fix_refs": result.unresolved_refs,
-        "conflicts": list(result.conflicts),
         "states": _state_counts(result),
         "ledger": {"path": f"{result.folder}/ledger.md", "written": written, "outcome": _write_word(write)},
     }
