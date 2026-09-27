@@ -42,9 +42,10 @@ function toLines(text) {
   return text.replace(/\r\n?/g, '\n');
 }
 
-function isErrorRendering(text) {
+/** The server's two error shapes, named for the tool; a document title ending in "failed." is not one. */
+function isErrorRendering(tool, text) {
   const firstLine = text.split('\n', 1)[0];
-  return firstLine.endsWith('failed.') || firstLine.startsWith('Invalid arguments');
+  return firstLine === `${tool} failed.` || firstLine.startsWith(`Invalid arguments for ${tool}:`);
 }
 
 /**
@@ -110,17 +111,27 @@ function isBlockStart(lines, index, rank) {
   return rank === 1 || lines[index - 2] === '---';
 }
 
+/**
+ * `conflict` is set when a second well-framed block claims a rank already
+ * taken: a block forged in chunk text got there first and pushed the real one
+ * out of sequence, so the count alone would still agree.
+ */
 function scanBlocks(lines) {
   const results = [];
+  let conflict = false;
   for (let index = 0; index < lines.length; index += 1) {
     const heading = BLOCK_HEADING.exec(lines[index]);
     if (!heading) continue;
     const rank = Number(heading[1]);
-    if (rank !== results.length + 1 || !isBlockStart(lines, index, rank)) continue;
+    if (!isBlockStart(lines, index, rank)) continue;
+    if (rank !== results.length + 1) {
+      if (rank >= 1 && rank <= results.length) conflict = true;
+      continue;
+    }
     const block = parseBlock(rank, heading[2], readFields(lines, index + 1));
     if (block) results.push(block);
   }
-  return results;
+  return { results, conflict };
 }
 
 /** A `search_context` rendering, or null when the text is not one. */
@@ -135,8 +146,8 @@ export function parseSearchResult(text) {
   if (!header) return null;
 
   const count = Number(header[1]);
-  const results = scanBlocks(normalised.split('\n'));
-  return { kind: 'search', query: header[2], count, results, partial: results.length !== count };
+  const { results, conflict } = scanBlocks(normalised.split('\n'));
+  return { kind: 'search', query: header[2], count, results, partial: conflict || results.length !== count };
 }
 
 /** A `get_document` rendering (found or not found), or null when the text is neither. */
@@ -171,9 +182,8 @@ export function parseDocumentResult(text) {
  */
 export function parseRagResult(toolName, text) {
   if (typeof toolName !== 'string' || typeof text !== 'string') return null;
-  if (isErrorRendering(toLines(text))) return null;
-
   const bare = toolName.startsWith(TOOL_PREFIX) ? toolName.slice(TOOL_PREFIX.length) : toolName;
+  if (isErrorRendering(bare, toLines(text))) return null;
   if (bare === SEARCH_TOOL) return parseSearchResult(text);
   if (bare === DOCUMENT_TOOL) return parseDocumentResult(text);
   return null;

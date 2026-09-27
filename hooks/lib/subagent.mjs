@@ -132,7 +132,7 @@ export function captureSubagent({
   }
 
   const secrets = knownSecrets(prompts, accumulator);
-  const searches = extractRetrievals(entries, { secrets });
+  const searches = extractRetrievals(entries, { secrets, includeSidechain: true });
 
   const context = {
     sessionId: input.sessionId,

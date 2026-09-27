@@ -112,7 +112,8 @@ const RECORD_KEY_ORDER = Object.freeze(['at', 'channel', 'tool', 'query', 'filte
 const QUOTED_RECORD_KEYS = new Set(['at', 'query', 'results', 'chunks']);
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const BARE_WORD = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
-const NON_STRING_WORDS = new Set(['true', 'false', 'null']);
+// YAML 1.1 (PyYAML, which ingest reads notes with) also turns these into booleans or null, in any case.
+const NON_STRING_WORDS = new Set(['true', 'false', 'null', 'yes', 'no', 'on', 'off']);
 
 function emitRecord(record) {
   if (!isPlainObject(record)) return [];
@@ -147,7 +148,7 @@ function emitFlowScalar(value, quoted) {
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   if (value === null || value === undefined) return "''";
   if (typeof value !== 'string') return yamlStr(JSON.stringify(value));
-  const bare = !quoted && BARE_WORD.test(value) && !NON_STRING_WORDS.has(value);
+  const bare = !quoted && BARE_WORD.test(value) && !NON_STRING_WORDS.has(value.toLowerCase());
   return bare ? value : yamlStr(value);
 }
 

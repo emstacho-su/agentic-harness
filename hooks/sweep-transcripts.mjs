@@ -31,6 +31,7 @@ import {
 import { enqueueIngest, inBatches } from './lib/enqueue-ingest.mjs';
 import { createLogger } from './lib/logger.mjs';
 import { loadMachineEnv } from './lib/machine-env.mjs';
+import { defaultStateDir } from './lib/session-start.mjs';
 import { runSweep } from './lib/sweep.mjs';
 import { isSafeFilenameSegment } from './lib/text.mjs';
 
@@ -61,6 +62,8 @@ export function parseArgs(argv, env = process.env, home = os.homedir()) {
   const options = {
     vaultRoot: env[VAULT_ENV_VAR] || path.join(home, ...DEFAULT_VAULT_SEGMENTS),
     projectsRoot: path.join(home, '.claude', 'projects'),
+    // From the merged env, so a HARNESS_STATE_DIR in machine.env is honoured.
+    stateDir: defaultStateDir(env, home),
     minIdleHours: DEFAULT_SWEEP_IDLE_HOURS,
     limit: 0,
     only: null,
@@ -140,6 +143,7 @@ export function run(argv, { env = process.env, out = console.log, err = console.
       dryRun: options.dryRun,
       excludes: options.excludes,
       log,
+      stateDir: options.stateDir,
     });
   } catch (error) {
     // Only a bad root reaches here (runSweep validates both before it walks);

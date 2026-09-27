@@ -433,3 +433,23 @@ test('an unknown key holding a flow map keeps its old string meaning', () => {
   assert.equal(round.ok, true, round.error);
   assert.equal(round.fields.meta, '{owner: stack}');
 });
+
+test('words YAML 1.1 reads as booleans or null are quoted inside a record, so ingest reads strings too', () => {
+  const text = serializeFrontmatter({
+    retrievals: [
+      {
+        at: '2026-09-24T14:03:11Z',
+        channel: 'tool',
+        tool: 'search_context',
+        query: 'q',
+        filters: { collection: 'no', phase: 'Yes', tags: ['on', 'OFF', 'Null', 'plain'] },
+        results: [],
+      },
+    ],
+  });
+  assert.match(text, /collection: 'no'/);
+  assert.match(text, /phase: 'Yes'/);
+  assert.match(text, /tags: \['on', 'OFF', 'Null', plain\]/);
+  const round = parseFrontmatter(text);
+  assert.deepEqual(round.fields.retrievals[0].filters, { collection: 'no', phase: 'Yes', tags: ['on', 'OFF', 'Null', 'plain'] });
+});

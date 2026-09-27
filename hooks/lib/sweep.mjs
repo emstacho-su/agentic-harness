@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { capture } from './capture.mjs';
+import { defaultStateDir } from './session-start.mjs';
 import {
   AREA_CLASSES,
   AREA_PROJECTS,
@@ -162,6 +163,7 @@ export function sweepOne({
   budgetMs = SWEEP_BUDGET_MS,
   excludes = SWEEP_EXCLUDED_CWD_SEGMENTS,
   log = () => {},
+  stateDir = defaultStateDir(process.env),
 }) {
   const base = { sessionId: candidate.sessionId, transcriptPath: candidate.transcriptPath };
   try {
@@ -195,6 +197,7 @@ export function sweepOne({
       deadlineAt: now + budgetMs,
       runGit,
       capturedBy: CAPTURED_BY_SWEEP,
+      stateDir,
     });
 
     const children = listSubagentTranscripts(candidate.transcriptPath, candidate.sessionId).map((worker) =>
@@ -266,6 +269,7 @@ export function runSweep({
   log = () => {},
   runGit = sweepGit,
   excludes = SWEEP_EXCLUDED_CWD_SEGMENTS,
+  stateDir = defaultStateDir(process.env),
 }) {
   // A missing root is a configuration error, not a candidate that failed: a
   // mistyped --projects would otherwise report "nothing to do", and a mistyped
@@ -281,7 +285,7 @@ export function runSweep({
   const results = dryRun
     ? []
     : selected.map((candidate) => {
-        const result = sweepOne({ candidate, vaultRoot, projectsRoot, runGit, excludes, log });
+        const result = sweepOne({ candidate, vaultRoot, projectsRoot, runGit, excludes, log, stateDir });
         log(`${result.action} ${result.sessionId} ${result.detail}`);
         for (const child of result.children) {
           log(`  ${child.action} ${result.sessionId}--${child.agentId} ${child.detail}`);

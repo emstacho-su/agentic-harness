@@ -49,12 +49,15 @@ const LABEL_BREAKING = /[[\]|\r\n\t]+/g;
  * Every RAG retrieval in `entries`, in time order, capped at MAX_RETRIEVALS.
  *
  * @param {object[]} entries transcript entries, as `readEntries` returns them
- * @param {{secrets?: string[]}} options literal secret values to remove from free text
+ * @param {{secrets?: string[], includeSidechain?: boolean}} options literal secret
+ *        values to remove from free text; `includeSidechain` for a worker's own
+ *        transcript, which is all sidechain (inline worker turns in a main
+ *        transcript belong to the worker's note)
  * @returns {{records: object[], hits: Array<{source: string, externalId: string, title: string}>}}
  *          `hits` are the documents returned, in record order, for `retrievedLinks`
  */
-export function extractRetrievals(entries, { secrets = [] } = {}) {
-  const calls = collectCalls(entries);
+export function extractRetrievals(entries, { secrets = [], includeSidechain = false } = {}) {
+  const calls = collectCalls(entries, includeSidechain);
   const found = [];
   for (const entry of entries ?? []) {
     for (const block of toolResultBlocks(entry)) {
@@ -79,10 +82,11 @@ export function extractRetrievals(entries, { secrets = [] } = {}) {
 }
 
 /** tool_use id -> {tool, input, at} for every RAG call in the assistant turns. */
-function collectCalls(entries) {
+function collectCalls(entries, includeSidechain) {
   const calls = new Map();
   for (const entry of entries ?? []) {
     if (entry?.type !== 'assistant') continue;
+    if (entry.isSidechain === true && !includeSidechain) continue;
     const content = entry.message?.content;
     if (!Array.isArray(content)) continue;
     for (const block of content) {
@@ -131,7 +135,9 @@ function toRetrieval({ call, parsed, at, secrets }) {
       results: parsed.results.map((r) => withSimilarity(`${r.source}:${r.externalId}`, r.similarity)),
       chunks: parsed.results.map((r) => `${r.docId}/${r.chunkId}@${r.rrf}`),
     };
-    const hits = parsed.results.map((r) => ({ source: r.source, externalId: r.externalId, title: r.title ?? '' }));
+    // A partial parse may hold a block forged in chunk text: the record keeps
+    // what was read, but nothing from it becomes a link in the graph.
+    const hits = parsed.partial ? [] : parsed.results.map((r) => ({ source: r.source, externalId: r.externalId, title: r.title ?? '' }));
     return { record, hits };
   }
 
@@ -191,10 +197,15 @@ function clean(text, secrets, max) {
 export function retrievedLinks(hits, { vaultRoot = '', deadlineAt = Number.POSITIVE_INFINITY } = {}) {
   const links = [];
   const seen = new Set();
+  const seenIds = new Set();
   for (const hit of hits ?? []) {
     if (links.length >= MAX_RETRIEVED) break;
     if (hit?.source !== OBSIDIAN) continue;
-    const link = linkFor(String(hit.externalId ?? ''), hit.title, { vaultRoot, deadlineAt });
+    const externalId = String(hit.externalId ?? '');
+    // By id before the lookup: a note returned by fifty searches is looked up once.
+    if (seenIds.has(externalId)) continue;
+    seenIds.add(externalId);
+    const link = linkFor(externalId, hit.title, { vaultRoot, deadlineAt });
     if (!link || seen.has(link.target)) continue;
     seen.add(link.target);
     links.push(link.text);
