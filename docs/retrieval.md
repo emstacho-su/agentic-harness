@@ -465,6 +465,7 @@ retrieval lets you down in real use; never edit a case to make a run pass.
 | 2026-09-21 | `## Outcome` backfilled into 371 session notes and re-embedded | 0.95 | 0.72 | 1.00 |
 | 2026-09-24 | before the dogfood negative (20 positive, 5 negative cases) | 0.95 | 0.75 | 1.00 |
 | 2026-09-24 | dogfood negative `neg-retrieval-provenance` added; it fails on session boilerplate, as expected until unit P lands (R-Q2) | 0.95 | 0.75 | 0.83 |
+| 2026-09-24 | 41 coverage cases (R-Q3): three or more for every collection with sessions and every class with material, except `wa2-revision` (two); three honest misses stay in, all of them notes outranked by their own subagent notes | 0.93 | 0.81 | 0.83 |
 
 The one miss left after all of this, "why was claude-mem retired", is a decision that was
 made outside any captured session: no document in the store states it. The case stays in

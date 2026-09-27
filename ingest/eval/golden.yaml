@@ -128,6 +128,292 @@ cases:
     collection: agentic-harness
     realm: projects
 
+  # -- coverage, 2026-09-24 (R-Q3): agentic-harness --------------------------------
+  # The harness realm does not exist yet (unit H-a). agentic-harness, projects and
+  # memory cases are labelled `realm: projects`, where they live today; unit Q-b
+  # relabels them after live step L3.
+  # Outcome: the bb2dash-retrieval folder's old index note left an orphan row, removable with the guarded --prune sweep.
+  - id: ah-orphan-index-row
+    query: the old bb2dash-retrieval index note left a stale row in the store, how do I clean it up
+    expect: ["session-422db168-8894-4b80-ac32-384e765cad3c"]
+    collection: agentic-harness
+    realm: projects
+  # Outcome table: AgenticHarness-CheckpointCollect runs at 12:00 and 18:00 (the nightly ingest at 03:00).
+  - id: ah-checkpoint-collect-times
+    query: what times of day does the scheduled job that collects cloud checkpoint notes run
+    expect: ["session-5b32b609-c718-44e4-b797-598e4ed9fe30"]
+    collection: agentic-harness
+    realm: projects
+  # Prompts 8-15: the infosec internship laptop blocks node by group policy; move to a VM and make the harness portable.
+  - id: ah-internship-laptop
+    query: could the harness run on my infosec internship laptop where group policy blocks node
+    expect: ["session-132a0a63-97a3-48f9-946b-2272d33e4171"]
+    collection: agentic-harness
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): bb2dash ------------------------------------------
+  # Outcome: Supabase is the source of truth; the desktop app is an Electron shell loading the same deployed URL.
+  - id: bb2dash-source-of-truth
+    query: is the desktop app or the browser the source of truth for my planner and grades
+    expect: ["session-c6b39327-b50c-4c97-a75e-8ab5e2c843b3"]
+    collection: bb2dash
+    realm: projects
+  # Outcome (the sprint 2 planning prompt): sprint 1 closed 2026-09-22 with PR #25; sprint 2 migrations start at 091.
+  - id: bb2dash-sprint2-migrations
+    query: what number do sprint 2 database migrations start at in bb2dash
+    expect: ["session-3a1f9923-4831-44f0-b2d9-9573ad43fc78"]
+    collection: bb2dash
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): memory -------------------------------------------
+  # Outcome: set "syncDryRun": false in %APPDATA%\bb2dash\config.json for the Sync button to run real syncs.
+  - id: memory-real-sync-setting
+    query: the desktop Sync button only does dry runs, what setting makes it run a real sync
+    expect: ["session-17eb4995-2504-4d28-b240-5a912de4cfdc"]
+    collection: memory
+    realm: projects
+  # Prompt 2, answer 1: launch at login is out of the Phase 12 Electron shell.
+  # misses today (rank 5): the answer is a bare "1)launch at login out" reply to numbered
+  # questions the note does not carry; the later 17eb4995 session and its Electron security
+  # review share the vocabulary and outrank it. Neither says anything about launch at login.
+  - id: memory-launch-at-login
+    query: did we decide to have the bb2dash desktop app start automatically when Windows logs in
+    expect: ["session-e5240482-ac40-4b5b-85f1-f87c565104f2"]
+    collection: memory
+    realm: projects
+  # Outcome: closing the window only hid the app to the tray; the old copy was force-stopped to free the worktree folder.
+  - id: memory-tray-worktree
+    query: why couldn't the electron worktree be deleted even after I closed the app window
+    expect: ["session-17eb4995-2504-4d28-b240-5a912de4cfdc"]
+    collection: memory
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): portfolio-website --------------------------------
+  # Prompt 1: the ThermodynamicGrid component defaults to resolution 25 and coolingFactor 0.98.
+  - id: portfolio-thermo-defaults
+    query: what are the default resolution and cooling rate of the heat grid component on my portfolio
+    expect: ["session-8448de7e-0cb8-447f-9e68-72bc3d89ad38"]
+    collection: portfolio-website
+    realm: projects
+  # Outcome: master fast-forwarded 9b19cf1 -> 52b594d (12 dev commits plus the thermo grid commit).
+  - id: portfolio-master-ff
+    query: did the portfolio site's dev branch get merged into master
+    expect: ["session-8448de7e-0cb8-447f-9e68-72bc3d89ad38"]
+    collection: portfolio-website
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): projects -----------------------------------------
+  # Prompt 2: grading validation was stubbed for later, a data-accuracy problem rather than a product feature.
+  # misses today (rank 9): the reason is one sentence in a long prompt chunk; the sprint 2
+  # grading analyst notes (979397c7--*), the W-20 grade-model worker and a claude-mem plan
+  # with a "grading & validation" phase match the words better. None says why V-1 was stubbed.
+  - id: projects-grading-validation-stubbed
+    query: why did we put the grading rules validation off until later
+    expect: ["session-b453d876-aaef-424b-8ade-aba7f88c689a"]
+    collection: projects
+    realm: projects
+  # Prompt 1: every computed figure is labelled as a model; IST.471 shows not-computable.
+  - id: projects-not-computable-course
+    query: which of my courses can't get a computed grade from the grade model
+    expect: ["session-b453d876-aaef-424b-8ade-aba7f88c689a"]
+    collection: projects
+    realm: projects
+  # Outcome: the deployed calendar-push code matches main, so nothing needs deploying.
+  # misses today (rank 8): the session's own comparison worker (--a8861630cbbd046d0) answers
+  # more directly (all four deployed files identical to origin/main) and outranks it, but it
+  # is filed under bb2dash because it ran from that repo. It is not listed here: a second id
+  # from another collection would make the label check report this case every night, and the
+  # label check is the signal that a note moved. Revisit once unit H-a re-routes harness work.
+  - id: projects-calendar-push-deployed
+    query: does the deployed calendar push function need redeploying
+    expect: ["session-b453d876-aaef-424b-8ade-aba7f88c689a"]
+    collection: projects
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): quant-edge-tracker -------------------------------
+  # Outcome: the prod bundle went from ~911 KB to 2.44 MB because three.js and @react-three/fiber load eagerly.
+  - id: qet-bundle-size
+    query: why did the quant edge tracker production bundle get so much bigger
+    expect: ["session-918369a9-5cd6-4c0c-8391-cea3d5a453d3"]
+    collection: quant-edge-tracker
+    realm: projects
+  # Prompt 6: on the live page each pick is one item; covering counts green, pushing yellow/orange, losing red.
+  - id: qet-live-losing-color
+    query: in RGB background mode, what color should a losing bet on the live page count as
+    expect: ["session-3d5a75d2-f529-417c-b81a-57dce310b59d"]
+    collection: quant-edge-tracker
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): wa2-revision -------------------------------------
+  # The collection is one single-prompt session and an empty hub: it supports two cases, not three.
+  # Prompt 1: revise wa2 to the filled-out reverse skeleton outline, add quotations, keep my writing style.
+  - id: wa2-reverse-outline
+    query: revising my second writing assignment from the reverse outline while keeping my voice
+    expect: ["session-e23aa6b4-1248-4fb9-a77b-4fe865ecc280"]
+    collection: wa2-revision
+    realm: projects
+  # Working directory: .../spring2026/school/wrt205/wa2 revision.
+  - id: wa2-course
+    query: which class was the WA2 essay revision for
+    expect: ["session-e23aa6b4-1248-4fb9-a77b-4fe865ecc280"]
+    collection: wa2-revision
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): estac --------------------------------------------
+  # Prompts 1 and 3: bullets instead of numbers, bigger visuals on the hypothetical slide, paragraphs moved to speaker notes.
+  - id: estac-fbi-deck-edits
+    query: what changes did I make to my slides for the Apple vs FBI group presentation
+    expect: ["session-22581e0d-35e4-4269-9717-bc20edd76ccf"]
+    collection: estac
+    realm: projects
+  # Outcome: the speaker notes are on slides 4-9 of "Group 3 IST466 - Evan edits.pptx".
+  - id: estac-speaker-notes-slides
+    query: which slides in my edited IST 466 group deck have speaker notes
+    expect: ["session-22581e0d-35e4-4269-9717-bc20edd76ccf"]
+    collection: estac
+    realm: projects
+  # Prompts 1-2: does the crawler download new documents; make bb-sync pull the bytes and automate upload, extract, chunk and embed.
+  - id: estac-bb-sync-download-bytes
+    query: when did I ask for bb-sync to download the files for new materials and embed them automatically
+    expect: ["session-57e2339c-2b4f-49c7-8d24-98966e58d0ed"]
+    collection: estac
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): ist466 -------------------------------------------
+  # Outcome point 3: the FBI did not ask Apple to unlock the phone but to write a weakened iOS (no auto-erase, no delay, electronic passcodes).
+  - id: ist466-fbi-ask
+    query: in the Apple vs FBI case, what exactly did the FBI ask Apple to do
+    expect: ["session-46310334-055b-4bfe-92b2-45713c7b37a4"]
+    collection: ist466
+    realm: classes
+  # Outcome, assignment constraints: the team gets 20 slides total.
+  - id: ist466-slide-limit
+    query: how many slides does our team get for the ethics case study presentation
+    expect: ["session-46310334-055b-4bfe-92b2-45713c7b37a4"]
+    collection: ist466
+    realm: classes
+  # Hub: bb2dash course id IST.466.
+  - id: ist466-course-id
+    query: what course id does bb2dash use for my IM&T capstone
+    expect: ["9e7d7623-bfaf-4ee7-a694-b2384b8c0a0f"]
+    collection: ist466
+    realm: classes
+
+  # -- coverage, 2026-09-24 (R-Q3): bb2dash-inbox-decisions --------------------------
+  # Answer and Change: Blackboard's quiz-2 was a duplicate; the hand-entered quiz-02 series row was kept and the column folded into it.
+  - id: inbox-ecn304-quiz2-duplicate
+    query: ECN 304 quiz 2 showed up twice, which row did we keep
+    expect: ["bb2dash-inbox-decision-528"]
+    collection: bb2dash-inbox-decisions
+    realm: projects
+  # Finding: DECISIONS.md was right on both (Ethics Team 3, Major Case Group 2); group_notes was wrong.
+  - id: inbox-ist466-group-records
+    query: records disagreed about my IST 466 team numbers, which source turned out to be right
+    expect: ["bb2dash-inbox-decision-535"]
+    collection: bb2dash-inbox-decisions
+    realm: projects
+  # Answer: 100 points per Blackboard, run through the course's 104-point scheme rather than counted raw.
+  - id: inbox-ist323-presentation-points
+    query: how many points is the IST 323 presentation topic selection worth
+    expect: ["bb2dash-inbox-decision-138"]
+    collection: bb2dash-inbox-decisions
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): class hubs ---------------------------------------
+  # Class materials are `ingest: false`, so each class with material holds only its hub
+  # note. A hub states three things: the course title, the term and the bb2dash course
+  # id(s), so each class gets at most three cases.
+  # Hub: Fall 2026.
+  - id: ist323-term
+    query: which semester am I taking intro to cybersecurity
+    expect: ["1e822b6f-1495-4d0f-bd73-84fa9f08aea3"]
+    collection: ist323
+    realm: classes
+  # Hub: bb2dash course id IST.323.
+  - id: ist323-course-id
+    query: what course id does bb2dash use for IST 323
+    expect: ["1e822b6f-1495-4d0f-bd73-84fa9f08aea3"]
+    collection: ist323
+    realm: classes
+  # Hub title: Info Analysis of Organization Systems.
+  - id: ist352-topic
+    query: what is IST 352
+    expect: ["51dd41b9-ff25-4061-995b-f7519d536bc6"]
+    collection: ist352
+    realm: classes
+  # Hub: Fall 2026.
+  - id: ist352-term
+    query: which term am I taking IST 352
+    expect: ["51dd41b9-ff25-4061-995b-f7519d536bc6"]
+    collection: ist352
+    realm: classes
+  # Hub: bb2dash course id IST.352.
+  - id: ist352-course-id
+    query: bb2dash course id for the organization systems analysis class
+    expect: ["51dd41b9-ff25-4061-995b-f7519d536bc6"]
+    collection: ist352
+    realm: classes
+  # Hub title: IST 471 — Internship.
+  - id: ist471-topic
+    query: what kind of course is IST 471
+    expect: ["e98e55e1-4b94-40e3-8f63-86181b43c533"]
+    collection: ist471
+    realm: classes
+  # Hub: Fall 2026.
+  - id: ist471-term
+    query: what semester is my internship course
+    expect: ["e98e55e1-4b94-40e3-8f63-86181b43c533"]
+    collection: ist471
+    realm: classes
+  # Hub: bb2dash course id IST.471.
+  - id: ist471-course-id
+    query: what course id does bb2dash use for the internship class
+    expect: ["e98e55e1-4b94-40e3-8f63-86181b43c533"]
+    collection: ist471
+    realm: classes
+  # Hub title: ECN 304 — The Economics of Social Issues.
+  - id: ecn304-topic
+    query: what is ECN 304 about
+    expect: ["054da1c6-9405-4db7-9dee-41a32283641e"]
+    collection: ecn304
+    realm: classes
+  # Hub: Fall 2026.
+  - id: ecn304-term
+    query: which term am I in the economics of social issues class
+    expect: ["054da1c6-9405-4db7-9dee-41a32283641e"]
+    collection: ecn304
+    realm: classes
+  # Hub: bb2dash course id ECN.304.
+  - id: ecn304-course-id
+    query: bb2dash course id for my economics class
+    expect: ["054da1c6-9405-4db7-9dee-41a32283641e"]
+    collection: ecn304
+    realm: classes
+  # Hub title: GEO 103 — Environment and Society.
+  - id: geo103-topic
+    query: what is GEO 103 about
+    expect: ["fdb623a7-f60b-41bd-9c61-4b7e5ceafdc2"]
+    collection: geo103
+    realm: classes
+  # Hub: Fall 2026.
+  - id: geo103-term
+    query: which semester am I taking the environment and society course
+    expect: ["fdb623a7-f60b-41bd-9c61-4b7e5ceafdc2"]
+    collection: geo103
+    realm: classes
+  # Hub: two bb2dash course ids, GEO.103.lecture and GEO.103.recitation.
+  - id: geo103-course-ids
+    query: GEO 103 has a lecture and a recitation, what are their course ids in bb2dash
+    expect: ["fdb623a7-f60b-41bd-9c61-4b7e5ceafdc2"]
+    collection: geo103
+    realm: classes
+  # Hub (ist335, prior term, no material): "Prior term", history migrated from claude-mem.
+  - id: ist335-term
+    query: is IST 335 a current class or one from a past semester
+    expect: ["1f61a8c7-6772-4242-951e-fe10fb3ee982"]
+    collection: ist335
+    realm: classes
+
   # -- off-topic: must return nothing ---------------------------------------------
   - id: neg-sourdough
     query: best sourdough hydration ratio for a dutch oven loaf
