@@ -363,6 +363,31 @@ def test_a_vault_note_plan_source_is_read(tmp_path: Path) -> None:
     assert isinstance(document, PlanDocument) and [r.id for r in document.requirements] == ["R-X1"]
 
 
+def test_a_suffix_less_vault_source_prefers_the_note_over_a_same_named_folder(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    coll = vault / "projects" / "coll"
+    (coll / "plan").mkdir(parents=True)
+    (coll / "plan" / "10_PHASE1_a.md").write_text("# Folder\n### R-X2 Two\n", encoding="utf-8")
+    (coll / "plan.md").write_text("# Plan\n### R-X1 One\n", encoding="utf-8")
+    profile = _profile(vault, ["projects/coll/plan"])
+    (source,) = profile.plan_sources
+    assert (source.resolved, source.is_dir, source.exists) == ((coll / "plan.md").as_posix(), False, True)
+    (document,) = load_plan_sources(profile)
+    assert [r.id for r in document.requirements] == ["R-X1"]
+
+
+def test_a_suffix_less_vault_source_is_the_folder_when_no_such_note_exists(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    coll = vault / "projects" / "coll"
+    (coll / "plan").mkdir(parents=True)
+    (coll / "plan" / "10_PHASE1_a.md").write_text("# Folder\n### R-X2 Two\n", encoding="utf-8")
+    profile = _profile(vault, ["projects/coll/plan"])
+    (source,) = profile.plan_sources
+    assert (source.resolved, source.is_dir, source.exists) == ((coll / "plan").as_posix(), True, True)
+    (document,) = load_plan_sources(profile)
+    assert [r.id for r in document.requirements] == ["R-X2"]
+
+
 def test_an_unreadable_or_non_utf8_source_is_a_problem_not_a_crash(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     latin = tmp_path / "latin.md"

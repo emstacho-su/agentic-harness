@@ -190,15 +190,16 @@ def _plan_sources(raw: object, hub_path: str | None) -> tuple[str, ...]:
 def _resolve(vault: Path, given: str) -> PlanSource:
     """An absolute path is a repo file or folder; anything else is a vault note or folder.
 
-    A vault path without a suffix is a folder when one is there, else a note
-    (``.md`` appended), wikilink or not.
+    A vault path without a suffix is a note (``.md`` appended), wikilink or not;
+    it is a folder only when no such note exists and the folder does.
     """
     target = _unlink(given)
     candidate = Path(target)
     if not candidate.is_absolute():
         candidate = vault / target
-        if not candidate.suffix and not _is_dir(candidate):
-            candidate = candidate.with_name(candidate.name + ".md")
+        if not candidate.suffix:
+            note = candidate.with_name(candidate.name + ".md")
+            candidate = candidate if not _is_file(note) and _is_dir(candidate) else note
     is_dir = _is_dir(candidate)
     return PlanSource(
         given=given, resolved=candidate.as_posix(), exists=is_dir or _is_file(candidate), is_dir=is_dir,
