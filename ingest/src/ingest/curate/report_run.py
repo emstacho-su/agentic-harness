@@ -18,7 +18,10 @@
 3. **Tally** every stored proposal of the realm against the latest decisions.
 4. **Render** today's report from today's stored proposals (so a same-day rerun
    keeps what an earlier run proposed, and recorded ticks stay ticked) and write
-   it through ``writer.write_curation_report`` unless this is a dry run.
+   it through ``writer.write_curation_report`` unless this is a dry run. Links
+   and paths come from every collection of the realm, not only the scored ones,
+   and a collection ``--collection`` left unscored shows today's stored scores
+   (or nothing when it has none), so a narrowed rerun keeps the rest of the page.
 
 A dry run gets a ``DryRunStore``: decisions, scores and proposals it "records"
 stay in memory, and no file is written.
@@ -189,7 +192,9 @@ def curator_report_body(path: Path) -> str | None:
 
 
 def report_realm(root: str, realm_folder: str, inventories: Sequence[Inventory], store: CurateStore,
-                 context: RunContext) -> RealmReport:
+                 context: RunContext, *, realm_inventories: Sequence[Inventory] | None = None) -> RealmReport:
+    """Score and propose ``inventories``; ``realm_inventories`` (every collection of the realm,
+    default ``inventories``) give the page its links, paths and the unscored collections' rows."""
     ticks = record_ticks(Path(root), realm_folder, store, context.day)
     collections = tuple(_collection(inventory, realm_folder, store, context) for inventory in inventories)
     proposals = store.proposals(realm_folder)
@@ -198,7 +203,9 @@ def report_realm(root: str, realm_folder: str, inventories: Sequence[Inventory],
     modes = promotion_state(tallied)
     write = None
     if not context.dry_run:
-        body = _body(context.day, proposals, decided, tallied, modes, collections, inventories)
+        whole = realm_inventories if realm_inventories is not None else inventories
+        summaries = _summaries(collections, whole, store, context)
+        body = _body(context.day, proposals, decided, tallied, modes, summaries, whole)
         fields = report_frontmatter(realm_folder, context.day, context.generated_at, context.scorer_version)
         write = _write(root, realm_folder, context.day, fields, body)
     return RealmReport(realm_folder=realm_folder, day=context.day, ticks=ticks, collections=collections,
@@ -232,8 +239,25 @@ def _extractions(store: CurateStore, inventory: Inventory, version: str) -> dict
     return {key[0]: cached[key] for key in keys if key in cached}
 
 
+def _summaries(collections: Sequence[CollectionReport], whole: Sequence[Inventory], store: CurateStore,
+               context: RunContext) -> list[ScoreSummary]:
+    """The scored collections' summaries, then each unscored one's from today's stored rows, if any."""
+    summaries = [summarise_scores(c.collection, c.scores.notes) for c in collections]
+    scored = {c.collection for c in collections}
+    for inventory in whole:
+        collection = inventory.profile.collection
+        if collection in scored:
+            continue
+        scored.add(collection)
+        stored = {s.note_id: s for s in store.note_scores(collection, context.day)
+                  if s.scorer_version == context.scorer_version}
+        if stored:
+            summaries.append(summarise_scores(collection, stored))
+    return summaries
+
+
 def _body(day: str, proposals: Sequence[Proposal], decided: Mapping[str, Mapping[tuple[str, str], bool]],
-          tallied: Sequence[Round], modes: Mapping[str, Mode], collections: Sequence[CollectionReport],
+          tallied: Sequence[Round], modes: Mapping[str, Mode], summaries: Sequence[ScoreSummary],
           inventories: Sequence[Inventory]) -> str:
     index: dict[str, tuple[str, str]] = {}
     paths: dict[str, str] = {}
@@ -246,7 +270,6 @@ def _body(day: str, proposals: Sequence[Proposal], decided: Mapping[str, Mapping
                        no_loss=p.no_loss, path=paths.get(p.note_id, ""))
              for p in proposals if p.report_day == day]
     accepted = {pair for pair, ok in decided.get(day, {}).items() if ok}
-    summaries: list[ScoreSummary] = [summarise_scores(c.collection, c.scores.notes) for c in collections]
     return report_body(day, today, modes, tallied, summaries, index, accepted=accepted)
 
 

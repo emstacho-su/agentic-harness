@@ -357,3 +357,61 @@ def test_a_budget_stop_exits_3(vault: Path, capsys) -> None:
     assert code == 3
     assert "stopped by budget" in out.splitlines()[-1]
     assert report_path(vault).exists()
+
+
+# -- a narrowed rerun keeps the rest of the realm ---------------------------------------------
+
+
+OTHER_CHILD = "session-bbbb2222--agent1"
+OTHER_SHORT = "note-other-short"
+
+
+def add_other_collection(root: Path) -> None:
+    """A second collection, ``other``, in the same realm, with its own condense and prune candidates."""
+    other = root / "projects" / "other"
+    (other / "sessions").mkdir(parents=True)
+    (other / "notes").mkdir()
+    (other / "other.md").write_text(HUB.replace("demo", "other"), encoding="utf-8")
+    files = {
+        "sessions/bbbb2222.md": note("session-bbbb2222", "2026-09-21T10:00:00Z", LONG),
+        "sessions/bbbb2222--agent1.md": note(OTHER_CHILD, "2026-09-21T11:00:00Z", LONG,
+                                             "parent_session: 'bbbb2222'\n"),
+        "notes/short.md": note(OTHER_SHORT, "2026-09-22T00:00:00Z", f"{SECRET_TEXT} tiny."),
+    }
+    for relative, text in files.items():
+        (other / relative).write_text(text.replace("collection: 'demo'", "collection: 'other'"), encoding="utf-8")
+
+
+def seeded_realm(root: Path) -> InMemoryCurateStore:
+    """Every note of every collection extracted at the current extractor version."""
+    store = InMemoryCurateStore()
+    for inv in build_inventory(root, git_collector=None).collections:
+        records = [r for g in inv.sessions for r in (g.session, *g.subagents)] + list(inv.notes)
+        for record in records:
+            store.put_extraction(Extraction(
+                note_id=record.note_id, content_hash=record.content_hash, extractor_version=extractor_version(),
+                collection=inv.profile.collection, note_path=record.path, result=()))
+    return store
+
+
+def test_a_narrowed_rerun_keeps_the_other_collections_links_and_scores(vault: Path, capsys) -> None:
+    add_other_collection(vault)
+    store = seeded_realm(vault)
+    code, _, err = run(vault, ["--realm", "projects"], capsys, store=store)
+    assert code == 0, err
+    target = report_path(vault)
+    before = target.read_bytes()
+    text = before.decode("utf-8")
+    assert f"- [ ] condense `{OTHER_CHILD}` [[projects/other/sessions/bbbb2222--agent1|2026-09-21]] — " in text
+    assert f"- [ ] prune `{OTHER_SHORT}` [[projects/other/notes/short|2026-09-22]] — " in text
+    assert "### other" in text.split("## Scores")[1]
+
+    code, out, err = run(vault, ["--realm", "projects", "--collection", "demo"], capsys, store=store)
+    assert code == 0, err
+    assert "projects/demo:" in out and "projects/other:" not in out  # only demo is scored
+    after = target.read_text(encoding="utf-8")
+    assert f"- [ ] condense `{OTHER_CHILD}` [[projects/other/sessions/bbbb2222--agent1|2026-09-21]] — " in after
+    assert f"- [ ] prune `{OTHER_SHORT}` [[projects/other/notes/short|2026-09-22]] — " in after
+    assert "### other" in after.split("## Scores")[1]
+    assert target.read_bytes() == before  # other's scores come from today's stored rows
+    assert "report: projects/curation/2026-09-27.md unchanged" in out

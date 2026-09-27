@@ -8,7 +8,8 @@ ticks in the realm's earlier curation reports, score every selected collection
 (``curate.note_scores``; the judge's importance only where the features
 disagree), store today's condense and prune proposals, tally every report and
 write ``<realm>/curation/<YYYY-MM-DD>.md`` (the clock's UTC day). ``--collection``
-narrows the scoring to one collection; the report still tallies the whole realm.
+narrows the scoring and proposing to one collection; the report still tallies and
+links the whole realm (inventoried again, without git, for its links and paths).
 
 Retrieval counts come from ``rag.retrieval_events``; when the database cannot
 give them, a warning says so and the run scores without them (the JSON report
@@ -41,7 +42,7 @@ from ..errors import IngestError
 from .dry_run_store import DryRunStore
 from .extract import extractor_version
 from .extract_plan import Budget
-from .inventory import GitCollector, VaultInventory, build_inventory
+from .inventory import GitCollector, Inventory, VaultInventory, build_inventory
 from .judge import Judge
 from .ledger import (
     EXIT_BUDGET,
@@ -102,6 +103,9 @@ def run(args: argparse.Namespace, *, git_collector: GitCollector | None, runner:
         collector = None if args.no_git else (git_collector or real_git_collector())
         found = build_inventory(args.path, realm=args.realm, collection=args.collection,
                                 git_collector=collector, runner=runner or default_runner)
+        # The page links every collection of the realm; git facts are not needed for that.
+        whole = found if args.collection is None else build_inventory(
+            args.path, realm=args.realm, git_collector=None, runner=runner or default_runner)
     except IngestError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_UNAVAILABLE
@@ -121,7 +125,7 @@ def run(args: argparse.Namespace, *, git_collector: GitCollector | None, runner:
                                            owned=True))
     spend = Spend(budget)
     try:
-        reports = _report_run(args, found, store, spend, judge, embedder, counts, clock)
+        reports = _report_run(args, found, whole, store, spend, judge, embedder, counts, clock)
     except IngestError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_UNAVAILABLE
@@ -139,8 +143,8 @@ def run(args: argparse.Namespace, *, git_collector: GitCollector | None, runner:
     return code
 
 
-def _report_run(args: argparse.Namespace, found: VaultInventory, store: CurateStore, spend: Spend,
-                judge: Judge | None, embedder: Any, counts: RetrievalCounts,
+def _report_run(args: argparse.Namespace, found: VaultInventory, whole: VaultInventory, store: CurateStore,
+                spend: Spend, judge: Judge | None, embedder: Any, counts: RetrievalCounts,
                 clock: Callable[[], datetime]) -> tuple[RealmReport, ...]:
     from .cli import _once, real_embedder, real_judge
 
@@ -152,10 +156,17 @@ def _report_run(args: argparse.Namespace, found: VaultInventory, store: CurateSt
         scorer_version=scorer_version(), extractor_version=extractor_version(),
     )
     working = DryRunStore(store) if args.dry_run else store
-    realms: dict[str, list] = {}
+    realms, everything = _by_realm(found), _by_realm(whole)
+    return tuple(report_realm(found.root, realm, realms[realm], working, context,
+                              realm_inventories=everything.get(realm, realms[realm]))
+                 for realm in sorted(realms))
+
+
+def _by_realm(found: VaultInventory) -> dict[str, list[Inventory]]:
+    realms: dict[str, list[Inventory]] = {}
     for inventory in found.collections:
         realms.setdefault(inventory.folder.split("/", 1)[0], []).append(inventory)
-    return tuple(report_realm(found.root, realm, realms[realm], working, context) for realm in sorted(realms))
+    return realms
 
 
 def exit_code(reports: tuple[RealmReport, ...], spend: Spend, *, refused: bool) -> int:
