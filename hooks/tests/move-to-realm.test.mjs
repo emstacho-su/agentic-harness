@@ -55,7 +55,7 @@ function noteText(fields, body = 'Body text.\n') {
 }
 
 function world({ harnessRealm = true } = {}) {
-  const root = toPosix(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'move-to-realm-'))));
+  const root = toPosix(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'move-to-realm-'))));
   const home = `${root}/home`;
   const tmp = `${root}/tmp`;
   const vault = `${home}/vault`;

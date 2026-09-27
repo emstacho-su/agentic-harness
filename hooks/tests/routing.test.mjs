@@ -40,7 +40,7 @@ function makeWorktree(root, mainGitDir, dir) {
 }
 
 function world({ harnessRealm = true } = {}) {
-  const root = toPosix(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'routing-'))));
+  const root = toPosix(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'routing-'))));
   const home = `${root}/home`;
   const tmp = `${root}/tmp`;
   const vault = `${home}/vault`;

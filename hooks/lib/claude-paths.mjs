@@ -66,7 +66,9 @@ function candidates(dir, rest, listDir) {
  * One ambiguity no directory listing can settle: a deleted `foo-web` beside a
  * live `foo` encodes exactly like a deleted `foo/web`, and decodes as the
  * latter. Deleted worktrees (`<project>-wt-<x>`) decode inside `<project>`,
- * which files them under that project either way.
+ * which files them under that project either way. And a cwd spelled with an
+ * 8.3 short name (`RUNNER~1`) matches no directory listing, which holds long
+ * names only; its unmatched rest becomes one segment, as for a deleted folder.
  */
 function decodeBelow(dir, rest, listDir, depth) {
   if (!rest) return { path: dir, complete: true };
