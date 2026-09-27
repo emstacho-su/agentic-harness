@@ -150,6 +150,22 @@ cases:
     expect: ["session-132a0a63-97a3-48f9-946b-2272d33e4171"]
     collection: agentic-harness
     realm: projects
+  # The 2026-09-24 dogfood query, kept as asked. It was the negative case
+  # neg-retrieval-provenance until unit P went live at L4 (2026-09-27); retired then (R-Q2).
+  # Answers, all read 2026-09-27: the unit P orchestrator session (sessions record their
+  # `retrievals`, ingest projects them into rag.retrieval_events), its T5 worker (that table's
+  # migration and projection) and its T6 worker (`ingest report retrievals`, one row per
+  # retrieval and result).
+  # misses today (not in the top 10). The top three are an Explore subagent that live-tested
+  # search capture with these words but does not say where searches are recorded
+  # (7ff708bd--ae0cc17...), an unrelated bb2dash session (0e3b3d00) and the sprint spec's
+  # web research (ed149251--a51c076...). The answers bury the topic in long task prompts and
+  # file lists: the boilerplate noise R-Q2's experiment (unit Q-b) measures.
+  - id: ah-retrieval-provenance
+    query: which chunks were retrieved by a session, retrieval logging, provenance
+    expect: ["session-121c6e49-aac3-4c95-820e-4ba0a217c8e5", "session-121c6e49-aac3-4c95-820e-4ba0a217c8e5--a3043b66f7fb60027", "session-121c6e49-aac3-4c95-820e-4ba0a217c8e5--aeb854f405ab3b939"]
+    collection: agentic-harness
+    realm: projects
 
   # -- coverage, 2026-09-24 (R-Q3): bb2dash ------------------------------------------
   # Outcome: Supabase is the source of truth; the desktop app is an Electron shell loading the same deployed URL.
@@ -445,11 +461,4 @@ cases:
     negative: true
   - id: neg-guitar
     query: how to tune a guitar by ear
-    negative: true
-  # Dogfood, 2026-09-24: this query returned six hits at cosine 0.72-0.74 from session
-  # boilerplate (`Commands run`, `Files created or modified`) although nothing in the store
-  # covered the topic. It is a negative case until unit P (retrieval provenance) goes live
-  # at L4; then it becomes a positive case and this one is retired (R-Q2).
-  - id: neg-retrieval-provenance
-    query: which chunks were retrieved by a session, retrieval logging, provenance
     negative: true
