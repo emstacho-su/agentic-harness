@@ -3,10 +3,14 @@
     uv run ingest report retrievals
     uv run ingest report retrievals --since 14d
     uv run ingest report retrievals --since 2026-09-10 --json > retrievals.json
+    uv run ingest report retrievals --json-out out/retrievals.json --html out/dashboard.html
 
 Read-only, in one read-only transaction. Sections: totals, most retrieved,
 never retrieved (whole store), empty-result queries, the similarity
 distribution, retrievals per collection, and cross-collection searches.
+``--json-out`` and ``--html`` also write the JSON and the dashboard page
+(retrieval_dashboard.py) to files, each replaced whole or not at all.
+Stdout is written as UTF-8 on every platform.
 """
 
 from __future__ import annotations
@@ -14,7 +18,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
+import tempfile
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,6 +29,7 @@ from typing import Any
 from .config import load_db_settings
 from .envfile import load_env_file
 from .errors import ConfigError, IngestError
+from .retrieval_dashboard import render_dashboard
 from .retrieval_report import fetch_report, parse_since
 from .store import connect_kwargs
 
@@ -58,13 +66,17 @@ def build_report_parser() -> argparse.ArgumentParser:
     retrievals.add_argument(
         "--limit", type=int, default=DEFAULT_LIMIT, help=f"rows per list (default {DEFAULT_LIMIT})"
     )
+    retrievals.add_argument("--json-out", default=None, help="also write the JSON to this file")
+    retrievals.add_argument("--html", default=None, help="also write the dashboard page to this file")
     retrievals.add_argument("--env-file", default=None, help="explicit .env path")
     retrievals.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     return parser
 
 
-def run_report(argv: list[str], *, connection=None) -> int:
-    """Run the subcommand. ``connection`` is injectable for tests."""
+def run_report(
+    argv: list[str], *, connection=None, clock: Callable[[], datetime] | None = None
+) -> int:
+    """Run the subcommand. ``connection`` and ``clock`` are injectable for tests."""
     args = build_report_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -75,9 +87,10 @@ def run_report(argv: list[str], *, connection=None) -> int:
         print("error: --limit must be at least 1", file=sys.stderr)
         return EXIT_USAGE
 
+    now = clock() if clock is not None else datetime.now(timezone.utc)
     owned = None
     try:
-        since = parse_since(args.since, datetime.now(timezone.utc)) if args.since is not None else None
+        since = parse_since(args.since, now) if args.since is not None else None
         if connection is None:
             load_env_file(Path(args.env_file) if args.env_file else None)
             owned = _connect()
@@ -93,8 +106,50 @@ def run_report(argv: list[str], *, connection=None) -> int:
         if owned is not None:
             owned.close()
 
-    print(json.dumps(report, indent=2, default=str) if args.json else _as_text(report, args.limit))
+    outputs = []
+    if args.json_out:
+        outputs.append((Path(args.json_out), _as_json(report) + "\n"))
+    if args.html:
+        outputs.append((Path(args.html), render_dashboard(report, generated_at=now.isoformat(timespec="seconds"))))
+    for path, content in outputs:
+        try:
+            _write_whole(path, content)
+        except OSError as exc:
+            print(f"error: could not write {path}: {exc.strerror or exc}", file=sys.stderr)
+            return EXIT_FAILED
+        logging.getLogger(__name__).info("wrote %s", path)
+
+    _utf8_stdout()
+    print(_as_json(report) if args.json else _as_text(report, args.limit))
     return EXIT_OK
+
+
+def _as_json(report: dict[str, Any]) -> str:
+    return json.dumps(report, indent=2, default=str)
+
+
+def _write_whole(path: Path, content: str) -> None:
+    """UTF-8, LF, through a temp file beside the target, so a failure leaves no partial file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+        os.replace(temp, path)
+    except BaseException:
+        Path(temp).unlink(missing_ok=True)
+        raise
+
+
+def _utf8_stdout() -> None:
+    """The Windows console defaults to a legacy code page, where `·` printed as `�`."""
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is None:
+        return
+    try:
+        reconfigure(encoding="utf-8")
+    except (ValueError, OSError):
+        pass
 
 
 def _connect():
