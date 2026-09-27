@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { AREAS, HUB_NOTE_TYPE, SESSIONS_DIR } from './constants.mjs';
+import { AREAS, HUB_NOTE_TYPE, LEGACY_HUB_FILENAME, SESSIONS_DIR } from './constants.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { hubFilename } from './links.mjs';
 import { noteFilename } from './note.mjs';
@@ -18,9 +18,6 @@ import { isSafeFilenameSegment, yamlStr } from './text.mjs';
 
 /** A resume chain longer than this is a bug, not a work pattern. */
 export const MAX_RESUME_INDEX = 50;
-
-/** A hub's name before SC-3; see the transitional branch in `ensureIndex`. */
-const LEGACY_HUB_FILENAME = 'index.md';
 
 /**
  * Read a note.

@@ -162,3 +162,17 @@ test('withLinks: a hand-mangled supersedes that is not a list is tolerated', () 
   const linked = withLinks({ ...BASE, supersedes: 'session-abc' }, 'projects');
   assert.deepEqual(linked.related, []);
 });
+
+test('a pass that knows no parent keeps a worker link already qualified for the same parent (review #3)', () => {
+  const parentId = '11111111-1111-4111-8111-111111111111';
+  const up = `[[projects/agentic-harness/sessions/${parentId}|2026-09-24 · agentic-harness · build it]]`;
+  const fields = withLinks({ parent_session: parentId, collection: 'misc', up }, 'projects', 'misc');
+  assert.equal(fields.up, up);
+});
+
+test('an up naming another parent is re-derived, not kept', () => {
+  const parentId = '11111111-1111-4111-8111-111111111111';
+  const up = '[[projects/misc/sessions/22222222-2222-4222-8222-222222222222|old]]';
+  const fields = withLinks({ parent_session: parentId, collection: 'misc', up }, 'projects', 'misc');
+  assert.equal(fields.up, `[[projects/misc/sessions/${parentId}]]`);
+});

@@ -20,13 +20,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { AREAS, HUB_NOTE_TYPE, SESSIONS_DIR } from './constants.mjs';
+import { AREAS, HUB_NOTE_TYPE, LEGACY_HUB_FILENAME, SESSIONS_DIR } from './constants.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { runGitSync } from './git-log.mjs';
 import { hubFilename } from './links.mjs';
-
-/** The hub's name before SC-3. */
-const OLD_HUB_FILENAME = 'index.md';
 
 /** Obsidian's settings and git's store are not notes; everything else is walked. */
 const SKIPPED_DIRS = new Set(['.obsidian', '.git']);
@@ -87,10 +84,16 @@ export function rewriteUpLines(raw, targets) {
   return changes.length ? { text: rewritten.join(''), changes } : unchanged;
 }
 
-function listDir(dir) {
+/**
+ * A folder's entries, sorted. A folder that is not there has none; one that is
+ * there and cannot be read goes to `onError`, because on an unmounted or busy
+ * OneDrive "nothing to do" would be a lie the `--check` gate then believes.
+ */
+function listDir(dir, onError) {
   try {
     return fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
-  } catch {
+  } catch (err) {
+    if (err?.code !== 'ENOENT') onError(dir, err?.code || err?.message || 'unreadable');
     return [];
   }
 }
@@ -103,11 +106,15 @@ const isFile = (file) => {
   }
 };
 
-/** Every `.md` under the realms, sorted, as `{file, rel}`. */
-export function listRealmNotes(vault) {
+/**
+ * Every `.md` under the realms, sorted, as `{file, rel}`. A folder that
+ * cannot be read is added to `unreadable` as `{path, error}`.
+ */
+export function listRealmNotes(vault, unreadable = []) {
   const notes = [];
+  const onError = (dir, error) => unreadable.push({ path: toVaultRel(vault, dir), error });
   const walk = (dir) => {
-    for (const entry of listDir(dir)) {
+    for (const entry of listDir(dir, onError)) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory() && !SKIPPED_DIRS.has(entry.name)) walk(full);
       else if (entry.isFile() && entry.name.endsWith('.md')) notes.push({ file: full, rel: toVaultRel(vault, full) });
@@ -161,24 +168,25 @@ function planHubs(vault, runGit) {
   const targets = new Set();
   for (const area of AREAS) {
     const realmDir = path.join(vault, area);
-    const collections = listDir(realmDir).filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'));
+    // A realm that cannot be listed is reported once, by planRewrites's walk.
+    const collections = listDir(realmDir, () => {}).filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'));
     let git = null; // asked once, and only if a realm has a hub to move
     for (const { name: collection } of collections) {
       const hubName = hubFilename(collection);
-      const from = path.join(realmDir, collection, OLD_HUB_FILENAME);
+      const from = path.join(realmDir, collection, LEGACY_HUB_FILENAME);
       const to = path.join(realmDir, collection, hubName);
       if (!isFile(from)) {
         if (hubName && isHub(to)) targets.add(`${area}/${collection}`);
         continue;
       }
-      if (hubName.toLowerCase() === OLD_HUB_FILENAME) continue; // a collection called `index` is already named for itself
+      if (hubName.toLowerCase() === LEGACY_HUB_FILENAME) continue; // a collection called `index` is already named for itself
       if (!hubName) {
         refused.push({ path: toVaultRel(vault, from), error: 'collection name is not a safe filename' });
       } else if (fs.existsSync(to)) {
         refused.push({ path: toVaultRel(vault, from), error: `${toVaultRel(vault, to)} already exists` });
       } else {
         git ??= isGitRealm(realmDir, runGit);
-        const fromRealm = `${collection}/${OLD_HUB_FILENAME}`;
+        const fromRealm = `${collection}/${LEGACY_HUB_FILENAME}`;
         const method = git && isTracked(realmDir, fromRealm, runGit) ? 'git mv' : 'rename';
         moves.push({ area, collection, realmDir, fromRealm, toRealm: `${collection}/${hubName}`, file: from, toFile: to,
           from: toVaultRel(vault, from), to: toVaultRel(vault, to), method });
@@ -193,7 +201,7 @@ function planHubs(vault, runGit) {
 function planRewrites(vault, targets) {
   const rewrites = [];
   const unreadable = [];
-  for (const { file, rel } of listRealmNotes(vault)) {
+  for (const { file, rel } of listRealmNotes(vault, unreadable)) {
     const note = readNoteText(file);
     if (note.error) {
       unreadable.push({ path: rel, error: note.error });
@@ -328,7 +336,8 @@ function tallyByParent(pending) {
  *            pendingByParent: object[], unreadable: object[]}}
  */
 export function checkUpLinks({ vault }) {
-  const notes = listRealmNotes(vault);
+  const unreadable = [];
+  const notes = listRealmNotes(vault, unreadable);
   const stems = new Set();
   for (const { rel } of notes) {
     const parts = rel.split('/');
@@ -338,7 +347,6 @@ export function checkUpLinks({ vault }) {
 
   const broken = [];
   const pending = [];
-  const unreadable = [];
   let checked = 0;
   for (const { file, rel } of notes) {
     const note = readNoteText(file);

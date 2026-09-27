@@ -145,6 +145,12 @@ export const SUBAGENTS_DIR = 'subagents';
  */
 export const HUB_NOTE_TYPE = 'index';
 
+/**
+ * A hub's name before SC-3. It stays readable until `rename-hubs.mjs --apply`
+ * has run on the live vault; see the transitional branch in `ensureIndex`.
+ */
+export const LEGACY_HUB_FILENAME = 'index.md';
+
 /** `collection_source:` — how the collection name was decided. */
 export const COLLECTION_FROM_GIT = 'git';
 export const COLLECTION_FROM_FOLDER = 'folder';

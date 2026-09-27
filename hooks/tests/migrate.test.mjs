@@ -415,3 +415,18 @@ test('a move that would overwrite an existing note is refused', () => {
     sandbox.cleanup();
   }
 });
+
+test('a retired folder whose hub is still the legacy index.md is removed too (review #8)', () => {
+  const sandbox = createSandbox();
+  try {
+    installV1Notes(sandbox);
+    const retired = path.join(sandbox.vaultRoot, 'projects', 'bb2dash-retrieval');
+    fs.renameSync(path.join(retired, 'bb2dash-retrieval.md'), path.join(retired, 'index.md'));
+
+    const output = runMigration(sandbox, ['--backup', path.join(sandbox.root, 'backup')]);
+    assert.doesNotMatch(output, /unexpected contents/);
+    assert.equal(fs.existsSync(retired), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});

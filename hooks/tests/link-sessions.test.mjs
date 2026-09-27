@@ -94,3 +94,12 @@ test('a second run changes nothing', (t) => {
   assert.equal(again.unchanged, 2);
   assert.deepEqual(again.indexes, []);
 });
+
+test('a collection whose hub is still the legacy index.md is not counted as a hub to create (review #9)', (t) => {
+  const { vault, backup } = scratchVault(t);
+  fs.writeFileSync(path.join(vault, 'projects', 'bb2dash', 'index.md'), "---\ntype: index\n---\n", 'utf8');
+
+  assert.deepEqual(linkSessions({ vault, dryRun: true, ensureIndexes: true }).indexes, []);
+  assert.deepEqual(linkSessions({ vault, backup, ensureIndexes: true }).indexes, []);
+  assert.ok(!fs.existsSync(path.join(vault, 'projects', 'bb2dash', 'bb2dash.md')));
+});

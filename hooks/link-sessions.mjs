@@ -29,7 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { DEFAULT_VAULT_SEGMENTS, VAULT_ENV_VAR } from './lib/constants.mjs';
+import { DEFAULT_VAULT_SEGMENTS, LEGACY_HUB_FILENAME, VAULT_ENV_VAR } from './lib/constants.mjs';
 import { relinkNote } from './lib/link-notes.mjs';
 import { hubFilename } from './lib/links.mjs';
 import { ensureIndex } from './lib/notes-io.mjs';
@@ -120,15 +120,17 @@ export function linkSessions({ vault, backup = '', dryRun = false, ensureIndexes
   if (ensureIndexes) {
     const collections = new Map(notes.map((note) => [`${note.area}/${note.collection}`, note]));
     for (const [key, note] of collections) {
-      const hubPath = path.join(vault, note.area, note.collection, hubFilename(note.collection));
-      if (fs.existsSync(hubPath)) continue;
+      const folder = path.join(vault, note.area, note.collection);
+      const hubPath = path.join(folder, hubFilename(note.collection));
+      // A legacy `index.md` is this collection's hub until rename-hubs runs.
+      if (fs.existsSync(hubPath) || fs.existsSync(path.join(folder, LEGACY_HUB_FILENAME))) continue;
       if (dryRun) {
         report.indexes.push(key);
         continue;
       }
       const created = ensureIndex(vault, note.area, note.collection);
-      if (created.ok) report.indexes.push(key);
-      else report.refused.push({ path: hubPath, error: created.error });
+      if (!created.ok) report.refused.push({ path: hubPath, error: created.error });
+      else if (created.created) report.indexes.push(key);
     }
   }
 

@@ -131,14 +131,34 @@ export function hubLink(area, collection) {
 export function withLinks(fields, area, collection = fields.collection, parent = {}) {
   const supersedes = Array.isArray(fields.supersedes) ? fields.supersedes : [];
   const related = [fields.resumed_from, ...supersedes].map(sessionLink).filter(Boolean);
-  return {
-    ...fields,
-    up:
-      parentLink(fields.parent_session, {
-        area: parent.area || area,
-        collection: parent.collection || collection,
-        title: parent.title,
-      }) || hubLink(area, collection),
-    related: [...new Set(related)],
-  };
+  const knowsParent = Boolean(parent.area || parent.collection || parent.title);
+  const up =
+    (!knowsParent && keptParentLink(fields.up, fields.parent_session)) ||
+    parentLink(fields.parent_session, {
+      area: parent.area || area,
+      collection: parent.collection || collection,
+      title: parent.title,
+    }) ||
+    hubLink(area, collection);
+  return { ...fields, up, related: [...new Set(related)] };
+}
+
+/**
+ * The note's own `up`, when it already names this parent session by path.
+ * `SubagentStop` wrote it knowing where the parent files and what it is
+ * called; a later pass that knows neither (the backfill, `link-sessions`)
+ * would re-derive it from the worker's folder and drop the alias.
+ */
+function keptParentLink(up, parentSession) {
+  const sessionId = String(parentSession ?? '');
+  if (typeof up !== 'string' || !SESSION_ID.test(sessionId)) return '';
+  const target = up.match(/^\[\[([^\]|]+)(?:\|[^\]]*)?\]\]$/)?.[1] ?? '';
+  const [realm, collection, folder, stem, ...rest] = target.split('/');
+  const qualified =
+    rest.length === 0 &&
+    AREAS.includes(realm) &&
+    isSafeFilenameSegment(collection) &&
+    folder === SESSIONS_DIR &&
+    stem === sessionId;
+  return qualified ? up : '';
 }

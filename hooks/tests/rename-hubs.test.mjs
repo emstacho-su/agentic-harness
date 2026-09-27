@@ -356,3 +356,19 @@ test('a hub whose move fails keeps its links: nothing points at a hub that is no
   assert.ok(report.refused.some((r) => r.path === 'projects/bb2dash/index.md' && /git mv failed \(exit 128: fatal: boom\)/.test(r.error)));
   assert.ok(report.refused.some((r) => r.path === 'classes/ist323/materials/week-3.md' && /hub move failed/.test(r.error)));
 });
+
+test('a realm that cannot be listed is reported, not taken for an empty one (review #10)', (t) => {
+  const { vault } = scratchVault(t);
+  fs.rmSync(path.join(vault, 'classes'), { recursive: true, force: true });
+  fs.writeFileSync(path.join(vault, 'classes'), 'not a folder', 'utf8');
+
+  const report = renameHubs({ vault, apply: false });
+  assert.ok(report.unreadable.some((entry) => entry.path === 'classes'), JSON.stringify(report.unreadable));
+  assert.ok(checkUpLinks({ vault }).unreadable.some((entry) => entry.path === 'classes'));
+});
+
+test('a realm that is simply absent is not an error', (t) => {
+  const { vault } = scratchVault(t);
+  fs.rmSync(path.join(vault, 'classes'), { recursive: true, force: true });
+  assert.ok(!renameHubs({ vault, apply: false }).unreadable.some((entry) => entry.path === 'classes'));
+});
