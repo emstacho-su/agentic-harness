@@ -320,6 +320,89 @@ matcher does the filtering. Its real name is confirmed at L2 from the
 | `HARNESS_STATE_DIR` | where the start record goes, default `~/.harness/state` |
 | `HARNESS_VAULT` | vault root the brief is read from, as for capture |
 
+## claude-config: `~/.claude` as a private repo (R-H5)
+
+`~/.claude` is half of the harness (CLAUDE.md, rules, skills) and also holds
+live credentials, every prompt ever typed and per-project memory. So it travels
+through a private repo, `emstacho-su/claude-config`, built from an allowlist and
+nothing else: `CLAUDE.md`, `rules/`, `skills/`, `skill-vault/`, and a generated
+`settings.template.json` holding only `hooks` and `permissions`, with the home
+folder written as `{{HOME}}`. A denylist (`.credentials.json`, `history.jsonl`,
+`projects/`, `settings.json`, `.env*`, `node_modules/`, keys, logs, …) is refused
+on every path segment even inside an allowlisted folder. The lists and the
+planning are `lib/claude-config.mjs`; two CLIs sit on top.
+
+```bash
+node hooks/export-config.mjs --list-findings   # every secret-scan finding, with the entry that would accept it
+node hooks/export-config.mjs --dry-run         # the file list: new, changed, deleted, refused, skipped
+node hooks/export-config.mjs --apply           # mirror into ~/claude-config and commit (never pushes)
+node hooks/install.mjs --config --dry-run      # what placing ~/claude-config into ~/.claude would change
+node hooks/install.mjs --config --apply        # do it (bootstrap step 7)
+```
+
+Both take `--config-repo <dir>` (default `~/claude-config`); the exporter takes
+`--source <claudeDir>` and the installer `--target <claudeDir>` (default
+`~/.claude`) and `--node <node.exe>`.
+
+**Export.** The clone must already exist; creating the GitHub repo is live
+step L2, so a folder that is not the top of a git checkout is refused with the
+`gh repo create emstacho-su/claude-config --private` and `git clone` lines to
+run once it is approved. The scan runs first, over every file it would copy and
+the template it would write, with the capture hook's rules (`lib/redact.mjs`);
+any finding the exceptions list does not cover prints `path:line rule` (never
+the value) and stops the run with nothing copied. `--apply` then copies new and
+changed files (each read back by SHA-256), deletes files inside the clone's
+allowlisted folders that the source no longer exports (never anything in
+`~/.claude`), writes the template and a `.gitattributes` of `* -text`, and runs
+`git add -A` and `git commit`. It refuses first if the clone holds anything at
+its top level beyond the allowlist, `.git` and the meta files (`README.md`,
+`.gitignore`, `.gitattributes`, `.scan-exceptions.json`), and if the source has
+no allowlisted files at all, which would otherwise read as "delete everything".
+The push is L2's, by hand.
+
+**Exceptions.** `<clone>/.scan-exceptions.json` is a JSON list of
+`{"path", "rule", "line", "sha256"}` (plus an optional `"reason"`), where
+`sha256` is of the file's whole content. A finding is excepted only when all
+four match, so any edit to the file brings it back for another read.
+`--list-findings` prints each finding followed by its would-be entry; Stack
+reads them and pastes the ones he accepts. No tool writes this file. The
+`.gitattributes` exists for it: without `* -text`, git's line-ending conversion
+would change the bytes, and with them the hash, between this machine and the next.
+
+**The pre-commit hook.** `--apply` installs `.git/hooks/pre-commit` in the
+clone (idempotent; a pre-commit hook that is not ours is never overwritten, the
+run refuses instead, and so does a `core.hooksPath` that points outside the
+clone's `.git`). It runs `export-config.mjs --pre-commit`, which reads the
+staged tree with one `git cat-file --batch` and refuses the commit on a staged
+path outside the allowlist, a denylisted path, a symlink or submodule, or a
+secret finding that `.scan-exceptions.json` (the working-tree copy) does not
+cover. A commit made by hand is held to the same rules as an export. The hook
+finds node and this checkout by the absolute paths baked in when it was
+installed (`process.execPath`, and the checkout `export-config.mjs` ran from);
+`HARNESS_NODE` and `HARNESS_REPO` override them at commit time. If the script is
+not there, the hook refuses the commit: a gate that cannot run must not pass. So
+run the export from the main checkout, not a worktree that will be deleted.
+
+**Install.** `install.mjs --config` walks the clone through the same
+allowlist and denylist (`planInstall`), scans it again with the same exceptions,
+and refuses the whole apply on a finding, a denylisted path in the repo, or a
+write that would pass through a link. Files it overwrites are copied first to
+`~/.claude/config-backup-<stamp>/`; nothing in `~/.claude` is ever deleted.
+The template is rendered for this home and merged into `~/.claude/settings.json`
+add-only: a hook entry is added when no entry for that event runs the same
+script (recognised by `commandScript`, so slashes, case and the node in front
+do not matter), a permissions list gains the rules it lacks, a permissions
+setting this machine lacks is added and one it has is kept; every other key is
+left alone. A template hook whose node path does not exist here is rewritten to
+`--node` (default: the node running the installer). The write is a temporary
+file and a rename, with the old file in the backup folder. A second run changes
+nothing.
+
+`node hooks/doctor.mjs` has a `claude-config` row: no clone is informational; a
+clone whose origin is not `emstacho-su/claude-config` (or has none) is a
+problem; otherwise it shows the last commit's age and whether
+`.scan-exceptions.json` exists.
+
 ## The one-time migration
 
 ```bash
@@ -398,6 +481,9 @@ second run finds nothing to move. The runbook is in `docs/portable.md`.
 | `unc.test.mjs` | no path that resolves onto another host is ever touched |
 | `install.test.mjs` | the deploy payload is exactly both entry points' transitive imports; SessionStart registered once, end to end in a scratch folder |
 | `enqueue-ingest.test.mjs` | the detached `ingest --only` start: argv array, several notes in one spawn, absolute `uv`, kill switch, never throws |
+| `claude-config*.test.mjs` | R-H5: allowlist, denylist, secret scan, template; the exceptions match, the mirror plan, the settings merge |
+| `export-config.test.mjs` | export into a temp clone: scan first, exceptions by hash, mirror and delete inside the clone only, commit and never push, the pre-commit hook |
+| `install-config.test.mjs` | `install.mjs --config`: dry run, backups, never deletes, refusals, settings merge idempotent |
 
 The golden notes are approval tests. When one changes, read the diff: it is a
 change to what `ingest` stores and what retrieval can filter on.

@@ -11,7 +11,8 @@
  *
  * Pure planning only. Nothing here writes a file; the CLIs built on top
  * (`install.mjs --config`, `export-config.mjs`) do the copying, and refuse to
- * commit when `scanForSecrets` finds anything.
+ * commit when `scanForSecrets` finds anything that the reviewed
+ * `.scan-exceptions.json` does not cover.
  */
 
 import crypto from 'node:crypto';
@@ -19,7 +20,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { findSecretMatches } from './redact.mjs';
+import { commandScript } from './settings.mjs';
 import { toPosix } from './text.mjs';
+
+/** The private GitHub repo the config lives in. Creating it is live step L2. */
+export const CONFIG_REPO_SLUG = 'emstacho-su/claude-config';
 
 /** The generated, secret-free half of settings.json that travels instead of it. */
 export const SETTINGS_TEMPLATE_FILE = 'settings.template.json';
@@ -150,6 +155,110 @@ function lineAt(text, index) {
 }
 
 // ---------------------------------------------------------------------------
+// .scan-exceptions.json: findings Stack has read and accepted
+// ---------------------------------------------------------------------------
+
+/** The reviewed exceptions list, at the root of the config repo. The tools read it; only a person writes it. */
+export const SCAN_EXCEPTIONS_FILE = '.scan-exceptions.json';
+
+/** Top-level repo files that may sit beside the allowlist. They are never installed. */
+export const REPO_META_FILES = Object.freeze(['.gitattributes', '.gitignore', 'README.md', SCAN_EXCEPTIONS_FILE]);
+
+const EXCEPTION_KEYS = Object.freeze(['path', 'rule', 'line', 'sha256']);
+/** A free-text note on why the finding was accepted; read by people, ignored by the match. */
+const EXCEPTION_OPTIONAL_KEYS = Object.freeze(['reason']);
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/**
+ * The exceptions list, validated. An empty file is an empty list; anything
+ * else that is not exactly a list of `{path, rule, line, sha256[, reason]}`
+ * throws, because a typo that silently excepted nothing would look like a
+ * scanner bug, and one that silently excepted everything would be worse.
+ */
+export function parseScanExceptions(text) {
+  if (typeof text !== 'string' || text.trim() === '') return Object.freeze([]);
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${SCAN_EXCEPTIONS_FILE} is not valid JSON: ${error.message}`);
+  }
+  if (!Array.isArray(parsed)) throw new Error(`${SCAN_EXCEPTIONS_FILE} must be a JSON list of {path, rule, line, sha256}`);
+  return Object.freeze(parsed.map(checkException));
+}
+
+function checkException(entry, index) {
+  const where = `${SCAN_EXCEPTIONS_FILE} entry ${index}`;
+  if (!isPlainObject(entry)) throw new Error(`${where} must be an object`);
+  const unknown = Object.keys(entry).find((key) => !EXCEPTION_KEYS.includes(key) && !EXCEPTION_OPTIONAL_KEYS.includes(key));
+  if (unknown) throw new Error(`${where} has an unknown key "${unknown}"`);
+  if (typeof entry.path !== 'string' || entry.path === '') throw new Error(`${where}: path must be a non-empty string`);
+  if (typeof entry.rule !== 'string' || entry.rule === '') throw new Error(`${where}: rule must be a non-empty string`);
+  if (!Number.isInteger(entry.line) || entry.line < 1) throw new Error(`${where}: line must be a whole number from 1`);
+  if (typeof entry.sha256 !== 'string' || !SHA256_HEX.test(entry.sha256)) {
+    throw new Error(`${where}: sha256 must be 64 lowercase hex characters`);
+  }
+  return exceptionEntry(entry, entry.sha256);
+}
+
+/** What `--list-findings` prints for a finding: exactly the four fields a match needs, never the value. */
+export function exceptionEntry(finding, sha256) {
+  return Object.freeze({ path: finding.path, rule: finding.rule, line: finding.line, sha256 });
+}
+
+/**
+ * Split findings into those an exception covers and those it does not.
+ *
+ * A finding is excepted only when path, rule, line AND the scanned content's
+ * SHA-256 all match an entry, so any edit to the file, even one elsewhere in
+ * it, brings the finding back for another read.
+ *
+ * @param {(path: string) => string|undefined} hashOf  the hash of the content that was scanned
+ */
+export function partitionFindings(findings, exceptions, hashOf) {
+  if (!Array.isArray(findings) || !Array.isArray(exceptions) || typeof hashOf !== 'function') {
+    throw new TypeError('partitionFindings(findings[], exceptions[], hashOf)');
+  }
+  const key = (p, rule, line, hash) => `${p}\0${rule}\0${line}\0${hash}`;
+  const accepted = new Set(exceptions.map((e) => key(e.path, e.rule, e.line, e.sha256)));
+  const isExcepted = (f) => accepted.has(key(f.path, f.rule, f.line, hashOf(f.path)));
+  return Object.freeze({
+    unexcepted: Object.freeze(findings.filter((f) => !isExcepted(f))),
+    excepted: Object.freeze(findings.filter(isExcepted)),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Which paths the repo may hold at all
+// ---------------------------------------------------------------------------
+
+const ALLOWED_TOP_FILES = Object.freeze(ALLOWLIST.filter((e) => e.kind !== 'dir').map((e) => e.path));
+const ALLOWED_TOP_DIRS = Object.freeze(ALLOWLIST.filter((e) => e.kind === 'dir').map((e) => e.path));
+
+/**
+ * Why a file may not be committed to the config repo, or null when it may.
+ *
+ * The allowlist and the repo's own meta files, matched exactly (git paths are
+ * case-sensitive), then the denylist on every segment. The pre-commit hook
+ * runs this over the staged tree, so a hand-made commit is held to the same
+ * list as an export.
+ *
+ * @returns {null|'not-allowlisted'|`denylist:${string}`}
+ */
+export function repoPathRule(relPath) {
+  const segments = toPosix(String(relPath ?? '')).split('/');
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return 'not-allowlisted';
+  const [top] = segments;
+  const allowed =
+    segments.length === 1
+      ? ALLOWED_TOP_FILES.includes(top) || REPO_META_FILES.includes(top)
+      : ALLOWED_TOP_DIRS.includes(top);
+  if (!allowed) return 'not-allowlisted';
+  const rule = denylistRule(segments.join('/'));
+  return rule ? `denylist:${rule}` : null;
+}
+
+// ---------------------------------------------------------------------------
 // settings.template.json
 // ---------------------------------------------------------------------------
 
@@ -215,6 +324,136 @@ function mapStrings(value, fn) {
 }
 
 // ---------------------------------------------------------------------------
+// Merging a rendered template into a machine's settings.json
+// ---------------------------------------------------------------------------
+
+/**
+ * `settings` with the template's hooks and permissions added, as a new object.
+ *
+ * Add-only, like the hook installer's merge: a hook entry is added when no
+ * entry for that event already runs the same script (recognised by
+ * `commandScript`, so slashes, case and the node in front do not matter); a
+ * permissions list gains the rules it lacks; a permissions setting the machine
+ * does not have is added, one it has is kept. Nothing is removed and every
+ * other key is left as it was, so a second merge changes nothing.
+ *
+ * A template hook whose executable is a node path that does not exist here
+ * (`exists`) is rewritten to run `nodePath`: the template carries the node of
+ * the machine that exported it.
+ *
+ * @returns {{settings, hooksAdded: {event, script}[], nodeRewritten: {event, from, to}[],
+ *   permissionsAdded: {key, value}[], permissionsKept: {key}[], changed: boolean}}
+ */
+export function mergeSettingsTemplate(settings, template, { nodePath, exists = fs.existsSync } = {}) {
+  requirePlainObject(template, 'template');
+  if (typeof nodePath !== 'string' || nodePath === '') throw new TypeError('mergeSettingsTemplate needs a nodePath');
+  const source = isPlainObject(settings) ? settings : {};
+  const hooks = mergeHooks(source.hooks, template.hooks, { nodePath, exists });
+  const permissions = mergePermissions(source.permissions, template.permissions);
+  const changed = hooks.changed || permissions.changed;
+  const next = {
+    ...source,
+    ...(hooks.changed ? { hooks: hooks.value } : {}),
+    ...(permissions.changed ? { permissions: permissions.value } : {}),
+  };
+  return {
+    settings: changed ? next : source,
+    hooksAdded: hooks.added,
+    nodeRewritten: hooks.rewritten,
+    permissionsAdded: permissions.added,
+    permissionsKept: permissions.kept,
+    changed,
+  };
+}
+
+function mergeHooks(current, template, { nodePath, exists }) {
+  const none = { changed: false, value: current, added: [], rewritten: [] };
+  if (template === undefined) return none;
+  requirePlainObject(template, 'template hooks');
+  if (current !== undefined) requirePlainObject(current, 'settings.json hooks');
+  const value = { ...(current ?? {}) };
+  const added = [];
+  const rewritten = [];
+  for (const [event, groups] of Object.entries(template)) {
+    if (!Array.isArray(groups)) throw new TypeError(`template hooks.${event} must be a list`);
+    const seen = new Set(hookEntries(value[event]).map(entryKey));
+    const newGroups = groups.flatMap((group) => {
+      const missing = hookEntries([group]).filter((entry) => !seen.has(entryKey(entry)));
+      missing.forEach((entry) => seen.add(entryKey(entry)));
+      if (missing.length === 0) return [];
+      const entries = missing.map((entry) => withMachineNode(entry, { nodePath, exists }));
+      entries.forEach(({ from }) => from && rewritten.push({ event, from, to: toPosix(nodePath) }));
+      missing.forEach((entry) => added.push({ event, script: commandScript(entry.command) }));
+      return [{ ...group, hooks: entries.map(({ entry }) => entry) }];
+    });
+    if (newGroups.length) value[event] = [...(Array.isArray(value[event]) ? value[event] : []), ...newGroups];
+  }
+  return added.length ? { changed: true, value, added, rewritten } : none;
+}
+
+function hookEntries(groups) {
+  if (!Array.isArray(groups)) return [];
+  return groups.flatMap((group) => (group && Array.isArray(group.hooks) ? group.hooks : [])).filter(isPlainObject);
+}
+
+/** A command entry is its script (or its whole command when it runs none); anything else, its JSON. */
+function entryKey(entry) {
+  if (entry.type === 'command' && typeof entry.command === 'string') {
+    return `command\0${comparablePath(commandScript(entry.command) || entry.command)}`;
+  }
+  return `other\0${JSON.stringify(entry)}`;
+}
+
+/** The executable of a command line: a leading double-quoted run, or the first bare word. */
+const LEADING_WORD = /^\s*(?:"([^"]*)"|(\S+))/;
+const NODE_EXECUTABLE = /^node(?:\.exe)?$/i;
+
+/** `{entry, from}`: the entry, with a missing node path swapped for `nodePath`; `from` is what was swapped. */
+function withMachineNode(entry, { nodePath, exists }) {
+  if (entry.type !== 'command' || typeof entry.command !== 'string') return { entry };
+  const match = LEADING_WORD.exec(entry.command);
+  const executable = match ? (match[1] ?? match[2]) : '';
+  const isNodePath = /[\\/]/.test(executable) && NODE_EXECUTABLE.test(path.basename(toPosix(executable)));
+  if (!isNodePath || exists(executable)) return { entry };
+  const command = `"${toPosix(nodePath)}"${entry.command.slice(match[0].length)}`;
+  return { entry: { ...entry, command }, from: executable };
+}
+
+function mergePermissions(current, template) {
+  const none = { changed: false, value: current, added: [], kept: [] };
+  if (template === undefined) return none;
+  requirePlainObject(template, 'template permissions');
+  if (current !== undefined) requirePlainObject(current, 'settings.json permissions');
+  const value = { ...(current ?? {}) };
+  const added = [];
+  const kept = [];
+  for (const [key, wanted] of Object.entries(template)) {
+    const have = value[key];
+    if (have === undefined) {
+      value[key] = Array.isArray(wanted) ? [...wanted] : wanted;
+      added.push(...(Array.isArray(wanted) ? wanted.map((item) => ({ key, value: item })) : [{ key, value: wanted }]));
+    } else if (Array.isArray(wanted) && Array.isArray(have)) {
+      const present = new Set(have.map(comparableRule));
+      const missing = wanted.filter((item) => !present.has(comparableRule(item)));
+      if (missing.length) value[key] = [...have, ...missing];
+      added.push(...missing.map((item) => ({ key, value: item })));
+    } else if (JSON.stringify(have) !== JSON.stringify(wanted)) {
+      kept.push({ key });
+    }
+  }
+  return { changed: added.length > 0, value: added.length ? value : current, added, kept };
+}
+
+/** Two spellings of one path-bearing rule are one rule: `Read(C:\x\**)` and `Read(C:/x/**)`. */
+function comparableRule(item) {
+  return typeof item === 'string' ? toPosix(item) : JSON.stringify(item);
+}
+
+function comparablePath(value) {
+  return toPosix(value).toLowerCase();
+}
+
+// ---------------------------------------------------------------------------
 // planInstall
 // ---------------------------------------------------------------------------
 
@@ -267,6 +506,34 @@ function readTemplate(configRepoDir, home) {
     throw new Error(`${SETTINGS_TEMPLATE_FILE} in ${configRepoDir} is not valid JSON: ${error.message}`);
   }
   return renderSettingsTemplate(parsed, { home });
+}
+
+/**
+ * What exporting `sourcePlan` (a `planExport` result) into the clone at
+ * `cloneDir` writes and deletes.
+ *
+ * Writes carry the same new/changed/unchanged/blocked status as an install. A
+ * deletion is anything the clone holds under an allowlisted entry that the
+ * source no longer exports: files, links and denylisted paths alike, so a stale
+ * hazard in the clone is removed rather than kept. Nothing outside the
+ * allowlisted entries (the `.git` folder, README, the exceptions list) is ever
+ * a deletion. A clone path that differs from a source path only in case is
+ * kept: on Windows they are the same file.
+ *
+ * @returns frozen {writes: {path, size, sha256, source, target, status, reason?}[],
+ *   deletions: {path, target}[]}
+ */
+export function planMirror(sourcePlan, cloneDir) {
+  if (!sourcePlan || !Array.isArray(sourcePlan.files)) throw new TypeError('planMirror needs a planExport result');
+  requireDirectory(cloneDir, 'cloneDir');
+  const writes = sourcePlan.files.map((file) => ({ ...file, ...installStatus(cloneDir, file) }));
+  const exported = new Set(sourcePlan.files.map((file) => file.path.toLowerCase()));
+  const walked = walkAllowlisted(cloneDir);
+  const deletions = [...walked.files, ...walked.refused, ...walked.skipped]
+    .filter((entry) => !exported.has(entry.path.toLowerCase()))
+    .map((entry) => ({ path: entry.path, target: path.join(cloneDir, ...entry.path.split('/')) }))
+    .sort((a, b) => compareText(a.path, b.path));
+  return deepFreeze({ writes, deletions });
 }
 
 function ignoredTopLevel(configRepoDir) {
@@ -354,10 +621,12 @@ function requireHome(home) {
   return home;
 }
 
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
 function requirePlainObject(value, name) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new TypeError(`${name} must be an object`);
-  }
+  if (!isPlainObject(value)) throw new TypeError(`${name} must be an object`);
 }
 
 function sha256(bytes) {

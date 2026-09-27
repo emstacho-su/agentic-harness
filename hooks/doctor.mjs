@@ -25,6 +25,7 @@ import {
   MACHINE_NAME_VAR,
   VAULT_ENV_VAR,
 } from './lib/constants.mjs';
+import { CONFIG_REPO_SLUG, SCAN_EXCEPTIONS_FILE } from './lib/claude-config.mjs';
 import { DEFAULT_PROJECT_DIR, ENV_PROJECT_DIR, resolveUv } from './lib/enqueue-ingest.mjs';
 import { runGitSync } from './lib/git-log.mjs';
 import {
@@ -238,6 +239,45 @@ function sessionStartLogRow(merged, home, now) {
   return row('session-start log', `${file}, last line ${formatAge(now() - at)} ago`);
 }
 
+/** The clone bootstrap step 7 makes and `install.mjs --config` reads (R-H5). */
+const CONFIG_REPO_DIRNAME = 'claude-config';
+/** https, ssh:// or scp-style GitHub remotes of the one repo the config may live in (userinfo already stripped). */
+const CONFIG_REMOTE = /^(?:https:\/\/|ssh:\/\/git@|git@)github\.com[/:]emstacho-su\/claude-config(?:\.git)?\/?$/i;
+
+/** `last commit 3d ago`, `no commits yet` or `last commit unknown (<error>)`. Only the timestamp is read. */
+function lastCommitPart(dir, runGit, now) {
+  const options = { cwd: dir, timeoutMs: DOCTOR_GIT_TIMEOUT_MS };
+  const log = runGit(['log', '-1', '--format=%ct'], options);
+  const seconds = log.ok ? Number(log.stdout.trim()) : NaN;
+  if (Number.isFinite(seconds) && seconds > 0) return `last commit ${formatAge(now() - seconds * 1000)} ago`;
+  const unknown = `last commit unknown (${log.error || 'no date'})`;
+  if (log.ok || !gitAnswered(log)) return unknown;
+  const head = runGit(['rev-parse', '--verify', '--quiet', 'HEAD'], options);
+  return !head.ok && head.status === UNRESOLVED_REV_STATUS ? 'no commits yet' : unknown;
+}
+
+/**
+ * The claude-config clone. Not having one is not a fault (bootstrap step 7
+ * makes it); a clone whose origin is anything but the private repo is, since
+ * an export would commit the config toward it. Never reads a tracked file.
+ */
+function claudeConfigRow(home, runGit, now) {
+  const dir = path.join(home, CONFIG_REPO_DIRNAME);
+  if (!fs.existsSync(dir)) return row('claude-config', `${dir} (not cloned on this machine)`);
+  if (gitDirKind(dir) === 'none') return row('claude-config', `${dir} (exists but is not a git clone)`, true);
+  const origin = runGit(['remote', 'get-url', 'origin'], { cwd: dir, timeoutMs: DOCTOR_GIT_TIMEOUT_MS });
+  if (!origin.ok) {
+    const why = origin.status === NO_SUCH_REMOTE_STATUS ? 'no origin remote' : `remote unknown (${origin.error || 'git failed'})`;
+    return row('claude-config', `${dir}, ${why} (expected ${CONFIG_REPO_SLUG})`, true);
+  }
+  const url = redactRemoteUrl(origin.stdout.trim());
+  if (!CONFIG_REMOTE.test(url)) return row('claude-config', `${dir}, origin ${url} (expected ${CONFIG_REPO_SLUG})`, true);
+  const exceptions = fs.existsSync(path.join(dir, SCAN_EXCEPTIONS_FILE))
+    ? `${SCAN_EXCEPTIONS_FILE} present`
+    : `no ${SCAN_EXCEPTIONS_FILE}`;
+  return row('claude-config', `${dir}, origin ${url}, ${lastCommitPart(dir, runGit, now)}, ${exceptions}`);
+}
+
 /**
  * The report as rows; `main` prints them. Exported for the tests, which
  * script `runGit` so only one of them spawns git.
@@ -274,6 +314,7 @@ export function diagnose(env = process.env, home = os.homedir(), { runGit = runG
     row('DATABASE_URL', merged.DATABASE_URL ? 'set' : 'ABSENT', !merged.DATABASE_URL),
     row('DATABASE_CA_CERT', caCert ? `${caCert} ${caCertMissing ? '(MISSING)' : ''}`.trim() : '(unset)', caCertMissing),
     row('DATABASE_SSL', merged.DATABASE_SSL || '(default: verify-full)'),
+    claudeConfigRow(home, runGit, now),
     sessionStartRow(home),
     sessionStartLogRow(merged, home, now),
     row('transcripts', path.join(home, '.claude', 'projects')),

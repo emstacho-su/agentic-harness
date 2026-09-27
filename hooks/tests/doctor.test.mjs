@@ -459,3 +459,80 @@ test('the CLI: --strict exits 1 on a bare machine, the plain run exits 0 with th
     cleanup();
   }
 });
+
+// ------------------------------------------------ the claude-config row (R-H5)
+
+test('claude-config row: not cloned is informational; a clone with the wrong or no origin is a problem', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { env } = vaultWith(root);
+    const dir = path.join(root, 'claude-config');
+    const configRow = (runGit) => diagnose(env, root, { runGit }).find(([label]) => label === 'claude-config');
+
+    assert.deepEqual(configRow(), ['claude-config', `${dir} (not cloned on this machine)`, false]);
+
+    fs.mkdirSync(dir);
+    assert.deepEqual(configRow(), ['claude-config', `${dir} (exists but is not a git clone)`, true]);
+
+    fs.mkdirSync(path.join(dir, '.git'));
+    const other = scriptedGit({ [`claude-config|${ORIGIN}`]: ok('https://github.com/someone/else.git\n') });
+    assert.deepEqual(configRow(other.runGit), [
+      'claude-config', `${dir}, origin https://github.com/someone/else.git (expected emstacho-su/claude-config)`, true,
+    ]);
+
+    const none = scriptedGit({ [`claude-config|${ORIGIN}`]: exit(2) });
+    assert.deepEqual(configRow(none.runGit), [
+      'claude-config', `${dir}, no origin remote (expected emstacho-su/claude-config)`, true,
+    ]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('claude-config row: the right origin shows the last commit age and the exceptions file, never a token', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { env } = vaultWith(root);
+    const dir = path.join(root, 'claude-config');
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    const now = () => Date.parse('2026-09-27T12:00:00.000Z');
+    const twoDaysAgo = Math.floor(Date.parse('2026-09-25T12:00:00.000Z') / 1000);
+    const configRow = (script) =>
+      diagnose(env, root, { runGit: scriptedGit(script).runGit, now }).find(([label]) => label === 'claude-config');
+    const origin = { [`claude-config|${ORIGIN}`]: ok('https://x-access-token:s3cret@github.com/emstacho-su/claude-config.git\n') };
+
+    const fresh = configRow({ ...origin, 'claude-config|log -1 --format=%ct': ok(`${twoDaysAgo}\n`) });
+    assert.deepEqual(fresh, [
+      'claude-config',
+      `${dir}, origin https://github.com/emstacho-su/claude-config.git, last commit 2d ago, no .scan-exceptions.json`,
+      false,
+    ]);
+    assert.ok(!fresh[1].includes('s3cret'));
+
+    fs.writeFileSync(path.join(dir, '.scan-exceptions.json'), '[]\n');
+    const ssh = { [`claude-config|${ORIGIN}`]: ok('git@github.com:emstacho-su/claude-config.git\n') };
+    const unborn = configRow({
+      ...ssh,
+      'claude-config|log -1 --format=%ct': exit(128),
+      [`claude-config|${UNBORN}`]: exit(1),
+    });
+    assert.deepEqual(unborn, [
+      'claude-config',
+      `${dir}, origin git@github.com:emstacho-su/claude-config.git, no commits yet, .scan-exceptions.json present`,
+      false,
+    ]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('the claude-config row sits just before the SessionStart rows', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { env } = vaultWith(root);
+    const labels = diagnose(env, root).map(([label]) => label);
+    assert.deepEqual(labels.slice(-4), ['claude-config', 'SessionStart hook', 'session-start log', 'transcripts']);
+  } finally {
+    cleanup();
+  }
+});

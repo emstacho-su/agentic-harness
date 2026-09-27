@@ -21,6 +21,21 @@
  * plugins, other tools' hooks — so the write is a read-merge-write that touches
  * only those three events and leaves everything else exactly as it found it. A
  * second run changes nothing.
+ *
+ * `--config` is a second, separate mode (R-H5): it places a clone of the
+ * private `claude-config` repo (CLAUDE.md, rules, skills, skill-vault and a
+ * settings template) on this machine.
+ *
+ *   node hooks/install.mjs --config --dry-run|--apply [--config-repo <dir>] [--target <claudeDir>]
+ *                          [--node <path to node.exe>]
+ *
+ * Defaults: `~/claude-config` into `~/.claude`. It scans the clone with the
+ * capture hook's secret rules first and refuses the whole apply on a finding
+ * the repo's `.scan-exceptions.json` does not cover, on a denylisted path in
+ * the repo, or on a write that would go through a link. Files it overwrites are
+ * backed up to `<target>/config-backup-<stamp>/`; nothing in the target is ever
+ * deleted. The template's hooks and permissions are merged into
+ * `<target>/settings.json` add-only (see `mergeSettingsTemplate`).
  */
 
 import crypto from 'node:crypto';
@@ -29,6 +44,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  SCAN_EXCEPTIONS_FILE,
+  SETTINGS_TEMPLATE_FILE,
+  mergeSettingsTemplate,
+  parseScanExceptions,
+  partitionFindings,
+  planInstall,
+  scanForSecrets,
+} from './lib/claude-config.mjs';
 import { loadMachineEnv, loadRepoEnv } from './lib/machine-env.mjs';
 import { SCOPE, SERVER_NAME, buildRagServerConfig, registerRagServer } from './lib/mcp-registration.mjs';
 import { hookCommands, withHookRegistered } from './lib/settings.mjs';
@@ -85,28 +109,61 @@ function sha256(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
 
+/** Flags that take a value, and the args key each one sets. */
+const VALUE_FLAGS = Object.freeze({
+  '--target': 'target',
+  '--settings': 'settings',
+  '--node': 'node',
+  '--config-repo': 'configRepo',
+});
+/** Flags of the hook install that mean nothing to `--config`, and the reverse. */
+const HOOK_ONLY_FLAGS = Object.freeze(['--register-mcp', '--settings', '--skip-settings']);
+const CONFIG_ONLY_FLAGS = Object.freeze(['--apply', '--config-repo']);
+
 function parseArgs(argv) {
-  const args = {
-    dryRun: false,
-    skipSettings: false,
-    registerMcp: false,
-    target: path.join(os.homedir(), '.claude', 'hooks'),
-    settings: path.join(os.homedir(), '.claude', 'settings.json'),
-    node: process.execPath,
-  };
+  const seen = new Set();
+  const values = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    const value = argv[index + 1];
-    if (arg === '--dry-run') args.dryRun = true;
-    else if (arg === '--skip-settings') args.skipSettings = true;
-    else if (arg === '--register-mcp') args.registerMcp = true;
-    else if (arg === '--target' || arg === '--settings' || arg === '--node') {
+    if (VALUE_FLAGS[arg]) {
+      const value = argv[index + 1];
       if (!value) throw new Error(`${arg} needs a value`);
-      args[arg === '--target' ? 'target' : arg === '--settings' ? 'settings' : 'node'] = value;
+      values[VALUE_FLAGS[arg]] = value;
       index += 1;
-    } else throw new Error(`unknown argument: ${arg}`);
+    } else if (!['--dry-run', '--apply', '--config', ...HOOK_ONLY_FLAGS].includes(arg)) {
+      throw new Error(`unknown argument: ${arg}`);
+    }
+    seen.add(arg);
   }
-  return args;
+  return seen.has('--config') ? configArgs(seen, values) : hookArgs(seen, values);
+}
+
+function hookArgs(seen, values) {
+  const stray = CONFIG_ONLY_FLAGS.find((flag) => seen.has(flag));
+  if (stray) throw new Error(`${stray} is for --config`);
+  return {
+    config: false,
+    dryRun: seen.has('--dry-run'),
+    skipSettings: seen.has('--skip-settings'),
+    registerMcp: seen.has('--register-mcp'),
+    target: values.target ?? path.join(os.homedir(), '.claude', 'hooks'),
+    settings: values.settings ?? path.join(os.homedir(), '.claude', 'settings.json'),
+    node: values.node ?? process.execPath,
+  };
+}
+
+function configArgs(seen, values) {
+  const stray = HOOK_ONLY_FLAGS.find((flag) => seen.has(flag));
+  if (stray) throw new Error(`${stray} is for the hook install, not with --config`);
+  if (seen.has('--dry-run') && seen.has('--apply')) throw new Error('--config takes either --dry-run or --apply, not both');
+  if (!seen.has('--dry-run') && !seen.has('--apply')) throw new Error('--config needs --dry-run or --apply');
+  return {
+    config: true,
+    dryRun: seen.has('--dry-run'),
+    configRepo: path.resolve(values.configRepo ?? path.join(os.homedir(), 'claude-config')),
+    target: path.resolve(values.target ?? path.join(os.homedir(), '.claude')),
+    node: values.node ?? process.execPath,
+  };
 }
 
 /**
@@ -211,12 +268,12 @@ function sameDirectory(a, b) {
   return normalise(a) === normalise(b);
 }
 
-function backup(target, relativePaths) {
+function backup(target, relativePaths, prefix = 'backup') {
   const existing = relativePaths.filter((relative) => fs.existsSync(path.join(target, relative)));
   if (existing.length === 0) return '';
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const dir = path.join(target, `backup-${stamp}`);
+  const dir = path.join(target, `${prefix}-${stamp}`);
   for (const relative of existing) {
     const destination = path.join(dir, relative);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
@@ -225,8 +282,166 @@ function backup(target, relativePaths) {
   return dir;
 }
 
+// ---------------------------------------------------------------------------
+// --config: place a claude-config clone on this machine (R-H5)
+// ---------------------------------------------------------------------------
+
+const CONFIG_BACKUP_PREFIX = 'config-backup';
+
+/** The repo's exceptions list; absent is empty, malformed throws (and so refuses). */
+function readExceptions(configRepo) {
+  const file = path.join(configRepo, SCAN_EXCEPTIONS_FILE);
+  return fs.existsSync(file) ? parseScanExceptions(fs.readFileSync(file, 'utf8')) : [];
+}
+
+/** Every installable file and the template, scanned; findings split by the reviewed exceptions. */
+function scanConfigRepo(configRepo, plan) {
+  const hashes = new Map(plan.files.map((file) => [file.path, file.sha256]));
+  const templateFile = path.join(configRepo, SETTINGS_TEMPLATE_FILE);
+  const scanned = [...plan.files];
+  if (fs.existsSync(templateFile)) {
+    scanned.push({ path: SETTINGS_TEMPLATE_FILE, source: templateFile });
+    hashes.set(SETTINGS_TEMPLATE_FILE, sha256(templateFile));
+  }
+  const { findings } = scanForSecrets(scanned);
+  return { findings, ...partitionFindings(findings, readExceptions(configRepo), (p) => hashes.get(p)), scanned };
+}
+
+/** `{raw, current}` for settings.json; raw is null when there is none. Never echoes the text. */
+function readSettingsForMerge(file) {
+  if (!fs.existsSync(file)) return { raw: null, current: {} };
+  const raw = fs.readFileSync(file, 'utf8');
+  if (!raw.trim()) return { raw, current: {} };
+  try {
+    return { raw, current: JSON.parse(raw) };
+  } catch {
+    throw new Error(`${file}: settings.json is not valid JSON; fix it by hand, nothing was written`);
+  }
+}
+
+function printConfigPlan(args, plan, scan) {
+  const count = (status) => plan.files.filter((file) => file.status === status).length;
+  console.log(`config repo: ${args.configRepo}`);
+  console.log(`target: ${args.target}`);
+  for (const file of plan.files.filter((f) => f.status !== 'unchanged')) {
+    console.log(`  ${file.status.padEnd(8)} ${file.path}${file.reason ? ` (${file.reason})` : ''}`);
+  }
+  for (const { path: p, rule } of plan.refused) console.log(`  refused  ${p} (denylist ${rule})`);
+  for (const { path: p, reason } of plan.skipped) console.log(`  skipped  ${p} (${reason})`);
+  for (const entry of plan.missing) console.log(`  missing  ${entry}`);
+  for (const name of plan.ignored) console.log(`  ignored  ${name}`);
+  console.log(
+    `files: ${count('new')} new, ${count('changed')} changed, ${count('unchanged')} unchanged, ` +
+      `${count('blocked')} blocked, ${plan.ignored.length} ignored, ${plan.refused.length} refused, ` +
+      `${plan.skipped.length} skipped`,
+  );
+  if (scan.findings.length === 0) console.log(`scan: clean (${scan.scanned.length} file(s))`);
+  else console.log(`scan: ${scan.findings.length} finding(s), ${scan.excepted.length} excepted`);
+  for (const f of scan.unexcepted) console.log(`  finding  ${f.path}:${f.line} ${f.rule}`);
+}
+
+function describeMerge(merge) {
+  if (!merge) return `settings: no ${SETTINGS_TEMPLATE_FILE} in the repo; settings.json left alone`;
+  const kept = merge.permissionsKept.map((k) => k.key);
+  const keptNote = kept.length ? `; kept this machine's permissions ${kept.join(', ')}` : '';
+  if (!merge.changed) return `settings: no change${keptNote}`;
+  const hooks = merge.hooksAdded.map((h) => `${h.event} ${path.posix.basename(h.script) || '(no script)'}`);
+  const permissionKeys = [...new Set(merge.permissionsAdded.map((p) => p.key))];
+  const lines = [
+    `settings: +${merge.hooksAdded.length} hook(s)${hooks.length ? ` (${hooks.join(', ')})` : ''}, ` +
+      `+${merge.permissionsAdded.length} permission(s)${permissionKeys.length ? ` (${permissionKeys.join(', ')})` : ''}${keptNote}`,
+  ];
+  if (merge.nodeRewritten.length) {
+    lines.push(`  node rewritten on ${merge.nodeRewritten.length} command(s): ${merge.nodeRewritten[0].to}`);
+  }
+  return lines.join('\n');
+}
+
+function configRefusals(plan, scan) {
+  const blocked = plan.files.filter((file) => file.status === 'blocked');
+  return [
+    ...(scan.unexcepted.length ? [`${scan.unexcepted.length} secret finding(s) not in ${SCAN_EXCEPTIONS_FILE}`] : []),
+    ...(plan.refused.length ? [`${plan.refused.length} denylisted path(s) in the repo`] : []),
+    ...(blocked.length ? [`${blocked.length} write(s) would go through a link or onto a folder`] : []),
+  ];
+}
+
+/** Write through a temporary file and rename: settings.json is read by every session. */
+function writeJsonAtomic(file, value) {
+  const text = `${JSON.stringify(value, null, 2)}\n`;
+  const temporary = `${file}.config-install-tmp`;
+  try {
+    fs.writeFileSync(temporary, text, 'utf8');
+    fs.renameSync(temporary, file);
+  } catch (err) {
+    fs.rmSync(temporary, { force: true });
+    throw err;
+  }
+  if (fs.readFileSync(file, 'utf8') !== text) throw new Error(`${file} does not read back as written`);
+}
+
+function applyConfig(args, plan, settingsFile, settingsRead, merge) {
+  const toWrite = plan.files.filter((file) => file.status === 'new' || file.status === 'changed');
+  const overwritten = toWrite.filter((file) => file.status === 'changed').map((file) => file.path);
+  const writesSettings = Boolean(merge?.changed);
+  if (writesSettings && settingsRead.raw !== null) overwritten.push('settings.json');
+
+  const backupDir = backup(args.target, overwritten, CONFIG_BACKUP_PREFIX);
+  if (backupDir) console.log(`backed up ${overwritten.length} file(s) to ${backupDir}`);
+
+  for (const file of toWrite) {
+    fs.mkdirSync(path.dirname(file.target), { recursive: true });
+    fs.copyFileSync(file.source, file.target);
+  }
+  const mismatched = toWrite.filter((file) => sha256(file.target) !== file.sha256);
+  if (mismatched.length) {
+    console.error(`CONFIG INSTALL FAILED: ${mismatched.length} file(s) differ after copying; settings.json not touched`);
+    for (const file of mismatched) console.error(`  ${file.path}`);
+    return false;
+  }
+  console.log(`installed ${toWrite.length} file(s); all verified by SHA-256`);
+  if (writesSettings) {
+    fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+    writeJsonAtomic(settingsFile, merge.settings);
+    console.log(`settings: wrote ${settingsFile}`);
+  }
+  return true;
+}
+
+function installConfig(args) {
+  const plan = planInstall(args.configRepo, args.target);
+  if (plan.files.length === 0) {
+    throw new Error(`${args.configRepo} has no allowlisted files (CLAUDE.md, rules/, skills/, skill-vault/); is it the claude-config clone?`);
+  }
+  const scan = scanConfigRepo(args.configRepo, plan);
+  const settingsFile = path.join(args.target, 'settings.json');
+  const settingsRead = readSettingsForMerge(settingsFile);
+  const merge = plan.settingsTemplate
+    ? mergeSettingsTemplate(settingsRead.current, plan.settingsTemplate, { nodePath: args.node })
+    : null;
+
+  printConfigPlan(args, plan, scan);
+  console.log(describeMerge(merge));
+
+  const refusals = configRefusals(plan, scan);
+  if (refusals.length) {
+    console.error(`${args.dryRun ? 'dry run: the apply would refuse' : 'refusing: nothing written'}:`);
+    for (const reason of refusals) console.error(`  ${reason}`);
+    return false;
+  }
+  if (args.dryRun) {
+    console.log('dry run: nothing written');
+    return true;
+  }
+  return applyConfig(args, plan, settingsFile, settingsRead, merge);
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.config) {
+    if (!installConfig(args)) process.exitCode = 1;
+    return;
+  }
   const payload = runtimePayload();
 
   const missing = payload.filter((relative) => !fs.existsSync(path.join(HERE, relative)));
