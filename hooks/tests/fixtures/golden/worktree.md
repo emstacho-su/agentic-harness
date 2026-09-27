@@ -1,6 +1,6 @@
 ---
 id: 'session-22222222-2222-4222-8222-222222222222'
-title: 'Session 2026-09-12 — bb2dash'
+title: '2026-09-12 · bb2dash · In the sync-loop worktree: finish the'
 type: session
 schema_version: 2
 collection: 'bb2dash'
@@ -50,14 +50,14 @@ tools_used:
   Edit: 2
   Bash: 1
   mcp__plugin_supabase_supabase__apply_migration: 1
-up: '[[projects/bb2dash/index|bb2dash]]'
+up: '[[projects/bb2dash/bb2dash|bb2dash]]'
 related: []
 machine: ''
 retrievals: []
 retrieved: []
 ---
 
-# Session 2026-09-12 — bb2dash
+# 2026-09-12 · bb2dash · In the sync-loop worktree: finish the
 
 Working directory `__SANDBOX__/repos/bb2dash-wt-sl`. Ran 31m, 1 prompt, 1 shell command, 2 files touched. Ended: logout.
 

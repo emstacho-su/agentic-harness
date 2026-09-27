@@ -4,7 +4,8 @@
 decisions already made. Do not re-litigate them; if something here looks wrong, report it rather than
 silently diverging.
 
-Last updated: 2026-09-21 (retrieval contract, note filenames and repo layout brought back in line with the code)
+Last updated: 2026-09-24 (memory sprint unit N: hub notes named after their folder, readable
+session titles, path-qualified subagent links)
 
 ---
 
@@ -264,15 +265,15 @@ Map to `source='obsidian'`, `external_id=<vault-relative path>`, `collection=<fo
 ```
 vault/
   projects/
-    agentic-harness/     index.md  sessions/  notes/  decisions/
-    ev-trainer/          index.md  sessions/  notes/  decisions/
-    quant-edge-tracker/  index.md  sessions/  notes/  decisions/
-    bb2dash-retrieval/   index.md  sessions/
-    misc/                index.md  sessions/  notes/  decisions/
+    agentic-harness/     agentic-harness.md     sessions/  notes/  decisions/
+    ev-trainer/          ev-trainer.md          sessions/  notes/  decisions/
+    quant-edge-tracker/  quant-edge-tracker.md  sessions/  notes/  decisions/
+    bb2dash-retrieval/   bb2dash-retrieval.md   sessions/
+    misc/                misc.md                sessions/  notes/  decisions/
   classes/
     ist323/  ist352/  ist466/  ist471/  ecn304/  geo103/     (Fall 2026)
-                         index.md  sessions/  notes/  materials/
-    ist335/              index.md  sessions/  notes/          (prior term)
+                         <course>.md            sessions/  notes/  materials/
+    ist335/              ist335.md              sessions/  notes/          (prior term)
   daily/                 one note per day, from templates/daily.md
   templates/             never ingested
   .obsidian/             never ingested
@@ -288,10 +289,25 @@ survives any change of tooling underneath it.
 
 Conventions, all live:
 
-- **Every project and class folder has an `index.md`** with frontmatter `id:` (UUID), `title:`,
-  `collection:` and `type: index`. Class indexes also carry `term:` and `bb2dash_course:` (the exact
-  bb2dash id — `IST.323`; `geo103` lists both `GEO.103.lecture` and `GEO.103.recitation`). Class folder
-  names are the lowercase-hyphenated form of those ids. The UUID means a rename never orphans a row.
+- **Every project and class folder has a hub note named after the folder**,
+  `<realm>/<collection>/<collection>.md` (`projects/agentic-harness/agentic-harness.md`,
+  `classes/ist323/ist323.md`), with frontmatter `id:` (UUID), `title:`, `collection:` and
+  `type: index`. Obsidian labels a graph node by its filename, which is why the hub is not called
+  `index` (R-N1; `node hooks/rename-hubs.mjs` renames the old ones). Class hubs also carry
+  `term:` and `bb2dash_course:` (the exact bb2dash id — `IST.323`; `geo103` lists both
+  `GEO.103.lecture` and `GEO.103.recitation`). Class folder names are the lowercase-hyphenated
+  form of those ids. The UUID means a rename never orphans a row.
+- **Session notes carry a readable title and their graph links in frontmatter.** A session's
+  `title` is `<date> · <collection> · <first six words of the first prompt>`
+  (`2026-09-24 · agentic-harness · ultracode. You are the orchestrator for`); a subagent's is
+  `<date> · <collection> · <agent type> · <first six words of the task>`. Notes written before
+  2026-09-24 keep their old titles. `up` links a session to its hub,
+  `[[<realm>/<collection>/<collection>|<collection>]]`, and a subagent to its parent, path-qualified
+  as `[[<realm>/<collection>/sessions/<parent-uuid>|<parent title>]]`, so following it before the
+  parent note exists creates the file where the hook will write it, never at the vault root. The
+  hook treats a 0-byte or frontmatter-less file at its target path as absent and writes over it.
+  Files are named by UUID, so the graph shows titles only with the Front Matter Title plugin, a
+  MANUAL install per machine (`docs/portable.md`, both runbooks).
 - **`ingest: false` in frontmatter opts a note out of embedding.** It is reported as a skip, never
   hidden. It is not a delete: flipping it on an already-embedded note leaves the rows until
   `--prune` sweeps them. The vault-root `templates/` is skipped outright, like `.obsidian/`.

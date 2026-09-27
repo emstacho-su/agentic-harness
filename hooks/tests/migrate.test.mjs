@@ -33,7 +33,7 @@ function installV1Notes(sandbox) {
     const sourceDir = path.join(V1_NOTES, collection);
     const targetDir = path.join(sandbox.vaultRoot, 'projects', collection, 'sessions');
     fs.mkdirSync(targetDir, { recursive: true });
-    fs.writeFileSync(path.join(sandbox.vaultRoot, 'projects', collection, 'index.md'), '---\ntype: index\n---\n', 'utf8');
+    fs.writeFileSync(path.join(sandbox.vaultRoot, 'projects', collection, `${collection}.md`), '---\ntype: index\n---\n', 'utf8');
     for (const name of fs.readdirSync(sourceDir)) {
       const target = path.join(targetDir, name);
       fs.writeFileSync(target, expand(fs.readFileSync(path.join(sourceDir, name), 'utf8'), sandbox), 'utf8');
@@ -300,7 +300,7 @@ test('a real run moves every note, backs the originals up, and retires the folde
     assert.equal(new Set(ids).size, files.length);
     assert.deepEqual([...ids].sort(), files.map((name) => name.replace(/\.md$/, '')).sort());
 
-    // The retired folders are gone, index.md included.
+    // The retired folders are gone, their hub notes included.
     assert.equal(fs.existsSync(path.join(sandbox.vaultRoot, 'projects', 'bb2dash-retrieval')), false);
     assert.equal(fs.existsSync(path.join(sandbox.vaultRoot, 'projects', 'bb2dash-wt-sl')), false);
 
@@ -358,7 +358,7 @@ ${parsed.body}`, 'utf8');
   }
 });
 
-test('the retired folder index note is backed up before the folder goes', () => {
+test('the retired folder hub note is backed up before the folder goes', () => {
   const sandbox = createSandbox();
   try {
     installV1Notes(sandbox);
@@ -369,8 +369,8 @@ test('the retired folder index note is backed up before the folder goes', () => 
     const stamped = path.join(backupDir, fs.readdirSync(backupDir)[0]);
     const saved = fs.readdirSync(stamped, { recursive: true }).map((name) => toPosix(String(name)));
     assert.ok(
-      saved.some((name) => name.endsWith('bb2dash-retrieval/index.md')),
-      `index.md was deleted without a backup: ${saved.join(', ')}`,
+      saved.some((name) => name.endsWith('bb2dash-retrieval/bb2dash-retrieval.md')),
+      `the hub note was deleted without a backup: ${saved.join(', ')}`,
     );
   } finally {
     sandbox.cleanup();
@@ -411,6 +411,21 @@ test('a move that would overwrite an existing note is refused', () => {
     assert.match(output, /already claimed by|target exists/);
     assert.match(fs.readFileSync(target, 'utf8'), /mine/);
     assert.ok(fs.existsSync(path.join(sandbox.vaultRoot, 'projects/bb2dash-retrieval/sessions/2026-09-10-0e3b3d00.md')));
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('a retired folder whose hub is still the legacy index.md is removed too (review #8)', () => {
+  const sandbox = createSandbox();
+  try {
+    installV1Notes(sandbox);
+    const retired = path.join(sandbox.vaultRoot, 'projects', 'bb2dash-retrieval');
+    fs.renameSync(path.join(retired, 'bb2dash-retrieval.md'), path.join(retired, 'index.md'));
+
+    const output = runMigration(sandbox, ['--backup', path.join(sandbox.root, 'backup')]);
+    assert.doesNotMatch(output, /unexpected contents/);
+    assert.equal(fs.existsSync(retired), false);
   } finally {
     sandbox.cleanup();
   }
