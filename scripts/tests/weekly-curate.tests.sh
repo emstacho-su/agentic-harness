@@ -162,11 +162,14 @@ check "a clean week logs no \"ended with\"" log_lacks "ended with"
 # (3) the CURATE_* settings, and which stages take which flag.
 run_weekly flags CURATE_MODEL=fake-model CURATE_MAX_CALLS=7 CURATE_MAX_TOKENS=9000 CURATE_GIT=skip
 check "a week with every setting exits 0 (exit $run_code)" exit_is 0
-for stage in extract ledger status history report; do
+for stage in extract ledger history report; do
   check "$stage gets --model --max-calls --max-tokens" call_has curate "$stage" "[--model][fake-model][--max-calls][7][--max-tokens][9000]"
 done
 check "inventory gets no --model (it calls no judge)" call_lacks curate inventory "[--model]"
 check "inventory gets no --max-calls" call_lacks curate inventory "[--max-calls]"
+check "status gets no --model (it calls no judge)" call_lacks curate status "[--model]"
+check "status gets no --max-calls" call_lacks curate status "[--max-calls]"
+check "status gets no --max-tokens" call_lacks curate status "[--max-tokens]"
 for stage in inventory ledger status history report; do
   check "CURATE_GIT=skip gives $stage --no-git" call_has curate "$stage" "[--no-git]"
 done

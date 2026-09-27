@@ -90,6 +90,7 @@ $LogKeepLines = 2000
 
 # The weekly order (the C-b contract; weekly-curate.sh lists the same).
 $script:WeeklyStages = @('inventory', 'extract', 'ledger', 'status', 'history', 'report', 'retrievals')
+$script:JudgeStages = @('extract', 'ledger', 'history', 'report')
 
 # ~/.harness/machine.env: what this machine is, through the shared reader
 # (Read-MachineEnv, Get-MachineSetting). A parameter passed explicitly still
@@ -258,12 +259,12 @@ $envArgs = @()
 if ($EnvFile) { $envArgs = @('--env-file', $EnvFile) }
 
 # One `ingest curate` stage. The judge stages take the model and the budget
-# (inventory calls no judge); every stage but extract reads git.
+# (inventory and status call no judge); every stage but extract reads git.
 function Invoke-CurateStage {
     param([string] $Stage, [string[]] $StageArgs = @())
     if ($selected -cnotcontains $Stage) { Write-Log "${Stage}: skipped by CURATE_STAGES"; return }
     $curateArgs = @('curate', $Stage, '--path', $VaultPath) + $StageArgs
-    if ($Stage -ne 'inventory') {
+    if ($script:JudgeStages -ccontains $Stage) {
         if ($curateModel) { $curateArgs += @('--model', $curateModel) }
         if ($curateMaxCalls) { $curateArgs += @('--max-calls', $curateMaxCalls) }
         if ($curateMaxTokens) { $curateArgs += @('--max-tokens', $curateMaxTokens) }

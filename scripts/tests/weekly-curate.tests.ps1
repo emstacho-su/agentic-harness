@@ -261,11 +261,13 @@ try {
     # (4) the CURATE_* settings, and which stages take which flag.
     $r = Invoke-Weekly $fixture 'flags' -Environment @{ CURATE_MODEL = 'fake-model'; CURATE_MAX_CALLS = '7'; CURATE_MAX_TOKENS = '9000'; CURATE_GIT = 'skip' }
     Test-Check "a week with every setting exits 0 (exit $($r.Code))" ($r.Code -eq 0) $r.Output
-    foreach ($stage in @('extract', 'ledger', 'status', 'history', 'report')) {
+    foreach ($stage in @('extract', 'ledger', 'history', 'report')) {
         Test-Check "$stage gets --model --max-calls --max-tokens" (Test-CallHas $r $stage '--model fake-model --max-calls 7 --max-tokens 9000') (Get-Call $r $stage)
     }
     Test-Check 'inventory gets no --model (it calls no judge)' (Test-CallLacks $r 'inventory' '--model')
     Test-Check 'inventory gets no --max-calls' (Test-CallLacks $r 'inventory' '--max-calls')
+    Test-Check 'status gets no --model (it calls no judge)' (Test-CallLacks $r 'status' '--model')
+    Test-Check 'status gets no --max-calls' (Test-CallLacks $r 'status' '--max-calls')
     foreach ($stage in @('inventory', 'ledger', 'status', 'history', 'report')) {
         Test-Check "CURATE_GIT=skip gives $stage --no-git" (Test-CallHas $r $stage '--no-git')
     }

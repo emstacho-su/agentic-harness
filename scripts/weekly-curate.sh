@@ -133,12 +133,13 @@ curate_stage() {
   local stage="$1"; shift
   if ! is_selected "$stage"; then log "$stage: skipped by CURATE_STAGES"; note_code "$stage" 0; return; fi
   local args=(--path "$VAULT" "$@")
-  # The judge stages take the model and the budget; inventory calls no judge.
-  if [ "$stage" != "inventory" ]; then
+  # The judge stages take the model and the budget; inventory and status call no judge.
+  case "$stage" in extract|ledger|history|report)
     [ -n "$CURATE_MODEL" ] && args+=(--model "$CURATE_MODEL")
     [ -n "$CURATE_MAX_CALLS" ] && args+=(--max-calls "$CURATE_MAX_CALLS")
     [ -n "$CURATE_MAX_TOKENS" ] && args+=(--max-tokens "$CURATE_MAX_TOKENS")
-  fi
+    ;;
+  esac
   # Every stage but extract reads git; extract reads notes and the cache only.
   [ "$stage" != "extract" ] && [ "$CURATE_GIT" = "skip" ] && args+=(--no-git)
   [ "$dry_run" -eq 1 ] && args+=(--dry-run)
