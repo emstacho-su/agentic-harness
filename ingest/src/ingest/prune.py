@@ -16,9 +16,10 @@ and refuses to run unless the sweep can be trusted:
 A row written after the walk began is never an orphan, however the run ends: it
 belongs to a note captured while the run embedded (a SessionEnd hook ingests its
 own note at once), which the walk had no chance to see. ``written_before`` holds
-that cutoff; both the listing and the delete test it, so a row rewritten between
-the two statements is kept. Such rows are reported as spared; the next run sees
-their notes.
+that cutoff: the database's own clock, read before the walk, because
+``updated_at`` is stamped by that clock. Both the listing and the delete test it,
+so a row rewritten between the two statements is kept. Such rows are reported as
+spared; the next run sees their notes.
 
 Each guard reports why it declined. Nothing is ever deleted silently.
 """
@@ -27,23 +28,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Iterable
 
 from .store import ChunkStore
 
 log = logging.getLogger(__name__)
-
-#: Taken off the walk's start time, because the cutoff is read from this machine's
-#: clock while ``updated_at`` comes from the database's. Ten minutes covers any
-#: sane drift; the cost is that a note deleted within ten minutes of its last
-#: write is swept one night later.
-CLOCK_MARGIN = timedelta(minutes=10)
-
-
-def walk_cutoff(walk_started: datetime) -> datetime:
-    """The ``written_before`` cutoff for a walk that began at ``walk_started``."""
-    return walk_started - CLOCK_MARGIN
 
 
 @dataclass(frozen=True)
@@ -106,6 +96,11 @@ def prune_orphans(
         return PruneResult(source=source, realm=realm, orphans=orphans, spared=spared, performed=False)
 
     deleted = store.delete_documents(source, orphans, realm=realm, written_before=written_before)
+    if written_before is not None and deleted < len(orphans):
+        # The delete's own cutoff test kept rows rewritten since the listing.
+        kept = store.list_external_ids(source, realm=realm) & set(orphans)
+        orphans = tuple(sorted(set(orphans) - kept))
+        spared = tuple(sorted(set(spared) | kept))
     log.info("Orphan sweep removed %d document(s) from %s", deleted, label)
     return PruneResult(
         source=source, realm=realm, orphans=orphans, spared=spared, deleted=deleted, performed=True

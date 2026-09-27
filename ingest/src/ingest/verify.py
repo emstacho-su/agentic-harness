@@ -157,9 +157,9 @@ class VaultRow:
 class VaultSnapshot:
     """One walk of the vault: its realm names (empty when unmarked) and what it loaded.
 
-    ``walked_at`` is the cutoff taken before the walk (``prune.walk_cutoff``): a row
-    written at or after it may belong to a note the walk could not see, so the vault
-    check leaves it alone, exactly as the orphan sweep does.
+    ``walked_at`` is the database clock read just before the walk: a row written at
+    or after it may belong to a note the walk could not see, so the vault check
+    leaves it alone, exactly as the orphan sweep does.
     """
 
     path: str
@@ -182,6 +182,10 @@ class StoreReader(Protocol):
         ...
 
     def chunk_ids(self) -> Sequence[int]: ...
+
+    def database_now(self) -> datetime | None:
+        """The database clock, which stamps ``updated_at``."""
+        ...
 
     def chunks_by_id(self, ids: Sequence[int]) -> Sequence[SampledChunk]: ...
 

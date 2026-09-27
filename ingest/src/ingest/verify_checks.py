@@ -176,9 +176,13 @@ def check_vault(
     notes: list[str] = []
     for scope, rows in scoped_rows.items():
         documents = [doc for doc in snapshot.loaded.documents if _realm_of(doc) == scope]
-        settled = [row for row in rows if not _written_since(row, snapshot.walked_at)]
-        fresh = {row.external_id for row in rows} - {row.external_id for row in settled}
-        findings.extend(_compare_scope(_scope_name(scope), documents, settled, skipped, fresh))
+        fresh = {row.external_id for row in rows if _written_since(row, snapshot.walked_at)}
+        findings.extend(_compare_scope(
+            _scope_name(scope),
+            [doc for doc in documents if doc.external_id not in fresh],
+            [row for row in rows if row.external_id not in fresh],
+            skipped,
+        ))
         notes.append(f"{_scope_name(scope)}: {len(documents)} notes, {len(rows)} rows")
         if fresh:
             notes.append(
@@ -195,15 +199,11 @@ def _compare_scope(
     documents: Sequence[SourceDocument],
     rows: Sequence[VaultRow],
     skipped: Mapping[str, str],
-    fresh: frozenset[str] | set[str] = frozenset(),
 ) -> list[Finding]:
-    """Notes against settled rows; ``fresh`` rows were written after the walk began."""
     by_id = {doc.external_id: doc for doc in documents}
     stored = {row.external_id: row for row in rows}
     findings: list[Finding] = []
     for external_id, doc in sorted(by_id.items()):
-        if external_id in fresh:
-            continue
         row = stored.get(external_id)
         if row is None:
             findings.append(Finding(external_id, f"{where}: ingestable note{_path_of(doc)} has no row"))

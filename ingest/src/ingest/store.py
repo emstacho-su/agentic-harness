@@ -136,6 +136,8 @@ _NO_REALM = "NOT (metadata ? '_ingest' AND metadata->'_ingest' ? 'realm')"
 
 _SELECT_EXTERNAL_IDS = f"SELECT external_id FROM {DOCUMENTS_TABLE} WHERE source = %s AND "
 
+_SELECT_NOW = "SELECT now()"
+
 # rag.chunks cascades from rag.documents, so deleting the parent is enough.
 _DELETE_DOCUMENTS = f"DELETE FROM {DOCUMENTS_TABLE} WHERE source = %s AND external_id = ANY(%s) AND "
 
@@ -274,6 +276,10 @@ class ChunkStore(Protocol):
         realm: str | None = None,
         written_before: datetime | None = None,
     ) -> int: ...
+
+    def database_now(self) -> datetime | None:
+        """The database clock, which stamps ``updated_at``; None when there is no database."""
+        ...
 
     def replace_retrieval_events(self, document_id: int, document: SourceDocument) -> int:
         """Replace every event row of ``document`` with its ``retrievals``.
@@ -546,11 +552,17 @@ class PostgresStore:
         self, source: str, realm: str | None = None, written_before: datetime | None = None
     ) -> set[str]:
         clause, params = _sweep_clause(realm, written_before)
-        try:
+
+        def _list() -> list[tuple]:
             with self._conn.cursor() as cur:
                 cur.execute(_SELECT_EXTERNAL_IDS + clause, (source, *params))
-                rows = cur.fetchall()
+                found = cur.fetchall()
             self._conn.rollback()
+            return found
+
+        try:
+            # The sweep runs after minutes of embedding; the pooler may have dropped us.
+            rows = self._run(f"Listing external ids for {source}", _list)
         except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
             self._safe_rollback()
             raise StoreError(f"Listing external ids for {source} failed: {exc}") from exc
@@ -567,15 +579,40 @@ class PostgresStore:
         if not ids:
             return 0
         clause, params = _sweep_clause(realm, written_before)
-        try:
+
+        def _delete():
+            # One statement, so a retry after a dropped connection deletes nothing twice.
             with self._conn.cursor() as cur:
                 cur.execute(_DELETE_DOCUMENTS + clause, (source, ids, *params))
-                deleted = cur.rowcount
+                count = cur.rowcount
             self._conn.commit()
+            return count
+
+        try:
+            deleted = self._run(f"Deleting orphans from {source}", _delete)
         except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
             self._safe_rollback()
             raise StoreError(f"Deleting orphans from {source} failed: {exc}") from exc
         return int(deleted if deleted is not None and deleted >= 0 else len(ids))
+
+    def database_now(self) -> datetime:
+        def _now() -> datetime:
+            with self._conn.cursor() as cur:
+                cur.execute(_SELECT_NOW)
+                row = cur.fetchone()
+            self._conn.rollback()
+            if not row or not isinstance(row[0], datetime):
+                raise StoreError(f"SELECT now() returned {row!r}")
+            return row[0]
+
+        try:
+            return self._run("Reading the database clock", _now)
+        except StoreError:
+            self._safe_rollback()
+            raise
+        except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
+            self._safe_rollback()
+            raise StoreError(f"Reading the database clock failed: {exc}") from exc
 
     # -- retrieval events --------------------------------------------------
 
@@ -696,6 +733,9 @@ class NullStore:
         self, source: str, realm: str | None = None, written_before: datetime | None = None
     ) -> set[str]:
         return set()
+
+    def database_now(self) -> None:
+        return None
 
     def delete_documents(
         self, source: str, external_ids, realm: str | None = None, written_before: datetime | None = None

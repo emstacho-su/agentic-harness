@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from typing import Any, TypeVar
 
 from .config import CHUNKS_TABLE, DOCUMENTS_TABLE, SOURCE_OBSIDIAN, DbSettings
@@ -117,6 +118,12 @@ class PostgresReader:
         sql = f"{_SELECT_VAULT_ROWS} AND {clause}"
         scope = f"realm {realm}" if realm else "legacy rows"
         return self._select(f"vault rows ({scope})", sql, (SOURCE_OBSIDIAN, *params), _vault_row)
+
+    def database_now(self) -> datetime:
+        now = self._select("database clock", "SELECT now()", (), lambda r: r[0])
+        if len(now) != 1 or not isinstance(now[0], datetime):
+            raise StoreError(f"SELECT now() returned {now!r}")
+        return now[0]
 
     def chunk_ids(self) -> tuple[int, ...]:
         return self._select("chunk ids", _SELECT_CHUNK_IDS, (), lambda r: int(r[0]))

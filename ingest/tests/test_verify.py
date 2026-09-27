@@ -217,6 +217,9 @@ class FakeReader:
             for c in self.chunks if c.chunk_id in wanted
         ]
 
+    def database_now(self) -> datetime | None:
+        return None
+
     def close(self) -> None:
         self.closed = True
 

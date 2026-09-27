@@ -27,7 +27,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from .chunking import MarkdownChunker
@@ -48,7 +48,7 @@ from .errors import IngestError
 from .eval_cli import SUBCOMMAND as EVAL_SUBCOMMAND, run_eval_command
 from .loaders import LoadedSource, load_claude_mem, load_vault, load_vault_notes
 from .pipeline import Action, IngestPipeline, IngestStats
-from .prune import PruneResult, prune_orphans, walk_cutoff
+from .prune import PruneResult, prune_orphans
 from .report_cli import SUBCOMMAND as REPORT_SUBCOMMAND, run_report
 from .runstate import DEFAULT_MAX_AGE_HOURS, health, state_file
 from .store import ChunkStore, NullStore, PostgresStore
@@ -220,25 +220,26 @@ def _refuse_bad_combination(args: argparse.Namespace) -> str | None:
 
 def _run(args: argparse.Namespace) -> int:
     path = Path(args.path).expanduser()
-    # Before the walk: a row written after this is a note captured mid-run, not an orphan.
-    written_before = walk_cutoff(_utcnow())
-    loaded = _load(args, path)
-    _report_load(loaded)
-
-    documents = loaded.documents
-    if args.limit is not None:
-        if args.limit < 1:
-            print("error: --limit must be >= 1", file=sys.stderr)
-            return 2
-        documents = documents[: args.limit]
-
-    if not documents:
-        print("Nothing to ingest.")
-        return 0
+    if args.limit is not None and args.limit < 1:
+        print("error: --limit must be >= 1", file=sys.stderr)
+        return 2
 
     store, embedder, chunker = _build_components(args)
     prune_results: list[PruneResult] = []
     try:
+        # Before the walk, on the clock that stamps updated_at: a row written after
+        # this is a note captured mid-run, not an orphan.
+        written_before = store.database_now() if (args.prune or args.prune_legacy) else None
+        loaded = _load(args, path)
+        _report_load(loaded)
+
+        documents = loaded.documents
+        if args.limit is not None:
+            documents = documents[: args.limit]
+        if not documents:
+            print("Nothing to ingest.")
+            return 0
+
         pipeline = IngestPipeline(
             store, embedder, chunker, dry_run=args.dry_run, force=args.force
         )
@@ -258,7 +259,7 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _sweep(
-    args: argparse.Namespace, store: ChunkStore, documents, stats: IngestStats, written_before: datetime
+    args: argparse.Namespace, store: ChunkStore, documents, stats: IngestStats, written_before: datetime | None
 ) -> list[PruneResult]:
     """One orphan sweep per realm the run walked, plus the legacy rows on request.
 
@@ -297,10 +298,6 @@ def _sweep(
             document_count=len(documents), realm=None, **common,
         ))
     return results
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _realm_of(document) -> str | None:

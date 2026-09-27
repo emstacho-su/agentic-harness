@@ -505,3 +505,43 @@ def test_without_a_cutoff_the_sweep_sql_is_unchanged() -> None:
     store.delete_documents("obsidian", ["projects/a.md"], realm="projects")
 
     assert all("updated_at" not in sql for sql in conn.statements())
+
+
+def test_database_now_reads_the_database_clock() -> None:
+    conn = FakeConnection(next_row=(CUTOFF,))
+
+    assert PostgresStore(conn).database_now() == CUTOFF
+    assert conn.log[-1][1] == "SELECT now()"
+
+
+def test_a_dry_run_store_has_no_clock() -> None:
+    assert NullStore().database_now() is None
+
+
+class DroppingConnection(FakeConnection):
+    """Fails its first statement the way a pooler-dropped connection does."""
+
+    def cursor(self):
+        if not self.log:
+            self.log.append(("dropped", "", None))
+            raise RuntimeError("the connection is closed")
+        return super().cursor()
+
+
+@pytest.mark.parametrize("call", ["list", "delete"])
+def test_the_sweep_reconnects_after_the_idle_embedding_phase(call) -> None:
+    fresh = FakeConnection()
+    fresh.next_rows = [("a.md",)]
+    fresh.rowcount = 1
+    store = PostgresStore(DroppingConnection())
+
+    def reconnect() -> bool:
+        store._conn = fresh
+        return True
+
+    store._reconnect = reconnect
+    if call == "list":
+        assert store.list_external_ids("obsidian", realm="projects", written_before=CUTOFF) == {"a.md"}
+    else:
+        assert store.delete_documents("obsidian", ["a.md"], realm="projects", written_before=CUTOFF) == 1
+    assert fresh.log, "the statement ran again on the new connection"

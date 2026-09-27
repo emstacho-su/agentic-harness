@@ -241,11 +241,24 @@ def test_without_a_cutoff_every_unseen_row_is_an_orphan(fake_store, fake_embedde
     assert result.spared == ()
 
 
-def test_walk_cutoff_leaves_a_margin_for_clock_drift():
-    from datetime import datetime, timezone
 
-    from ingest.prune import CLOCK_MARGIN, walk_cutoff
+def test_a_row_the_delete_recheck_keeps_is_reported_as_spared_not_deleted(fake_store, fake_embedder):
+    # The listing names a.md, but a hook rewrites it before the DELETE runs.
+    ingest(fake_store, fake_embedder, [document("a.md"), document("old.md")])
+    cutoff = fake_store.advance(minutes=1)
+    real_delete = fake_store.delete_documents
 
-    started = datetime(2026, 9, 28, 3, 0, tzinfo=timezone.utc)
-    assert walk_cutoff(started) == started - CLOCK_MARGIN
-    assert CLOCK_MARGIN.total_seconds() >= 60
+    def rewrite_then_delete(source, external_ids, realm=None, written_before=None):
+        fake_store.advance(seconds=5)
+        ingest(fake_store, fake_embedder, [SourceDocument(
+            source="obsidian", external_id="a.md", title="a.md", agent="claude-code",
+            body="Rewritten by a hook between the listing and the delete.",
+        )])
+        return real_delete(source, external_ids, realm=realm, written_before=written_before)
+
+    fake_store.delete_documents = rewrite_then_delete
+    result = prune_orphans(fake_store, "obsidian", [], document_count=1, written_before=cutoff)
+
+    assert result.orphans == ("old.md",)
+    assert result.spared == ("a.md",)
+    assert result.deleted == 1

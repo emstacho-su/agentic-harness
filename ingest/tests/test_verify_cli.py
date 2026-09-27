@@ -287,28 +287,35 @@ def test_the_module_exports_its_exit_codes() -> None:
     assert (verify_cli.EXIT_CLEAN, verify_cli.EXIT_FINDINGS, verify_cli.EXIT_UNAVAILABLE) == (0, 1, 2)
 
 
-def test_the_walk_records_its_cutoff_before_it_reads_the_vault(monkeypatch, clean_vault: Path) -> None:
-    # Rows written after this moment belong to notes captured during the audit.
+def test_the_audit_cutoff_is_the_database_clock_read_before_the_walk(monkeypatch, clean_vault: Path, capsys) -> None:
+    # Rows the nightly ingest wrote minutes earlier predate this cutoff, so they are compared.
     from datetime import datetime, timezone
 
-    from ingest.prune import walk_cutoff
-
-    started = datetime(2026, 9, 28, 3, 0, tzinfo=timezone.utc)
+    db_now = datetime(2026, 9, 28, 3, 6, tzinfo=timezone.utc)
     events: list[str] = []
+    reader = FakeReader.from_loaded(load_vault(clean_vault))
     real_load = verify_cli.load_vault
+    walked = []
 
     def clock():
         events.append("clock")
-        return started
+        return db_now
 
     def load(*args, **kwargs):
         events.append("walk")
         return real_load(*args, **kwargs)
 
-    monkeypatch.setattr(verify_cli, "_utcnow", clock)
+    real_walk = verify_cli._walk
+
+    def walk(path, walked_at):
+        walked.append(walked_at)
+        return real_walk(path, walked_at)
+
+    reader.database_now = clock
     monkeypatch.setattr(verify_cli, "load_vault", load)
+    monkeypatch.setattr(verify_cli, "_walk", walk)
 
-    snapshot = verify_cli._walk(str(clean_vault))
+    run_verify(["--path", str(clean_vault)], reader=reader, embedder=HashEmbedder(), count_tokens=word_count)
 
-    assert events == ["clock", "walk"]
-    assert snapshot.walked_at == walk_cutoff(started)
+    assert events[:2] == ["clock", "walk"]
+    assert walked == [db_now]

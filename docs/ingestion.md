@@ -397,11 +397,18 @@ default**. Otherwise a partial or interrupted run would silently mass-delete.
 
 A row written after the walk began is never an orphan. A session that ends while
 the nightly embeds captures and ingests its own note, which the walk could not have
-seen. The run records a cutoff before it walks (the time minus a ten-minute
-margin, because `updated_at` comes from the database's clock). Both the listing
-and the delete skip rows written at or after the cutoff, and the report says how
-many rows it kept. `ingest verify` uses the same cutoff, so the audit and the
-sweep agree on what an orphan is.
+seen. Before it walks, the run reads the database's clock (`SELECT now()`), the
+same clock that stamps `updated_at`, so no margin for drift is needed. Both the
+listing and the delete skip rows written at or after that time, and the report
+says how many rows it kept. `ingest verify` reads its own cutoff the same way
+before its walk. Rows the nightly ingest wrote minutes earlier predate that
+cutoff and are still compared; only notes captured during the audit are left out.
+
+Known limit: the cutoff covers notes captured *during* the run. A note that
+another machine captured earlier, into a realm this machine clones, and has not
+pushed yet is still swept. The next run on either machine writes it back. There
+is one machine today; this matters once the VM (portable harness, Phase E) shares
+a realm.
 
 ---
 
