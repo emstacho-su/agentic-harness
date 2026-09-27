@@ -428,7 +428,10 @@ def test_every_sql_constant_targets_curate_and_is_parameterized() -> None:
         assert "curate." in sql, name
         assert "'%s'" not in sql and "{" not in sql, name
     inserts = [sql for name, sql in constants.items() if name.startswith("_INSERT")]
-    assert all("ON CONFLICT" in sql for sql in inserts if "curate.issues " not in sql)
+    # issues get a fresh seq per insert; decisions are an append-only log with an identity
+    # key, guarded by record_decision's locked read instead (test_curate_store_cb.py).
+    exempt = ("curate.issues ", "curate.decisions ")
+    assert all("ON CONFLICT" in sql for sql in inserts if not any(t in sql for t in exempt))
 
 
 def test_postgres_get_extraction_maps_the_row() -> None:

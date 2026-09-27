@@ -6,18 +6,47 @@ show what it would change without changing anything: no write method of the
 real store is ever called. Issues it "creates" take the next seq after the ones
 already stored, so the ids it prints are the ids a real run would allocate,
 barring a counter gap left by a rolled-back allocation.
+
+The C-b stages (status, history, report) get the same treatment for the history
+cache, scores, importance judgements, proposals and decisions.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from dataclasses import replace
+from datetime import date, datetime
 
 from ..errors import StoreError
-from .store_models import CurateStore, EventKey, Issue, IssueEvent, IssueMember, new_issue
+from .store_models import (
+    CurateStore,
+    Decision,
+    EventKey,
+    HistoryWeek,
+    HistoryWeekKey,
+    ImportanceJudgement,
+    ImportanceKey,
+    Issue,
+    IssueEvent,
+    IssueMember,
+    NoteScore,
+    NoteScoreKey,
+    Proposal,
+    ProposalKey,
+    latest_by_key,
+    new_issue,
+    report_decisions,
+    sort_proposals,
+    sort_scores,
+    to_iso_day,
+)
 
 
 class DryRunStore:
-    """Reads from ``base``; keeps writes in memory and never calls a write method of ``base``."""
+    """Reads from ``base``; keeps writes in memory and never calls a write method of ``base``.
+
+    Every write it holds is visible to later reads through the same instance, so
+    a dry-run stage sees what a real run would have stored a moment earlier.
+    """
 
     def __init__(self, base: CurateStore) -> None:
         self._base = base
@@ -28,6 +57,11 @@ class DryRunStore:
         self._base_members: dict[str, set[tuple[str, str, str, int]]] = {}
         self._base_event_keys: dict[str, set[EventKey]] = {}
         self._owner: dict[str, str] = {}  # issue id -> collection, learned from list_issues
+        self._weeks: dict[HistoryWeekKey, HistoryWeek] = {}
+        self._scores: dict[NoteScoreKey, NoteScore] = {}
+        self._importance: dict[ImportanceKey, ImportanceJudgement] = {}
+        self._proposals: dict[ProposalKey, Proposal] = {}
+        self._decisions: list[Decision] = []
 
     def get_extraction(self, note_id, content_hash, extractor_version):
         return self._base.get_extraction(note_id, content_hash, extractor_version)
@@ -84,6 +118,67 @@ class DryRunStore:
 
     def put_confirmation(self, item_key, issue_id, extractor_version, same, model) -> None:
         self._confirmations.setdefault((item_key, issue_id, extractor_version), bool(same))
+
+    def get_history_week(self, collection: str, week_start: str | date, input_hash: str,
+                         version: str) -> HistoryWeek | None:
+        held = self._weeks.get((collection, to_iso_day(week_start), input_hash, version))
+        if held is not None:
+            return replace(held)
+        return self._base.get_history_week(collection, week_start, input_hash, version)
+
+    def put_history_week(self, week: HistoryWeek) -> None:
+        if week.key not in self._weeks and self._base.get_history_week(*week.key) is None:
+            self._weeks[week.key] = week
+
+    def put_note_score(self, score: NoteScore) -> bool:
+        # The base has no lookup by key; its scores of that collection and day stand in,
+        # which is exact while a note belongs to one collection on a given run day.
+        stored = {s.key for s in self._base.note_scores(score.collection, score.run_day)}
+        if score.key in self._scores or score.key in stored:
+            return False
+        self._scores[score.key] = score
+        return True
+
+    def note_scores(self, collection: str, run_day: str | date) -> tuple[NoteScore, ...]:
+        day = to_iso_day(run_day)
+        mine = (replace(s) for s in self._scores.values() if s.collection == collection and s.run_day == day)
+        return sort_scores((*self._base.note_scores(collection, day), *mine))
+
+    def get_importance(self, note_id: str, content_hash: str, version: str) -> ImportanceJudgement | None:
+        stored = self._base.get_importance(note_id, content_hash, version)
+        return stored if stored is not None else self._importance.get((note_id, content_hash, version))
+
+    def put_importance(self, judgement: ImportanceJudgement) -> None:
+        if self.get_importance(*judgement.key) is None:
+            self._importance[judgement.key] = judgement
+
+    def put_proposal(self, proposal: Proposal) -> bool:
+        if proposal.key in self._proposals or \
+                any(p.key == proposal.key for p in self._base.proposals(proposal.realm_folder)):
+            return False
+        self._proposals[proposal.key] = proposal
+        return True
+
+    def proposals(self, realm_folder: str) -> tuple[Proposal, ...]:
+        mine = (p for p in self._proposals.values() if p.realm_folder == realm_folder)
+        return sort_proposals((*self._base.proposals(realm_folder), *mine))
+
+    def record_decision(self, decision: Decision) -> bool:
+        if latest_by_key(self.decisions(decision.realm_folder)).get(decision.key) == decision.accepted:
+            return False
+        self._decisions.append(replace(decision, id=None))
+        return True
+
+    def decisions(self, realm_folder: str) -> tuple[Decision, ...]:
+        stored = self._base.decisions(realm_folder)
+        # Held decisions are numbered on read, after the highest stored id of the realm,
+        # so they sort after the stored ones and "latest" stays the latest.
+        highest = max((d.id or 0 for d in stored), default=0)
+        mine = [d for d in self._decisions if d.realm_folder == realm_folder]
+        return (*stored, *(replace(d, id=highest + n) for n, d in enumerate(mine, start=1)))
+
+    def latest_decisions(self, realm_folder: str, report_day: str | date) -> dict[tuple[str, str], bool]:
+        return report_decisions(self.decisions(realm_folder), report_day)
 
     def close(self) -> None:
         return None
