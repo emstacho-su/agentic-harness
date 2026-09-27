@@ -1,6 +1,6 @@
 ---
 id: 'session-11111111-1111-4111-8111-111111111111'
-title: 'Session 2026-09-11 — bb2dash'
+title: '2026-09-11 · bb2dash · Start phase 7 retrieval polish. Add'
 type: session
 schema_version: 2
 collection: 'bb2dash'
@@ -66,7 +66,7 @@ related: []
 machine: ''
 ---
 
-# Session 2026-09-11 — bb2dash
+# 2026-09-11 · bb2dash · Start phase 7 retrieval polish. Add
 
 Working directory `__SANDBOX__/repos/bb2dash`. Ran 1h 0m, 2 prompts, 2 shell commands, 5 files touched. Ended: clear.
 

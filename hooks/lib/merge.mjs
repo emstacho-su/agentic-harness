@@ -137,6 +137,9 @@ export function mergeFields(existing, next) {
     merged[key] = preferNonEmpty(next[key], existing[key]);
   }
 
+  // The one scalar the note keeps over a derived value (R-N3): a title written
+  // before the readable form, or retitled by hand, stays until C5 improves it.
+  merged.title = preferNonEmpty(existing.title, next.title);
   merged.status = STATUS_RANK[Math.max(statusRank(existing.status), statusRank(next.status))];
   // `tags` is not in LIST_CAPS: manual tags are uncapped, and mergeTags owns
   // the union and the `unclassified` rule outright.

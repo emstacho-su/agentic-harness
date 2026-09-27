@@ -27,6 +27,7 @@ import {
 } from './constants.mjs';
 import { findSecretValues, redact } from './redact.mjs';
 import { isLocalPath, toPosix } from './text.mjs';
+import { TRANSCRIPT_HEAD_BYTES } from './transcript-head.mjs';
 
 /** Wrapper tags Claude Code uses for machinery that is not a human turn. */
 const NOISE_TAG =
@@ -101,7 +102,11 @@ export function readEntries(file, maxBytes, deadlineAt = Number.POSITIVE_INFINIT
   } catch {
     return [];
   }
+  return parseLines(raw);
+}
 
+/** JSONL text to entries; a line that does not parse is dropped. */
+function parseLines(raw) {
   const entries = [];
   for (const line of raw.split('\n')) {
     if (line.length < 2 || line.charCodeAt(0) !== 123 /* { */) continue;
@@ -113,6 +118,42 @@ export function readEntries(file, maxBytes, deadlineAt = Number.POSITIVE_INFINIT
   }
   return entries;
 }
+
+/**
+ * The text of the session's first prompt, for its title.
+ *
+ * `prompts` came from `readEntries(file, maxBytes)`. When the file is larger
+ * than that, the read was of the tail and `prompts[0]` is from the middle of
+ * the session, so the head is read instead. A head whose first prompt line is
+ * cut off gives `''` — no words in the title, rather than the wrong ones.
+ */
+export function firstPromptText(file, prompts, maxBytes) {
+  let size;
+  try {
+    size = fs.statSync(file).size;
+  } catch {
+    return prompts[0]?.text ?? '';
+  }
+  if (size <= maxBytes) return prompts[0]?.text ?? '';
+  return extractPrompts(parseLines(readHead(file, TRANSCRIPT_HEAD_BYTES)))[0]?.text ?? '';
+}
+
+/** The first `bytes` of a file, without its last line, which the cut may have split. */
+function readHead(file, bytes) {
+  let fd = null;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(bytes);
+    const read = fs.readSync(fd, buf, 0, bytes, 0);
+    const text = buf.subarray(0, read).toString('utf8');
+    return text.slice(0, text.lastIndexOf('\n') + 1);
+  } catch {
+    return '';
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
 
 // ----------------------------------------------------------------- prompts
 

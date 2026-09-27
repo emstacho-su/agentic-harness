@@ -66,6 +66,7 @@ const PAYLOAD = [
   'lib/subagent.mjs',
   'lib/tags.mjs',
   'lib/text.mjs',
+  'lib/title.mjs',
   'lib/transcript.mjs',
   'lib/transcript-head.mjs',
   'lib/vocabulary.mjs',

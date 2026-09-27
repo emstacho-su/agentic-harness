@@ -49,6 +49,7 @@ import {
   createAccumulator,
   knownSecrets,
   parentSessionFromPath,
+  firstPromptText,
   readEntries,
   resolveTranscript,
 } from './transcript.mjs';
@@ -159,6 +160,7 @@ export function capture({
     artifacts: facts.artifacts,
     files: facts.paths.files,
     prompts,
+    titlePrompt: firstPromptText(transcriptPath, prompts, MAIN_TRANSCRIPT_MAX_BYTES),
     outcome: extractOutcome(entries),
     knownSecrets: knownSecrets(prompts, accumulator),
     commands: accumulator.commands,

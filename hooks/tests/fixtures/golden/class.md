@@ -1,6 +1,6 @@
 ---
 id: 'session-77777777-7777-4777-8777-777777777777'
-title: 'Session 2026-09-14 — ist323'
+title: '2026-09-14 · ist323 · Outline the IST 323 threat-modelling assignment'
 type: session
 schema_version: 2
 collection: 'ist323'
@@ -49,7 +49,7 @@ related: []
 machine: ''
 ---
 
-# Session 2026-09-14 — ist323
+# 2026-09-14 · ist323 · Outline the IST 323 threat-modelling assignment
 
 Working directory `__SANDBOX__/onedrive/.fall2026/ist323`. Ran 26m, 1 prompt, 0 shell commands, 1 file touched. Ended: clear.
 

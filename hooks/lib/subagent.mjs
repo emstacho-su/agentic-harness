@@ -53,7 +53,8 @@ import { ensureIndex, findNotesByName, persist, readNote, resolveChainHead, vaul
 import { redact } from './redact.mjs';
 import { resolveRepo } from './repo.mjs';
 import { isoDate, toPosix, uniqueCapped } from './text.mjs';
-import { extractOrigin, extractOutcome, extractPrompts, extractTools, createAccumulator, knownSecrets, readEntries } from './transcript.mjs';
+import { extractOrigin, extractOutcome, extractPrompts, extractTools, createAccumulator, firstPromptText, knownSecrets, readEntries } from './transcript.mjs';
+import { TITLE_SEPARATOR, workerTitle } from './title.mjs';
 import { parentTranscriptBeside, readTranscriptHead } from './transcript-head.mjs';
 
 /**
@@ -130,10 +131,19 @@ export function captureSubagent({
     return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
   }
 
+  const secrets = knownSecrets(prompts, accumulator);
   const context = {
     sessionId: input.sessionId,
     noteId: childNoteId(input.sessionId, agentId),
-    title: `Subagent ${agentType || agentId} ${date} — ${placement.collection}`,
+    title: workerTitle({
+      date,
+      collection: placement.collection,
+      agentType: agentType || agentId,
+      // The task, from the head when the transcript was read from its tail; the
+      // Agent call's description when no prompt line survives there.
+      prompt: firstPromptText(transcriptPath, prompts, SUBAGENT_BUDGET_BYTES) || meta.description,
+      knownSecrets: secrets,
+    }),
     collection: placement.collection,
     collectionSource: placement.collectionSource,
     date,
@@ -172,7 +182,7 @@ export function captureSubagent({
     prompts,
     // A worker's transcript is all sidechain; its closing message is its report.
     outcome: extractOutcome(entries, { includeSidechain: true }),
-    knownSecrets: knownSecrets(prompts, accumulator),
+    knownSecrets: secrets,
     commands: accumulator.commands,
     commandCount: accumulator.commandCount,
     agents: accumulator.agents,
@@ -182,8 +192,9 @@ export function captureSubagent({
     transcriptPath,
   };
 
-  // Read once: its title labels this worker's `up` link, and its
-  // `child_sessions` is where this worker is linked in below.
+  // Read for its title, which labels this worker's `up` link. The link into
+  // the parent below reads it again: the parent's own SessionEnd may write it
+  // in between, and writing back this copy would undo that capture.
   const parent = readParentHead(placement.parentSessionsDir, input.sessionId);
 
   // The same merge rule as a session note: lists grow, scalars only improve,
@@ -208,7 +219,11 @@ export function captureSubagent({
   // A worker can be the first note in its collection: its parent may file elsewhere.
   // `SubagentStop` fires at every stop of a multi-turn worker; only the first can matter.
   const index = current.fields ? { ok: true } : ensureIndex(vaultRoot, placement.area, placement.collection);
-  const linked = linkIntoParent({ parent, area: placement.parentArea, childId: fields.id });
+  const linked = linkIntoParent({
+    parent: readParentHead(placement.parentSessionsDir, input.sessionId),
+    area: placement.parentArea,
+    childId: fields.id,
+  });
 
   return {
     written: true,
@@ -238,9 +253,6 @@ const PLACED_BY_EARLIER_NOTE = 'earlier-note';
 
 /** A note that is not there yet: what a fresh capture starts from. */
 const NO_NOTE = Object.freeze({ fields: null, body: '', error: '', stub: false });
-
-/** Between the parts of a generated title: U+00B7, the spec's separator. */
-const TITLE_SEPARATOR = ' · ';
 
 /**
  * Where a worker's note is filed, and the note already there.
@@ -391,8 +403,8 @@ function parentTitle(parentNote, placement, workerDate) {
 
 /**
  * Add this child to the parent note's `child_sessions`, if the parent note is
- * already there. `parent` is `readParentHead`'s result, read before the
- * worker's own write.
+ * already there. `parent` is `readParentHead`'s result, read just before
+ * this call so the write-back starts from the note as it stands.
  *
  * It usually is not — a worker normally stops long before the session that
  * spawned it — and that is fine: the parent's own `SessionEnd` back-fills the

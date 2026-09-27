@@ -1,6 +1,6 @@
 ---
 id: 'session-88888888-8888-4888-8888-888888888888--c0ffee02'
-title: 'Subagent feature-dev:code-reviewer 2026-09-16 — bb2dash'
+title: '2026-09-16 · bb2dash · feature-dev:code-reviewer · Review the migration'
 type: session
 schema_version: 2
 collection: 'bb2dash'
@@ -52,7 +52,7 @@ related: []
 machine: ''
 ---
 
-# Subagent feature-dev:code-reviewer 2026-09-16 — bb2dash
+# 2026-09-16 · bb2dash · feature-dev:code-reviewer · Review the migration
 
 Working directory `__SANDBOX__/repos/bb2dash`. Ran 15m, 1 prompt, 0 shell commands, 1 file touched. Ended: other.
 

@@ -1,6 +1,6 @@
 ---
 id: 'session-88888888-8888-4888-8888-888888888888--c0ffee01'
-title: 'Subagent general-purpose 2026-09-16 — bb2dash'
+title: '2026-09-16 · bb2dash · general-purpose · Add the superseded-file filter to the'
 type: session
 schema_version: 2
 collection: 'bb2dash'
@@ -56,7 +56,7 @@ related: []
 machine: ''
 ---
 
-# Subagent general-purpose 2026-09-16 — bb2dash
+# 2026-09-16 · bb2dash · general-purpose · Add the superseded-file filter to the
 
 Working directory `__SANDBOX__/repos/bb2dash`. Ran 28m, 1 prompt, 1 shell command, 2 files touched. Ended: other.
 

@@ -1,6 +1,6 @@
 ---
 id: 'session-66666666-6666-4666-8666-666666666666'
-title: 'Session 2026-09-12 — agentic-harness'
+title: '2026-09-12 · agentic-harness · Here is the connection string, use'
 type: session
 schema_version: 2
 collection: 'agentic-harness'
@@ -51,7 +51,7 @@ related: []
 machine: ''
 ---
 
-# Session 2026-09-12 — agentic-harness
+# 2026-09-12 · agentic-harness · Here is the connection string, use
 
 Working directory `__SANDBOX__/repos/agentic-harness`. Ran 20m, 2 prompts, 2 shell commands, 1 file touched. Ended: clear.
 
