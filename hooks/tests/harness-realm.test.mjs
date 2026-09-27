@@ -15,6 +15,7 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 import { run as initRealm } from '../init-realm.mjs';
+import { resolvePlacement } from '../lib/checkpoints.mjs';
 import { deriveCollection } from '../lib/collection.mjs';
 import { AREA_HARNESS, AREAS } from '../lib/constants.mjs';
 import { runGitSync } from '../lib/git-log.mjs';
@@ -102,6 +103,25 @@ test('a worktree folder is owned by its project when the project folder is under
     const cwd = path.join(s.root, 'agentic-harness-wt-gone');
     const placed = deriveCollection({ cwd, vaultRoot: s.vault, repo: null });
     assert.equal(placed.collection, COLLECTION, 'not a new agentic-harness-wt-gone collection');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('a checkpoint for the harness collection files in the harness realm once this vault holds it', () => {
+  const s = scratchVault();
+  try {
+    fs.rmSync(path.join(s.vault, AREA_HARNESS), { recursive: true });
+    fs.mkdirSync(path.join(s.vault, 'projects', COLLECTION), { recursive: true });
+    const fields = { collection: COLLECTION, collection_source: 'git' };
+    assert.equal(resolvePlacement(s.vault, fields).area, 'projects', 'no harness realm: where it was');
+
+    fs.mkdirSync(path.join(s.vault, AREA_HARNESS), { recursive: true });
+    fs.writeFileSync(path.join(s.vault, AREA_HARNESS, '.realm'), 'harness\n', 'utf8');
+    assert.deepEqual(resolvePlacement(s.vault, fields), { area: AREA_HARNESS, collection: COLLECTION, reason: '' });
+
+    fs.mkdirSync(path.join(s.vault, AREA_HARNESS, 'other'), { recursive: true });
+    assert.equal(resolvePlacement(s.vault, { collection: 'other', collection_source: 'git' }).area, AREA_HARNESS, 'a harness folder wins');
   } finally {
     s.cleanup();
   }

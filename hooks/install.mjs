@@ -47,6 +47,7 @@ const PAYLOAD = [
   'session-capture.mjs',
   'lib/analyse.mjs',
   'lib/capture.mjs',
+  'lib/claude-paths.mjs',
   'lib/collection.mjs',
   'lib/constants.mjs',
   'lib/enqueue-ingest.mjs',

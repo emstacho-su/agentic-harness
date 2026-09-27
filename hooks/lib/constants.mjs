@@ -142,6 +142,9 @@ export const AREA_HARNESS = 'harness';
 /** The vault's top-level areas. A collection folder lives in exactly one. */
 export const AREAS = Object.freeze([AREA_PROJECTS, AREA_CLASSES, AREA_HARNESS]);
 
+/** The marker file that makes a top-level vault folder a realm (its content is the realm's name). */
+export const REALM_MARKER = '.realm';
+
 /** The folder inside every collection that holds its session and worker notes. */
 export const SESSIONS_DIR = 'sessions';
 

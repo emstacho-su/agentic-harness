@@ -19,6 +19,7 @@ import path from 'node:path';
 
 import {
   AREA_CLASSES,
+  AREA_HARNESS,
   AREA_PROJECTS,
   CAPTURED_BY_SKILL,
   CHECKPOINT_FETCH_TIMEOUT_MS,
@@ -28,6 +29,7 @@ import {
   SESSIONS_DIR,
   STATUS_CONCLUDED,
 } from './constants.mjs';
+import { HARNESS_COLLECTION, holdsHarnessRealm } from './collection.mjs';
 import { FIELD_SPEC, parseFrontmatter } from './frontmatter.mjs';
 import { runGitSync } from './git-log.mjs';
 import { withLinks } from './links.mjs';
@@ -208,9 +210,13 @@ export function normalizeFields(fields) {
  * Where a note goes. A class must already have a folder (an argument that
  * names nothing becomes `misc`, and the log says so); a project folder is
  * created on demand, exactly as the hook does for a session's own repository.
+ * A collection in the harness realm stays there, and the harness's own
+ * collection goes there as soon as this vault holds the realm (R-H2).
  */
 export function resolvePlacement(vaultRoot, fields) {
   const slug = fields.collection;
+  const harnessOwned = folderExists(vaultRoot, AREA_HARNESS, slug) || (slug === HARNESS_COLLECTION && holdsHarnessRealm(vaultRoot));
+  if (harnessOwned) return { area: AREA_HARNESS, collection: slug, reason: '' };
   if (folderExists(vaultRoot, AREA_CLASSES, slug)) return { area: AREA_CLASSES, collection: slug, reason: '' };
   if (folderExists(vaultRoot, AREA_PROJECTS, slug)) return { area: AREA_PROJECTS, collection: slug, reason: '' };
   if (fields.collection_source === 'git') return { area: AREA_PROJECTS, collection: slug, reason: '' };
