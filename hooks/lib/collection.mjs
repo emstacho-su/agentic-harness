@@ -119,7 +119,7 @@ export const ROUTING_RULES = Object.freeze([
  * @param {boolean} [args.holdsHarness]  whether the harness rule applies; by
  *   default, whether `vaultRoot` holds `harness/.realm`. move-to-realm's
  *   `--plan-only` passes true to preview the move before the realm exists.
- * @returns {{area: string, collection: string, collectionSource: string, rule: string, routedCwd: string}}
+ * @returns {{area: string, collection: string, collectionSource: string, rule: string, routedCwd: string, repo: object}}
  */
 export function routeSession({
   cwd,
@@ -137,9 +137,20 @@ export function routeSession({
     : { ...shared, cwd: toPosix(cwd), repo };
   for (const rule of ROUTING_RULES) {
     const placed = rule.place(context);
-    if (placed) return { ...placed, rule: rule.name, routedCwd: context.cwd };
+    if (placed) return { ...placed, rule: rule.name, routedCwd: context.cwd, repo: context.repo };
   }
   throw new Error('unreachable: the folder rule always places a session');
+}
+
+/**
+ * The placement and the repository it was decided from, resolved once from
+ * `cwd`. For a Claude Code folder that is the decoded cwd's repository, so a
+ * note filed `collection_source: git` always carries that repo, branch and
+ * commits.
+ */
+export function placeSession({ cwd, vaultRoot, home, tmp, resolveRepoFor = resolveRepo, holdsHarness }) {
+  const placement = routeSession({ cwd, vaultRoot, repo: resolveRepoFor(cwd), home, tmp, resolveRepoFor, holdsHarness });
+  return { placement, repo: placement.repo };
 }
 
 /** `routeSession` without the why: what a note's placement fields need. */
@@ -148,11 +159,11 @@ export function deriveCollection(args) {
   return { area, collection, collectionSource };
 }
 
-/** Whether this vault holds the `harness` realm: `harness/.realm` is on disk. */
+/** Whether this vault holds the `harness` realm: `harness/.realm` names it, as realm-sync reads it. */
 export function holdsHarnessRealm(vaultRoot) {
   if (!vaultRoot) return false;
   try {
-    return fs.statSync(path.join(vaultRoot, AREA_HARNESS, REALM_MARKER)).isFile();
+    return fs.readFileSync(path.join(vaultRoot, AREA_HARNESS, REALM_MARKER), 'utf8').trim() === AREA_HARNESS;
   } catch {
     return false;
   }

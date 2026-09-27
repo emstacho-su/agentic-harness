@@ -15,7 +15,9 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { encodeClaudeProjectName } from '../lib/claude-paths.mjs';
-import { applyMoveToRealm, checkPreconditions, planMoveToRealm, SOURCE_COLLECTIONS } from '../lib/move-to-realm.mjs';
+import { ensureIndex } from '../lib/notes-io.mjs';
+import { checkPreconditions, planMoveToRealm, SOURCE_COLLECTIONS } from '../lib/move-to-realm.mjs';
+import { applyMoveToRealm } from '../lib/move-to-realm-apply.mjs';
 import { run } from '../move-to-realm.mjs';
 import { toPosix } from '../lib/text.mjs';
 
@@ -94,7 +96,7 @@ function world({ harnessRealm = true } = {}) {
   });
   session('agentic-harness', ids.home, { title: 'Session 2026-09-21 — agentic-harness', cwd: home, up: harnessHubLink });
   session('agentic-harness', ids.noCwd, { title: 'Session 2026-09-22 — agentic-harness', up: harnessHubLink });
-  write(`${vault}/projects/bb2dash/sessions/${ids.bbParent}.md`, noteText({ id: 'note-bb', session_id: ids.bbParent, collection: 'bb2dash', title: 'Session 2026-09-16 — bb2dash', cwd: `${home}/projects/bb2dash`, type: 'session' }));
+  write(`${vault}/projects/bb2dash/sessions/${ids.bbParent}.md`, noteText({ id: 'note-bb', session_id: ids.bbParent, collection: 'bb2dash', collection_source: 'git', title: 'Session 2026-09-16 — bb2dash', cwd: `${home}/projects/bb2dash`, type: 'session' }));
   session('memory', ids.memoryWorker, {
     title: 'Subagent general-purpose 2026-09-16 — memory',
     parent_session: ids.bbParent,
@@ -339,6 +341,156 @@ test('CLI --apply carries the move out and exits 0; usage errors exit 1', () => 
     assert.equal(cli(w, []).code, 1);
     assert.equal(cli(w, ['--dry-run', '--apply']).code, 1);
     assert.equal(cli(w, ['--vault']).code, 1);
+  } finally {
+    w.cleanup();
+  }
+});
+
+// ------------------------------------------------------------------ review fixes
+
+test('an unreadable note keeps its collection and hub, and the CLI refuses --apply until it is fixed', () => {
+  const w = world();
+  try {
+    write(`${w.vault}/projects/claude/sessions/broken.md`, '---\nid: [unclosed\n---\n');
+    const plan = planMoveToRealm(w.options);
+    assert.deepEqual(plan.unreadable.map((u) => u.path), ['projects/claude/sessions/broken.md']);
+    assert.ok(!plan.archives.some((a) => a.from === 'projects/claude/claude.md'), 'the hub stays with the note that stays');
+    const before = snapshot(w.vault);
+    const r = cli(w, ['--apply']);
+    assert.equal(r.code, 2, r.text);
+    assert.match(r.text, /refused: the plan has 1 unreadable note/);
+    assert.deepEqual(snapshot(w.vault), before, 'nothing was written');
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('the CLI refuses --apply while the plan has conflicts', () => {
+  const w = world();
+  try {
+    write(`${w.vault}/projects/misc/sessions/${ids.container}.md`, 'something else\n');
+    const r = cli(w, ['--apply']);
+    assert.equal(r.code, 2);
+    assert.match(r.text, /refused: the plan has 1 conflict/);
+    assert.equal(w.exists(`projects/agentic-harness/sessions/${ids.harness}.md`), true);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("a stub hub the new hook wrote into harness/ is replaced by the real one, and the stub is archived", () => {
+  const w = world();
+  try {
+    ensureIndex(w.vault, 'harness', 'agentic-harness');
+    const stub = w.read('harness/agentic-harness/agentic-harness.md');
+    const plan = planMoveToRealm(w.options);
+    assert.deepEqual(plan.conflicts, []);
+    const hubMove = plan.moves.find((m) => m.to === 'harness/agentic-harness/agentic-harness.md');
+    assert.equal(hubMove.replacesStub, true);
+    const result = applyMoveToRealm(plan);
+    assert.deepEqual(result.errors, []);
+    assert.match(w.read('harness/agentic-harness/agentic-harness.md'), /^id: 'hub-agentic-harness'$/m);
+    assert.equal(fs.readFileSync(`${w.archiveRoot}/harness/agentic-harness/agentic-harness.stub.md`, 'utf8'), stub);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('a staying note whose parent moves has its link repointed', () => {
+  const w = world();
+  try {
+    const worker = `${ids.harness}--c0ffee`;
+    write(`${w.vault}/projects/agentic-harness/notes/${worker}.md`, noteText({
+      id: 'note-odd', parent_session: ids.harness,
+      up: `[[projects/agentic-harness/sessions/${ids.harness}|Session 2026-09-20 — agentic-harness]]`,
+    }));
+    fs.rmSync(`${w.vault}/harness/.realm`);
+    write(`${w.vault}/harness/.realm`, 'harness\n');
+    write(`${w.vault}/projects/claude/notes/keep.md`, noteText({ id: 'note-keep', up: `[[projects/agentic-harness/sessions/${ids.harness}]]` }));
+    const plan = planMoveToRealm(w.options);
+    assert.ok(plan.stays.some((s) => s.path === 'projects/claude/notes/keep.md'));
+    assert.ok(plan.rewrites.some((r) => r.path === 'projects/claude/notes/keep.md'), 'a note that stays is still repointed');
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('two notes planned onto one target: the second is a conflict, not an apply-time failure', () => {
+  const w = world();
+  try {
+    const twin = fs.readFileSync(`${w.vault}/projects/claude/sessions/${ids.scratch}.md`, 'utf8');
+    write(`${w.vault}/projects/remote/sessions/${ids.scratch}.md`, twin.replace("collection: 'claude'", "collection: 'remote'"));
+    const plan = planMoveToRealm(w.options);
+    assert.deepEqual(plan.conflicts.map((c) => c.path), [`projects/remote/sessions/${ids.scratch}.md`]);
+    assert.match(plan.conflicts[0].error, /also planned from projects\/claude/);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('a note whose frontmatter cannot be edited in place is a conflict, not a silent stale move', () => {
+  const w = world();
+  try {
+    const file = `${w.vault}/projects/projects/sessions/${ids.container}.md`;
+    const escaped = `collection: "pro${String.fromCharCode(92)}u006aects"`; // YAML reads "projects"; the line editor refuses escapes
+    const text = fs.readFileSync(file, 'utf8').replace("collection: 'projects'", escaped);
+    fs.writeFileSync(file, text, 'utf8');
+    const plan = planMoveToRealm(w.options);
+    assert.deepEqual(plan.conflicts.map((c) => c.path), [`projects/projects/sessions/${ids.container}.md`]);
+    assert.match(plan.conflicts[0].error, /could not edit collection/);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('a moved note records how its new collection was decided', () => {
+  const w = world();
+  try {
+    const file = `${w.vault}/projects/memory/sessions/${ids.memoryWorker}.md`;
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace("collection: 'memory'", "collection: 'memory'\ncollection_source: 'folder'"), 'utf8');
+    const plan = planMoveToRealm(w.options);
+    const move = plan.moves.find((m) => m.from.endsWith(`${ids.memoryWorker}.md`));
+    assert.match(move.text, /^collection_source: 'git'$/m, 'the parent bb2dash is a git collection');
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('apply holds both realm locks for the whole move, and stops before writing when one cannot be taken', () => {
+  const w = world();
+  try {
+    const calls = [];
+    const locks = {
+      acquire: (realm) => {
+        calls.push(`acquire ${realm}`);
+        return { ok: true, lock: realm };
+      },
+      release: (lock) => calls.push(`release ${lock}`),
+    };
+    const result = applyMoveToRealm(planMoveToRealm(w.options), { locks });
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(calls, ['acquire projects', 'acquire harness', 'release harness', 'release projects']);
+
+    const w2 = world();
+    try {
+      const busy = { acquire: (realm) => (realm === 'harness' ? { ok: false, error: 'held by sync --push' } : { ok: true, lock: realm }), release: () => {} };
+      const before = snapshot(w2.vault);
+      const blocked = applyMoveToRealm(planMoveToRealm(w2.options), { locks: busy });
+      assert.match(blocked.errors.map((e) => e.error).join(), /held by sync --push/);
+      assert.deepEqual(snapshot(w2.vault), before);
+    } finally {
+      w2.cleanup();
+    }
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('a stale realm lock does not refuse the move: the apply takes it over, as the collector does', () => {
+  const w = world();
+  try {
+    const peek = () => ({ held: true, holder: null, stale: true });
+    assert.deepEqual(checkPreconditions({ vault: w.vault, realmsListed: ['projects', 'classes', 'harness'], peek }), []);
   } finally {
     w.cleanup();
   }

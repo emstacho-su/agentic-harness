@@ -15,7 +15,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { decodeClaudeStateCwd, encodeClaudeProjectName } from '../lib/claude-paths.mjs';
-import { deriveCollection, ROUTING_RULES, routeSession } from '../lib/collection.mjs';
+import { deriveCollection, holdsHarnessRealm, placeSession, ROUTING_RULES, routeSession } from '../lib/collection.mjs';
 import { resolveRepo } from '../lib/repo.mjs';
 import { toPosix } from '../lib/text.mjs';
 
@@ -199,4 +199,46 @@ test('a cwd outside the two encoded folders is not decoded', () => {
     `${TMP}/other/C--Users-estac-agentic-harness`,
     '',
   ]) assert.equal(decode(cwd), '', cwd);
+});
+
+test('placeSession resolves the repository from the cwd the rules read, so a git collection always has its repo', () => {
+  const w = world();
+  try {
+    const cwd = w.claudeProject(`${w.home}/projects/bb2dash`, 'memory');
+    const { placement, repo } = placeSession({ cwd, vaultRoot: w.vault, home: w.home, tmp: w.tmp });
+    assert.equal(`${placement.area}/${placement.collection}`, 'projects/bb2dash');
+    assert.equal(placement.collectionSource, 'git');
+    assert.equal(repo.repoFullName, 'emstacho-su/bb2dash');
+    const plain = placeSession({ cwd: `${w.home}/projects/bb2dash`, vaultRoot: w.vault, home: w.home, tmp: w.tmp });
+    assert.equal(plain.repo.repoFullName, 'emstacho-su/bb2dash');
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('the harness realm is held only when harness/.realm names it', () => {
+  const w = world();
+  try {
+    assert.equal(holdsHarnessRealm(w.vault), true);
+    fs.writeFileSync(`${w.vault}/harness/.realm`, '\n', 'utf8');
+    assert.equal(holdsHarnessRealm(w.vault), false, 'an empty marker is no realm to realm-sync either');
+    fs.writeFileSync(`${w.vault}/harness/.realm`, 'projects\n', 'utf8');
+    assert.equal(holdsHarnessRealm(w.vault), false);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('decoding backtracks: a longer sibling that leads nowhere does not swallow a path that decodes whole', () => {
+  const tree = fakeTree({
+    'C:/': ['Users'],
+    'C:/Users': ['estac'],
+    'C:/Users/estac': ['projects', 'foo'],
+    'C:/Users/estac/projects': ['bb2dash', 'bb2dash-course'],
+    'C:/Users/estac/projects/bb2dash': ['course-context'],
+  });
+  const at = (cwd) => decodeClaudeStateCwd(cwd, { home: HOME, tmp: TMP, listDir: tree });
+  assert.equal(at(`${HOME}/.claude/projects/C--Users-estac-projects-bb2dash-course-context/m`), 'C:/Users/estac/projects/bb2dash/course-context');
+  // The ambiguity documented in claude-paths.mjs: a deleted foo-web beside foo reads as foo/web.
+  assert.equal(at(`${HOME}/.claude/projects/C--Users-estac-foo-web/m`), 'C:/Users/estac/foo/web');
 });

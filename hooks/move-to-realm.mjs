@@ -9,8 +9,9 @@
  *
  * `--dry-run` prints one line per note (from, to, reason), each hub it would
  * archive and each link it would repoint, and writes nothing. `--apply` makes
- * them (see lib/move-to-realm.mjs). Both need the harness realm on disk and
- * listed in HARNESS_REALMS, and no realm lock held. `--plan-only` is the dry
+ * them under both realm locks (lib/move-to-realm-apply.mjs), and only when the
+ * plan has no conflict and no unreadable note. Both need the harness realm on
+ * disk and listed in HARNESS_REALMS, and no live realm lock. `--plan-only` is the dry
  * run for before the realm exists: it plans as if it did, and checks nothing.
  *
  * Exit 0 when everything was (or would be) done, 2 when a precondition fails,
@@ -25,7 +26,8 @@ import { fileURLToPath } from 'node:url';
 
 import { DEFAULT_VAULT_SEGMENTS, VAULT_ENV_VAR } from './lib/constants.mjs';
 import { loadMachineEnv } from './lib/machine-env.mjs';
-import { applyMoveToRealm, checkPreconditions, defaultArchiveRoot, planMoveToRealm } from './lib/move-to-realm.mjs';
+import { checkPreconditions, defaultArchiveRoot, planBlockers, planMoveToRealm } from './lib/move-to-realm.mjs';
+import { applyMoveToRealm } from './lib/move-to-realm-apply.mjs';
 import { parseRealmPolicies } from './lib/realm-sync.mjs';
 
 const USAGE = 'usage: node hooks/move-to-realm.mjs (--dry-run | --apply | --plan-only) [--vault <dir>]';
@@ -64,7 +66,10 @@ function listedRealms(env) {
 }
 
 function report(plan, out) {
-  for (const move of plan.moves) out(`move ${move.from} -> ${move.to} (${move.reason})${move.alreadyThere ? ' [already there]' : ''}`);
+  for (const move of plan.moves) {
+    const note = move.alreadyThere ? ' [already there]' : move.replacesStub ? ` [replaces a stub hub, archived to ${move.stubArchiveTo}]` : '';
+    out(`move ${move.from} -> ${move.to} (${move.reason})${note}`);
+  }
   for (const archive of plan.archives) out(`archive ${archive.from} -> ${archive.to}`);
   for (const rewrite of plan.rewrites) for (const change of rewrite.changes) out(`link ${rewrite.path}: up: ${change.old} -> ${change.new}`);
   for (const stay of plan.stays) out(`stays ${stay.path} (${stay.reason})`);
@@ -107,16 +112,21 @@ export function run(argv, { env = process.env, out = console.log, err = console.
   }
   const plan = planMoveToRealm({ vault, home, tmp, archiveRoot: defaultArchiveRoot(now, home), ...(mode === 'plan-only' ? { holdsHarness: true } : {}) });
   report(plan, out);
-  const blocked = plan.conflicts.length > 0 || plan.unreadable.length > 0;
+  const blocker = planBlockers(plan);
   if (mode !== 'apply') {
     out(`${mode}: nothing was written`);
-    return blocked ? EXIT_ATTENTION : EXIT_OK;
+    return blocker ? EXIT_ATTENTION : EXIT_OK;
+  }
+  // All or nothing: a plan that leaves notes behind would orphan them from hubs it moves.
+  if (blocker) {
+    out(`refused: ${blocker}`);
+    return EXIT_ATTENTION;
   }
   const result = applyMoveToRealm(plan);
   for (const problem of result.errors) out(`failed ${problem.path}: ${problem.error}`);
   out(`applied: moved ${result.moved}, links ${result.rewritten}, archived ${result.archived}, failed ${result.errors.length}`);
   out('next: node hooks/sync-realms.mjs --push, then uv run ingest');
-  return blocked || result.errors.length ? EXIT_ATTENTION : EXIT_OK;
+  return result.errors.length ? EXIT_ATTENTION : EXIT_OK;
 }
 
 // Importable for the tests; only a direct run hits run().

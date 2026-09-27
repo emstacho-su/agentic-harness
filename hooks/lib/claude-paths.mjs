@@ -10,10 +10,10 @@
  * a collection named `memory` or `claude`.
  *
  * The encoding loses information (`agentic-harness` and `agentic/harness`
- * encode alike), so decoding asks the disk: from the drive down, the entry
- * whose encoded name is the longest prefix of what is left. Whatever matches
- * nothing (a worktree deleted since) becomes the last segment as it is, and the
- * folder rules settle it from there.
+ * encode alike), so decoding asks the disk: from the drive down, the entries
+ * whose encoded names are a prefix of what is left, longest first, backing
+ * out of any that lead nowhere. Whatever matches nothing (a worktree deleted
+ * since) becomes the last segment as it is, and the rules settle it from there.
  */
 
 import fs from 'node:fs';
@@ -27,6 +27,8 @@ const TMP_STATE_SEGMENTS = Object.freeze(['claude']);
 
 /** `C--Users-…`: a drive letter, then `:\` encoded as two dashes. */
 const WINDOWS_DRIVE = /^([A-Za-z])--(.*)$/;
+/** Deeper than any real path; bounds the backtracking. */
+const MAX_DECODE_DEPTH = 40;
 
 /** Claude Code's project-folder name for `cwd`. */
 export function encodeClaudeProjectName(cwd) {
@@ -48,38 +50,43 @@ function listDirNames(dir) {
 const joinPosix = (dir, name) => (dir.endsWith('/') ? `${dir}${name}` : `${dir}/${name}`);
 const trimSlash = (dir) => dir.replace(/\/+$/, '');
 
-/** The entry of `dir` whose encoded name is the longest whole-segment prefix of `rest`, or null. */
-function longestMatch(dir, rest, listDir) {
-  let best = null;
-  for (const name of listDir(dir)) {
-    const encoded = encodeClaudeProjectName(name);
-    const fits = encoded === rest || rest.startsWith(`${encoded}-`);
-    if (fits && (!best || encoded.length > best.encoded.length)) best = { name, encoded };
+/** Entries of `dir` whose encoded name is `rest` or a whole-segment prefix of it, longest first. */
+function candidates(dir, rest, listDir) {
+  return listDir(dir)
+    .map((name) => ({ name, encoded: encodeClaudeProjectName(name) }))
+    .filter(({ encoded }) => encoded === rest || rest.startsWith(`${encoded}-`))
+    .sort((a, b) => b.encoded.length - a.encoded.length);
+}
+
+/**
+ * `rest` decoded below `dir`: the first candidate, longest first, whose own
+ * remainder decodes all the way down wins. When none does, the deepest match
+ * of the first candidate is kept and what is left becomes its last segment.
+ *
+ * One ambiguity no directory listing can settle: a deleted `foo-web` beside a
+ * live `foo` encodes exactly like a deleted `foo/web`, and decodes as the
+ * latter. Deleted worktrees (`<project>-wt-<x>`) decode inside `<project>`,
+ * which files them under that project either way.
+ */
+function decodeBelow(dir, rest, listDir, depth) {
+  if (!rest) return { path: dir, complete: true };
+  let fallback = null;
+  if (depth < MAX_DECODE_DEPTH) {
+    for (const { name, encoded } of candidates(dir, rest, listDir)) {
+      const below = decodeBelow(joinPosix(dir, name), rest.slice(encoded.length + 1), listDir, depth + 1);
+      if (below.complete) return below;
+      fallback ??= below;
+    }
   }
-  return best;
+  return fallback ?? { path: joinPosix(dir, rest), complete: false };
 }
 
 /** `C--Users-estac-agentic-harness` -> `C:/Users/estac/agentic-harness`, guided by `listDir`; '' when it names no root. */
 export function decodeClaudeProjectName(encoded, listDir = listDirNames) {
   const drive = WINDOWS_DRIVE.exec(encoded);
-  let dir;
-  let rest;
-  if (drive) {
-    dir = `${drive[1].toUpperCase()}:/`;
-    rest = drive[2];
-  } else if (encoded.startsWith('-')) {
-    dir = '/';
-    rest = encoded.slice(1);
-  } else {
-    return '';
-  }
-  while (rest) {
-    const match = longestMatch(dir, rest, listDir);
-    if (!match) return joinPosix(dir, rest);
-    dir = joinPosix(dir, match.name);
-    rest = rest.slice(match.encoded.length + 1);
-  }
-  return dir;
+  if (drive) return decodeBelow(`${drive[1].toUpperCase()}:/`, drive[2], listDir, 0).path;
+  if (encoded.startsWith('-')) return decodeBelow('/', encoded.slice(1), listDir, 0).path;
+  return '';
 }
 
 /**
