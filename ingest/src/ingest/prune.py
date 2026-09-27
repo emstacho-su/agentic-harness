@@ -13,6 +13,14 @@ and refuses to run unless the sweep can be trusted:
 * the loader must have produced something — an empty vault (a mistyped path, an
   unmounted OneDrive folder) would otherwise wipe the source.
 
+A row written after the walk began is never an orphan, however the run ends: it
+belongs to a note captured while the run embedded (a SessionEnd hook ingests its
+own note at once), which the walk had no chance to see. ``written_before`` holds
+that cutoff: the database's own clock, read before the walk, because
+``updated_at`` is stamped by that clock. Both the listing and the delete test it,
+so a row rewritten between the two statements is kept. Such rows are reported as
+spared; the next run sees their notes.
+
 Each guard reports why it declined. Nothing is ever deleted silently.
 """
 
@@ -20,6 +28,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Iterable
 
 from .store import ChunkStore
@@ -35,6 +44,8 @@ class PruneResult:
     #: The realm swept, or None for the rows written before realms existed.
     realm: str | None = None
     orphans: tuple[str, ...] = ()
+    #: Unseen rows written after the cutoff: notes captured during the run, kept.
+    spared: tuple[str, ...] = ()
     deleted: int = 0
     performed: bool = False
     declined_reason: str | None = None
@@ -54,12 +65,14 @@ def prune_orphans(
     failure_count: int = 0,
     limited: bool = False,
     realm: str | None = None,
+    written_before: datetime | None = None,
 ) -> PruneResult:
     """Delete documents of ``source`` inside ``realm`` whose ``external_id`` was not seen.
 
     One call per realm the loader walked. A realm this machine holds no clone of
     is never listed, so two vaults sharing one store cannot prune each other.
     ``realm=None`` sweeps only the rows written before realms existed.
+    ``written_before`` keeps every row written at or after it (see the module doc).
     """
     label = f"{source}/{realm or 'legacy'}"
     declined = _decline_reason(document_count, failure_count, limited)
@@ -68,17 +81,30 @@ def prune_orphans(
         return PruneResult(source=source, realm=realm, declined_reason=declined)
 
     seen = {str(value) for value in seen_external_ids}
-    existing = store.list_external_ids(source, realm=realm)
-    orphans = tuple(sorted(existing - seen))
+    unseen = store.list_external_ids(source, realm=realm) - seen
+    if written_before is None:
+        orphans = tuple(sorted(unseen))
+    else:
+        orphans = tuple(sorted(store.list_external_ids(source, realm=realm, written_before=written_before) & unseen))
+    spared = tuple(sorted(unseen - set(orphans)))
+    if spared:
+        log.info("Orphan sweep for %s kept %d row(s) written during this run", label, len(spared))
 
     if not orphans:
-        return PruneResult(source=source, realm=realm, performed=not dry_run)
+        return PruneResult(source=source, realm=realm, spared=spared, performed=not dry_run)
     if dry_run:
-        return PruneResult(source=source, realm=realm, orphans=orphans, performed=False)
+        return PruneResult(source=source, realm=realm, orphans=orphans, spared=spared, performed=False)
 
-    deleted = store.delete_documents(source, orphans, realm=realm)
+    deleted = store.delete_documents(source, orphans, realm=realm, written_before=written_before)
+    if written_before is not None and deleted < len(orphans):
+        # The delete's own cutoff test kept rows rewritten since the listing.
+        kept = store.list_external_ids(source, realm=realm) & set(orphans)
+        orphans = tuple(sorted(set(orphans) - kept))
+        spared = tuple(sorted(set(spared) | kept))
     log.info("Orphan sweep removed %d document(s) from %s", deleted, label)
-    return PruneResult(source=source, realm=realm, orphans=orphans, deleted=deleted, performed=True)
+    return PruneResult(
+        source=source, realm=realm, orphans=orphans, spared=spared, deleted=deleted, performed=True
+    )
 
 
 def _decline_reason(document_count: int, failure_count: int, limited: bool) -> str | None:

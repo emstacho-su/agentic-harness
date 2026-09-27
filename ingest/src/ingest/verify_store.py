@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from typing import Any, TypeVar
 
 from .config import CHUNKS_TABLE, DOCUMENTS_TABLE, SOURCE_OBSIDIAN, DbSettings
@@ -53,7 +54,7 @@ ORDER BY c.id
 # Scoped by appending store.py's own realm predicate, so the audit and the orphan
 # sweep can never disagree about which rows belong to a realm.
 _SELECT_VAULT_ROWS = (
-    f"SELECT external_id, content_hash, metadata -> '_ingest' ->> 'path' "
+    f"SELECT external_id, content_hash, metadata -> '_ingest' ->> 'path', updated_at "
     f"FROM {DOCUMENTS_TABLE} WHERE source = %s"
 )
 
@@ -118,6 +119,12 @@ class PostgresReader:
         scope = f"realm {realm}" if realm else "legacy rows"
         return self._select(f"vault rows ({scope})", sql, (SOURCE_OBSIDIAN, *params), _vault_row)
 
+    def database_now(self) -> datetime:
+        now = self._select("database clock", "SELECT now()", (), lambda r: r[0])
+        if len(now) != 1 or not isinstance(now[0], datetime):
+            raise StoreError(f"SELECT now() returned {now!r}")
+        return now[0]
+
     def chunk_ids(self) -> tuple[int, ...]:
         return self._select("chunk ids", _SELECT_CHUNK_IDS, (), lambda r: int(r[0]))
 
@@ -148,7 +155,7 @@ class PostgresReader:
 
 
 def _vault_row(row: tuple) -> VaultRow:
-    return VaultRow(str(row[0]), str(row[1]), None if row[2] is None else str(row[2]))
+    return VaultRow(str(row[0]), str(row[1]), None if row[2] is None else str(row[2]), row[3])
 
 
 def parse_vector(text: str) -> tuple[float, ...]:

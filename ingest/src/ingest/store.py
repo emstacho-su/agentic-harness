@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime
 from typing import Any, Protocol, Sequence
 
 from .config import CHUNKS_TABLE, DOCUMENTS_TABLE, RAG_SCHEMA, VECTOR_TYPE, DbSettings
@@ -135,6 +136,8 @@ _NO_REALM = "NOT (metadata ? '_ingest' AND metadata->'_ingest' ? 'realm')"
 
 _SELECT_EXTERNAL_IDS = f"SELECT external_id FROM {DOCUMENTS_TABLE} WHERE source = %s AND "
 
+_SELECT_NOW = "SELECT now()"
+
 # rag.chunks cascades from rag.documents, so deleting the parent is enough.
 _DELETE_DOCUMENTS = f"DELETE FROM {DOCUMENTS_TABLE} WHERE source = %s AND external_id = ANY(%s) AND "
 
@@ -194,6 +197,14 @@ _EVENTS_MISSING_WARNING = (
 )
 
 
+def _sweep_clause(realm: str | None, written_before: datetime | None) -> tuple[str, tuple[Any, ...]]:
+    """:func:`realm_clause`, plus the orphan sweep's cutoff when there is one."""
+    clause, params = realm_clause(realm)
+    if written_before is None:
+        return clause, params
+    return f"{clause} AND updated_at < %s", (*params, written_before)
+
+
 def _event_row(
     event: RetrievalEvent, document_id: int, search_version: str | None
 ) -> tuple[Any, ...]:
@@ -245,19 +256,30 @@ class ChunkStore(Protocol):
         self, document_id: int, document: SourceDocument
     ) -> None: ...
 
-    def list_external_ids(self, source: str, realm: str | None = None) -> set[str]:
+    def list_external_ids(
+        self, source: str, realm: str | None = None, written_before: datetime | None = None
+    ) -> set[str]:
         """Ids of ``source`` inside ``realm``.
 
         ``realm=None`` is not "every realm": it means the rows that carry no
         ``_ingest.realm`` at all — rows ingested before realms existed. A realm
         this machine never walked is never listed, which is what keeps two vaults
-        sharing one store from pruning each other.
+        sharing one store from pruning each other. ``written_before`` keeps only
+        rows whose ``updated_at`` is earlier.
         """
         ...
 
     def delete_documents(
-        self, source: str, external_ids: Sequence[str], realm: str | None = None
+        self,
+        source: str,
+        external_ids: Sequence[str],
+        realm: str | None = None,
+        written_before: datetime | None = None,
     ) -> int: ...
+
+    def database_now(self) -> datetime | None:
+        """The database clock, which stamps ``updated_at``; None when there is no database."""
+        ...
 
     def replace_retrieval_events(self, document_id: int, document: SourceDocument) -> int:
         """Replace every event row of ``document`` with its ``retrievals``.
@@ -526,34 +548,71 @@ class PostgresStore:
 
     # -- orphan sweep ------------------------------------------------------
 
-    def list_external_ids(self, source: str, realm: str | None = None) -> set[str]:
-        clause, params = realm_clause(realm)
-        try:
+    def list_external_ids(
+        self, source: str, realm: str | None = None, written_before: datetime | None = None
+    ) -> set[str]:
+        clause, params = _sweep_clause(realm, written_before)
+
+        def _list() -> list[tuple]:
             with self._conn.cursor() as cur:
                 cur.execute(_SELECT_EXTERNAL_IDS + clause, (source, *params))
-                rows = cur.fetchall()
+                found = cur.fetchall()
             self._conn.rollback()
+            return found
+
+        try:
+            # The sweep runs after minutes of embedding; the pooler may have dropped us.
+            rows = self._run(f"Listing external ids for {source}", _list)
         except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
             self._safe_rollback()
             raise StoreError(f"Listing external ids for {source} failed: {exc}") from exc
         return {str(row[0]) for row in rows}
 
     def delete_documents(
-        self, source: str, external_ids: Sequence[str], realm: str | None = None
+        self,
+        source: str,
+        external_ids: Sequence[str],
+        realm: str | None = None,
+        written_before: datetime | None = None,
     ) -> int:
         ids = list(external_ids)
         if not ids:
             return 0
-        clause, params = realm_clause(realm)
-        try:
+        clause, params = _sweep_clause(realm, written_before)
+
+        def _delete():
+            # One statement, so a retry after a dropped connection deletes nothing twice.
             with self._conn.cursor() as cur:
                 cur.execute(_DELETE_DOCUMENTS + clause, (source, ids, *params))
-                deleted = cur.rowcount
+                count = cur.rowcount
             self._conn.commit()
+            return count
+
+        try:
+            deleted = self._run(f"Deleting orphans from {source}", _delete)
         except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
             self._safe_rollback()
             raise StoreError(f"Deleting orphans from {source} failed: {exc}") from exc
         return int(deleted if deleted is not None and deleted >= 0 else len(ids))
+
+    def database_now(self) -> datetime:
+        def _now() -> datetime:
+            with self._conn.cursor() as cur:
+                cur.execute(_SELECT_NOW)
+                row = cur.fetchone()
+            self._conn.rollback()
+            if not row or not isinstance(row[0], datetime):
+                raise StoreError(f"SELECT now() returned {row!r}")
+            return row[0]
+
+        try:
+            return self._run("Reading the database clock", _now)
+        except StoreError:
+            self._safe_rollback()
+            raise
+        except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
+            self._safe_rollback()
+            raise StoreError(f"Reading the database clock failed: {exc}") from exc
 
     # -- retrieval events --------------------------------------------------
 
@@ -670,10 +729,17 @@ class NullStore:
     def update_document_metadata(self, *args, **kwargs) -> None:
         raise StoreError("NullStore cannot write. This is a --dry-run store.")
 
-    def list_external_ids(self, source: str, realm: str | None = None) -> set[str]:
+    def list_external_ids(
+        self, source: str, realm: str | None = None, written_before: datetime | None = None
+    ) -> set[str]:
         return set()
 
-    def delete_documents(self, source: str, external_ids, realm: str | None = None) -> int:
+    def database_now(self) -> None:
+        return None
+
+    def delete_documents(
+        self, source: str, external_ids, realm: str | None = None, written_before: datetime | None = None
+    ) -> int:
         raise StoreError("NullStore cannot delete. This is a --dry-run store.")
 
     def replace_retrieval_events(self, document_id: int, document: SourceDocument) -> int:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -79,6 +80,7 @@ class FakeDocument:
     content_hash: str
     realm: str | None
     path: str | None = None
+    written_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -115,10 +117,10 @@ class FakeReader:
 
     def add_document(
         self, source: str, external_id: str, digest: str, realm: str | None, contents: list[str],
-        *, path: str | None = None,
+        *, path: str | None = None, written_at: datetime | None = None,
     ) -> int:
         document_id = len(self.docs) + 1
-        self.docs.append(FakeDocument(document_id, source, external_id, digest, realm, path))
+        self.docs.append(FakeDocument(document_id, source, external_id, digest, realm, path, written_at))
         for index, text in enumerate(contents):
             self.chunks.append(FakeChunk(
                 chunk_id=len(self.chunks) + 1, document_id=document_id, chunk_index=index,
@@ -161,8 +163,11 @@ class FakeReader:
             chunk_id, content=content, token_count=word_count(content), vector=tuple(unit_vector(content))
         )
 
-    def stale_hash(self, external_id: str) -> None:
-        self.docs = [replace(d, content_hash="0" * 64) if d.external_id == external_id else d for d in self.docs]
+    def stale_hash(self, external_id: str, *, written_at: datetime | None = None) -> None:
+        self.docs = [
+            replace(d, content_hash="0" * 64, written_at=written_at) if d.external_id == external_id else d
+            for d in self.docs
+        ]
 
     def remove_document(self, external_id: str) -> None:
         document_id = self.doc(external_id).document_id
@@ -197,7 +202,7 @@ class FakeReader:
         ]
 
     def vault_rows(self, realm: str | None) -> list[VaultRow]:
-        return [VaultRow(d.external_id, d.content_hash, d.path) for d in self.docs
+        return [VaultRow(d.external_id, d.content_hash, d.path, d.written_at) for d in self.docs
                 if d.source == "obsidian" and d.realm == realm]
 
     def chunk_ids(self) -> list[int]:
@@ -211,6 +216,9 @@ class FakeReader:
                          c.content, c.vector)
             for c in self.chunks if c.chunk_id in wanted
         ]
+
+    def database_now(self) -> datetime | None:
+        return None
 
     def close(self) -> None:
         self.closed = True
@@ -582,3 +590,40 @@ def test_pick_sample_takes_everything_when_the_store_is_small() -> None:
 def test_pick_sample_refuses_a_size_below_one() -> None:
     with pytest.raises(ValueError):
         pick_sample([1, 2], 0, seed=1)
+
+
+# -- a row written while the audit walks (the capture race) -------------------------
+
+WALK_CUTOFF = datetime(2026, 9, 28, 2, 50, tzinfo=timezone.utc)
+
+
+def test_a_row_written_after_the_walk_began_is_not_reported_as_noteless(clean_reader, snapshot) -> None:
+    # A SessionEnd hook captured this note after the walk; its row is not an orphan.
+    clean_reader.add_document(
+        "obsidian", "projects/alpha/sessions/captured.md", "a" * 64, "projects", ["new"],
+        written_at=WALK_CUTOFF + timedelta(minutes=3),
+    )
+
+    result = audit(clean_reader, replace(snapshot, walked_at=WALK_CUTOFF)).check(CHECK_VAULT)
+
+    assert result.findings == ()
+    assert any("1 row(s) written after the walk began" in note for note in result.notes)
+
+
+def test_a_row_rewritten_after_the_walk_began_is_not_a_hash_finding(clean_reader, snapshot) -> None:
+    clean_reader.stale_hash("alpha-index-0001", written_at=WALK_CUTOFF + timedelta(seconds=30))
+
+    result = audit(clean_reader, replace(snapshot, walked_at=WALK_CUTOFF)).check(CHECK_VAULT)
+
+    assert result.findings == ()
+
+
+def test_a_row_written_before_the_walk_is_still_compared(clean_reader, snapshot) -> None:
+    clean_reader.add_document(
+        "obsidian", "projects/alpha/notes/deleted.md", "a" * 64, "projects", ["gone"],
+        written_at=WALK_CUTOFF - timedelta(days=1),
+    )
+
+    found = findings_of(audit(clean_reader, replace(snapshot, walked_at=WALK_CUTOFF)), CHECK_VAULT)
+
+    assert [f.subject for f in found] == ["projects/alpha/notes/deleted.md"]

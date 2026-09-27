@@ -176,7 +176,8 @@ Prerequisite for everything below: the nights of 2026-09-25, 26 and 27 each show
   `harness:push` to `~/.harness/machine.env`; `move-to-realm --dry-run`, Stack reads every line,
   `--apply`; sync; ingest (only `metadata-updated`, 0 deleted); eval.
 - [ ] **L4 — P.** `ingest db migrate --dry-run`, then live; reinstall the hook; full ingest; check that
-  `retrieved:` draws edges in the graph; first `ingest report retrievals`.
+  `retrieved:` draws edges in the graph; first `ingest report retrievals`. *Ran 2026-09-27 (gate
+  waived); only the MANUAL graph check is left. Record under Phase P in the requirements doc.*
 - [ ] **L5 — Q-a.** First nightly with `verify` and `eval`; read the log; fix or explain every
   finding.
 - [ ] **L6 — Q-b.** The noise experiment (re-ingest, eval before and after, keep or revert); new

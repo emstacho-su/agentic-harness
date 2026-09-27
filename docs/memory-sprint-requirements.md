@@ -306,6 +306,43 @@ untrusted notes) and R-H5 (a repo built from a folder that holds credentials).
 - **Tests.** Unit on a fixture event set. Live: the first report reviewed with Stack.
 - **Done when.** The dashboard exists and its numbers match the SQL they come from.
 
+### Phase P record — L4, 2026-09-27
+
+Code: PR #20 (merged `6fa2a53`, after N #21; the `hooks/lib/subagent.mjs` conflict was settled by
+a merge commit). The 2026-09-24 build session crashed mid-commit; the branch ref, index and one
+reflog line were rebuilt from intact objects and nothing was lost.
+
+**Gate waived.** The three `committed -> pulled -> pushed` nights (2026-09-25 to 27) never ran:
+the PC was off from the crash until 13:47 on the 27th, and that day's catch-up run failed on DNS
+(`projects` realm left committed, not pushed). Stack waived the gate for L4, which writes the store
+and the hook but not the realms.
+
+What ran, 15:35–15:50 EDT, from `main` at `0f190be` (includes Q-a #19):
+
+- `uv run ingest eval` before: hit@3 0.934, MRR 0.788, negatives 0.833 (57/61 positive, 5/6 negative).
+- `ingest db migrate --dry-run`: 6 applied, 1 pending (`20260924201225_rag_retrieval_events`);
+  applied; re-check 7 applied, 0 pending.
+- `node hooks/install.mjs`: 9 files changed (3 new: `rag-result`, `retrievals`, `session-start`),
+  all 29 verified; SessionEnd and SubagentStop already registered, `settings.json` untouched.
+  Backup `~/.claude/hooks/backup-2026-09-27T19-38-08-028Z`.
+- Full ingest (`--source obsidian --path C:/Users/estac/vault`, no `--prune`): dry run 821
+  unchanged; live 824 unchanged, 0 chunks, 0 events. Expected: every existing note predates the
+  hook, so its `retrievals:` is empty.
+- `uv run ingest eval` after: unchanged (0.934 / 0.788 / 0.833).
+- Live R-P1 check: a subagent ran two `search_context` calls; its note carried both records and six
+  path-qualified `retrieved:` links, and ingest-on-capture wrote 6 events. With one real bb2dash
+  session captured meanwhile, the first `ingest report retrievals`: 8 events, 4 retrievals,
+  2 sessions, median similarity 0.671; 1 867 documents never retrieved.
+
+Open:
+- [ ] MANUAL: check in Obsidian's graph that `retrieved:` draws session → note edges.
+- [ ] Review the first real report with Stack; build the Artifact dashboard from it (R-P3).
+- [ ] "Done when" for R-P1: the next ten live sessions that searched each list every search.
+- [ ] The text report prints `·` as `�` on the Windows console; the report should write UTF-8.
+- [ ] Deferred from review: stale events for an unchanged note whose `retrievals:` is removed by
+  hand; a projection error after the document commit marks it FAILED.
+- [ ] Q-a's negative `neg-retrieval-provenance` now fails by design and should retire.
+
 ---
 
 ## Phase Q — is RAG correct, and is it used

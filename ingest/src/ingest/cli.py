@@ -27,6 +27,7 @@ import argparse
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from .chunking import MarkdownChunker
@@ -219,30 +220,33 @@ def _refuse_bad_combination(args: argparse.Namespace) -> str | None:
 
 def _run(args: argparse.Namespace) -> int:
     path = Path(args.path).expanduser()
-    loaded = _load(args, path)
-    _report_load(loaded)
-
-    documents = loaded.documents
-    if args.limit is not None:
-        if args.limit < 1:
-            print("error: --limit must be >= 1", file=sys.stderr)
-            return 2
-        documents = documents[: args.limit]
-
-    if not documents:
-        print("Nothing to ingest.")
-        return 0
+    if args.limit is not None and args.limit < 1:
+        print("error: --limit must be >= 1", file=sys.stderr)
+        return 2
 
     store, embedder, chunker = _build_components(args)
     prune_results: list[PruneResult] = []
     try:
+        # Before the walk, on the clock that stamps updated_at: a row written after
+        # this is a note captured mid-run, not an orphan.
+        written_before = store.database_now() if (args.prune or args.prune_legacy) else None
+        loaded = _load(args, path)
+        _report_load(loaded)
+
+        documents = loaded.documents
+        if args.limit is not None:
+            documents = documents[: args.limit]
+        if not documents:
+            print("Nothing to ingest.")
+            return 0
+
         pipeline = IngestPipeline(
             store, embedder, chunker, dry_run=args.dry_run, force=args.force
         )
         stats = pipeline.run(documents)
 
         if args.prune or args.prune_legacy:
-            prune_results = _sweep(args, store, documents, stats)
+            prune_results = _sweep(args, store, documents, stats, written_before)
     finally:
         store.close()
 
@@ -255,7 +259,7 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _sweep(
-    args: argparse.Namespace, store: ChunkStore, documents, stats: IngestStats
+    args: argparse.Namespace, store: ChunkStore, documents, stats: IngestStats, written_before: datetime | None
 ) -> list[PruneResult]:
     """One orphan sweep per realm the run walked, plus the legacy rows on request.
 
@@ -280,6 +284,7 @@ def _sweep(
         dry_run=args.dry_run,
         failure_count=len(stats.failures),
         limited=args.limit is not None,
+        written_before=written_before,
     )
     results = []
     if args.prune:
@@ -463,6 +468,11 @@ def _report_prune(result: PruneResult, *, dry_run: bool) -> None:
     if result.declined:
         print(f"\nOrphan sweep skipped for {scope}: {result.declined_reason}")
         return
+    if result.spared:
+        print(
+            f"\nOrphan sweep kept {len(result.spared)} row(s) in {scope} written after this run's "
+            "walk began (notes captured during the run); the next run sees them."
+        )
     if not result.orphans:
         print(f"\nOrphan sweep: nothing stale in source '{result.source}', {scope}.")
         return
