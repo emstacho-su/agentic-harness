@@ -585,16 +585,19 @@ The harness's own history gets a third realm, `harness/<collection>/`, beside `p
 sweep, ingest and doctor treat it as they treat the other two. Run it only after the three
 `committed -> pulled -> pushed` nights and Stack's "go L3", never between 02:45 and 04:30.
 
-1. Seed the hub, so the baseline has the collection in it (git keeps no empty folders):
-
-   ```
-   node -e "import('./hooks/lib/notes-io.mjs').then(m => console.log(m.ensureIndex('C:/Users/estac/vault', 'harness', 'agentic-harness')))"
-   ```
-
-2. Remote and baseline. `gh repo view emstacho-su/vault-harness` fails (absent) first.
+1. Stack edits `~/.harness/machine.env` **first**:
+   `HARNESS_REALMS=projects:push,classes:push,harness:push`. A realm listed but not yet on
+   disk is harmless (sync skips it, doctor lists it under `realms missing`). The reverse order is
+   not: a `harness/.realm` on disk that the list does not name makes ingest refuse the whole
+   vault, `projects` and `classes` included, until the list is fixed.
+2. Remote and baseline. `gh repo view emstacho-su/vault-harness` fails (absent) first. The
+   realm starts empty: its baseline is the three policy files. No hub is seeded, because
+   `projects/agentic-harness/agentic-harness.md` is still the collection's hub until R-H3 moves
+   the history, and two hubs with one name make `[[agentic-harness]]` ambiguous.
 
    ```
    gh repo create emstacho-su/vault-harness --private
+   mkdir C:/Users/estac/vault/harness
    node hooks/init-realm.mjs --vault C:/Users/estac/vault --realm harness --remote https://github.com/emstacho-su/vault-harness.git --dry-run
    node hooks/init-realm.mjs --vault C:/Users/estac/vault --realm harness --remote https://github.com/emstacho-su/vault-harness.git
    git -C C:/Users/estac/vault/harness push -u origin main
@@ -602,11 +605,10 @@ sweep, ingest and doctor treat it as they treat the other two. Run it only after
 
    The push by hand is the one the sync asks for on a realm's first push ("no upstream"); it
    may prompt Git Credential Manager once, which the job never may.
-3. Stack edits `~/.harness/machine.env`: `HARNESS_REALMS=projects:push,classes:push,harness:push`.
-   Until then ingest refuses the realm on disk (doctor: `realms unlisted`).
-4. Check: `node hooks/sync-realms.mjs --push --vault C:/Users/estac/vault --dry-run` has a
+3. Check: `node hooks/sync-realms.mjs --push --vault C:/Users/estac/vault --dry-run` has a
    `harness:` line; `node hooks/doctor.mjs` has a `realm harness` row with its origin. Done
-   when the next nightly log has `harness: … -> pushed`.
+   when the next nightly log has `harness: … -> pushed`. The spec's layout
+   (`harness/agentic-harness/{agentic-harness.md, sessions/, …}`) fills in with R-H3.
 
 Nothing routes sessions into the realm until R-H2, and the existing history moves with R-H3.
 

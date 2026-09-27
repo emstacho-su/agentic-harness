@@ -23,12 +23,12 @@ import path from 'node:path';
 import {
   AREA_CLASSES,
   AREA_PROJECTS,
+  AREAS,
   COLLECTION_FROM_FOLDER,
   COLLECTION_FROM_GIT,
 } from './constants.mjs';
 import { slugify, toPosix } from './text.mjs';
 
-const AREAS = [AREA_PROJECTS, AREA_CLASSES];
 const MAX_WALK_UP = 40;
 const FALLBACK_COLLECTION = 'misc';
 

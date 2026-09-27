@@ -15,9 +15,11 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 import { run as initRealm } from '../init-realm.mjs';
+import { deriveCollection } from '../lib/collection.mjs';
 import { AREA_HARNESS, AREAS } from '../lib/constants.mjs';
 import { runGitSync } from '../lib/git-log.mjs';
 import { hubLink, withLinks } from '../lib/links.mjs';
+import { planNote } from '../lib/migrate.mjs';
 import { ensureIndex, findNotesByName } from '../lib/notes-io.mjs';
 import { indexNotedSessions } from '../lib/sweep.mjs';
 import { run as syncRealms } from '../sync-realms.mjs';
@@ -26,8 +28,10 @@ import { readSessionNotes } from '../untagged-sessions.mjs';
 const SESSION = '0b8f3c1e-7a2d-4e6f-9c10-5d4b3a2f1e0d';
 const COLLECTION = 'agentic-harness';
 const HUB = `${COLLECTION}.md`;
-const ABSENT_MACHINE_ENV = path.join(os.tmpdir(), 'harness-realm-absent-machine.env');
-const IDENTITY_ENV = Object.freeze({ HARNESS_MACHINE_ENV: ABSENT_MACHINE_ENV, HARNESS_MACHINE: 'home-pc', HARNESS_GIT_EMAIL: 'me@example.edu' });
+/** Identity for the realm commits; the machine file points inside the scratch root, where none exists. */
+const identityEnv = (root) =>
+  Object.freeze({ HARNESS_MACHINE_ENV: path.join(root, 'absent-machine.env'), HARNESS_MACHINE: 'home-pc', HARNESS_GIT_EMAIL: 'me@example.edu' });
+const yamlQuoted = (value) => `'${String(value).replace(/'/g, "''")}'`;
 
 function scratchVault() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-realm-'));
@@ -37,7 +41,7 @@ function scratchVault() {
 }
 
 function writeSession(vault, fields) {
-  const frontmatter = Object.entries(fields).map(([key, value]) => `${key}: '${value}'`).join('\n');
+  const frontmatter = Object.entries(fields).map(([key, value]) => `${key}: ${yamlQuoted(value)}`).join('\n');
   const file = path.join(vault, AREA_HARNESS, COLLECTION, 'sessions', `${SESSION}.md`);
   fs.writeFileSync(file, `---\n${frontmatter}\n---\n\nbody\n`, 'utf8');
   return file;
@@ -85,6 +89,24 @@ test('a harness session note is found by name, indexed by the sweep, and read by
   }
 });
 
+test('migration keeps a harness note in the harness area when nothing reroutes it', () => {
+  const note = { area: AREA_HARNESS, collection: COLLECTION, name: `${SESSION}.md`, fields: { session_id: SESSION } };
+  const plan = planNote({ note, resolveRepoFor: () => null, overrides: {} });
+  assert.equal(plan.area, AREA_HARNESS);
+  assert.equal(plan.collection, COLLECTION);
+});
+
+test('a worktree folder is owned by its project when the project folder is under harness/', () => {
+  const s = scratchVault();
+  try {
+    const cwd = path.join(s.root, 'agentic-harness-wt-gone');
+    const placed = deriveCollection({ cwd, vaultRoot: s.vault, repo: null });
+    assert.equal(placed.collection, COLLECTION, 'not a new agentic-harness-wt-gone collection');
+  } finally {
+    s.cleanup();
+  }
+});
+
 // ------------------------------------------------------------------- real git
 
 function realGit(root) {
@@ -96,30 +118,30 @@ function realGit(root) {
   return { git, runGit };
 }
 
-test('real git: init-realm makes the harness baseline, and a push dry run would commit, pull and push a new note', () => {
+test('real git: init-realm makes the harness baseline from the policy files alone (no second hub before R-H3), and a push dry run would commit, pull and push a new note', () => {
   const s = scratchVault();
   try {
     const { git, runGit } = realGit(s.root);
     const realmDir = path.join(s.vault, AREA_HARNESS);
     const remote = path.join(s.root, 'vault-harness.git');
     git(['init', '--bare', '--quiet', '-b', 'main', remote], s.root);
-    ensureIndex(s.vault, AREA_HARNESS, COLLECTION);
+    const env = { ...identityEnv(s.root), HARNESS_REALMS: 'projects:push,classes:push,harness:push' };
 
     const lines = [];
     const say = (line) => lines.push(line);
     const initArgs = ['--vault', s.vault, '--realm', AREA_HARNESS, '--remote', pathToFileURL(remote).href];
-    const dry = initRealm([...initArgs, '--dry-run'], { env: IDENTITY_ENV, out: say, err: say, runGit });
+    const dry = initRealm([...initArgs, '--dry-run'], { env, out: say, err: say, runGit });
     assert.equal(dry, 0, lines.join('\n'));
     assert.equal(fs.existsSync(path.join(realmDir, '.git')), false, 'the dry run made no repository');
 
     lines.length = 0;
-    const real = initRealm(initArgs, { env: IDENTITY_ENV, out: say, err: say, runGit });
+    const real = initRealm(initArgs, { env, out: say, err: say, runGit });
     assert.equal(real, 0, lines.join('\n'));
     assert.equal(fs.readFileSync(path.join(realmDir, '.realm'), 'utf8').trim(), AREA_HARNESS);
     assert.equal(git(['rev-list', '--count', 'main'], realmDir).trim(), '1', 'one baseline commit');
     assert.deepEqual(
       git(['ls-tree', '-r', '--name-only', 'HEAD'], realmDir).trim().split('\n'),
-      ['.gitattributes', '.gitignore', '.realm', `${COLLECTION}/${HUB}`],
+      ['.gitattributes', '.gitignore', '.realm'],
     );
 
     // The one hand step the sync asks for on a realm's first push (realm-steps: "no upstream").
@@ -127,7 +149,6 @@ test('real git: init-realm makes the harness baseline, and a push dry run would 
     writeSession(s.vault, { session_id: SESSION, date: '2026-09-27', collection: COLLECTION, status: 'concluded' });
 
     lines.length = 0;
-    const env = { ...IDENTITY_ENV, HARNESS_REALMS: 'projects:push,classes:push,harness:push' };
     const code = syncRealms(['--push', '--dry-run', '--vault', s.vault], { env, out: say, err: say, runGit });
     assert.ok(lines.includes('harness: would-commit -> would-pull -> would-push'), lines.join('\n'));
     assert.equal(code, 0, lines.join('\n'));
