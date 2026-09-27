@@ -335,9 +335,10 @@ cases:
     realm: projects
 
   # -- coverage, 2026-09-24 (R-Q3): class hubs ---------------------------------------
-  # Class materials are `ingest: false`, so each class with material holds only its hub
-  # note. A hub states three things: the course title, the term and the bb2dash course
-  # id(s), so each class gets at most three cases.
+  # Class materials are `ingest: false` (searched through the bb2dash server), so a class
+  # without sessions holds only its hub note here. These cases only check that each class
+  # can be found by name; R-Q3 counts classes with sessions (2026-09-27). A hub states three
+  # things: the course title, the term and the bb2dash course id(s).
   # Hub: Fall 2026.
   - id: ist323-term
     query: which semester am I taking intro to cybersecurity

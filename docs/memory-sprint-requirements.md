@@ -344,8 +344,12 @@ untrusted notes) and R-H5 (a repo built from a folder that holds credentials).
 
 ### R-Q3 Every collection is covered by the golden set
 - **Requirement.** Golden cases gain `collection` and `realm`. At least three cases for every
-  collection with sessions, including `harness/agentic-harness` and every class with material. The eval
+  collection with sessions, including `harness/agentic-harness` and every class with sessions. The eval
   prints a per-collection table, runs nightly (read-only), and appends to `ingest/eval/history.jsonl`.
+  Class material is out of scope: it is `ingest: false` and searched through the `bb2dash` server
+  (gte-small, a different model), so this store holds only a class's hub note and its sessions. The
+  hub cases stay as a basic check that each class can be found by name; they do not count as coverage.
+  (Changed from "every class with material", Stack, 2026-09-27.)
   Later, label proposals may come from P's events in the LLM-judge style of UMBRELA
   ([paper](https://arxiv.org/html/2406.06519v1)); Stack confirms every label, and none is edited to make
   a run pass.
