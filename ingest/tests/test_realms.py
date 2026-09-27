@@ -131,3 +131,29 @@ def test_parse_realm_policies_reads_name_policy_pairs():
 def test_parse_realm_policies_refuses_a_malformed_entry(bad: str):
     with pytest.raises(ConfigError):
         parse_realm_policies(bad)
+
+
+# -- the harness realm (R-H1) -------------------------------------------------
+
+
+def test_the_harness_realm_is_accepted_and_its_collection_is_the_folder_below_it(tmp_path: Path):
+    realm(tmp_path / "projects")
+    realm(tmp_path / "harness")
+    note(tmp_path / "projects" / "bb2dash" / "sessions" / "a.md")
+    note(tmp_path / "harness" / "agentic-harness" / "sessions" / "b.md")
+    note(tmp_path / "harness" / "agentic-harness" / "agentic-harness.md")
+    loaded = load_vault(tmp_path, allowed_realms=["projects", "classes", "harness"])
+    assert realms_of(loaded) == {"a": "projects", "b": "harness", "agentic-harness": "harness"}
+    assert {doc.external_id: doc.collection for doc in loaded.documents} == {
+        "a": "bb2dash",
+        "b": "agentic-harness",
+        "agentic-harness": "agentic-harness",
+    }
+
+
+def test_parse_realm_policies_reads_the_three_realm_line():
+    assert parse_realm_policies("projects:push,classes:push,harness:push") == {
+        "projects": "push",
+        "classes": "push",
+        "harness": "push",
+    }
