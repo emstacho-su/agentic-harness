@@ -31,7 +31,14 @@ import secrets
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from .extract_schema import CLAIMS, ISSUE_KINDS, MAX_EVIDENCE_CHARS, MAX_SUMMARY_CHARS, MIN_EVIDENCE_CHARS
+from .extract_schema import (
+    CLAIMS,
+    ISSUE_KINDS,
+    MAX_EVIDENCE_CHARS,
+    MAX_SUMMARY_CHARS,
+    MIN_EVIDENCE_CHARS,
+    STATUS_STATES,
+)
 from .profile import KIND_CLASS, KIND_PROJECT
 
 NONCE_BYTES = 8
@@ -67,6 +74,9 @@ names one; otherwise null.
 - requirement_ids: every requirement or task id the note mentions (like R-C2, R-H4, B-3), exactly as written.
 - status_claims: a statement that a requirement or task is done, in progress, blocked or broken; \
 requirement_id is the id it is about, or null.
+  state is one of {", ".join(STATUS_STATES)}: "done" when the note says the work is finished, \
+"in-progress" when it was started and is not finished, "blocked" when something stops it going on, \
+"broken" when it was done before and now fails or no longer works.
 - open_questions: a question the note leaves open, with evidence.
 Every evidence is a quote copied character for character from that note's text, between \
 {MIN_EVIDENCE_CHARS} and {MAX_EVIDENCE_CHARS} characters long. Do not paraphrase, correct, \
