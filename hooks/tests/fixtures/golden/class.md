@@ -41,12 +41,14 @@ agent: claude-code
 agent_type: ''
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.2.0'
+generator: 'session-capture.mjs 2.3.0'
 tools_used:
   Write: 1
 up: '[[classes/ist323/ist323|ist323]]'
 related: []
 machine: ''
+retrievals: []
+retrieved: []
 ---
 
 # 2026-09-14 · ist323 · Outline the IST 323 threat-modelling assignment

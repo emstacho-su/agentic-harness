@@ -16,11 +16,12 @@ import logging
 import os
 from typing import Any, Protocol, Sequence
 
-from .config import CHUNKS_TABLE, DOCUMENTS_TABLE, VECTOR_TYPE, DbSettings
+from .config import CHUNKS_TABLE, DOCUMENTS_TABLE, RAG_SCHEMA, VECTOR_TYPE, DbSettings
 from .embedding import vector_literal
 from .errors import ConfigError, StoreError
 from .jsonutil import dumps
-from .models import Chunk, DocumentState, SourceDocument
+from .migrations import LEDGER_TABLE
+from .models import Chunk, DocumentState, RetrievalEvent, SourceDocument
 
 log = logging.getLogger(__name__)
 
@@ -150,6 +151,75 @@ INSERT INTO {CHUNKS_TABLE}
 VALUES (%s, %s, %s, %s, %s::{VECTOR_TYPE})
 """
 
+# -- retrieval events (R-P2) -------------------------------------------------
+#
+# A session note's `retrievals:` projected into rows. The note is the record, so
+# re-ingesting it replaces all of its rows at once, keyed by the note: delete,
+# then insert, one transaction.
+
+RETRIEVAL_EVENTS_TABLE = f"{RAG_SCHEMA}.retrieval_events"
+
+_EVENTS_TABLE_EXISTS = f"SELECT to_regclass('{RETRIEVAL_EVENTS_TABLE}')"
+_LEDGER_EXISTS = f"SELECT to_regclass('{LEDGER_TABLE}')"
+
+# The newest applied migration that touched rag.search, by its file name. The
+# ledger is how a later report tells which ranking produced an event.
+_SEARCH_VERSION = f"SELECT max(version) FROM {LEDGER_TABLE} WHERE position('search' in name) > 0"
+
+_DELETE_EVENTS = f"DELETE FROM {RETRIEVAL_EVENTS_TABLE} WHERE note_source = %s AND note_external_id = %s"
+
+_COUNT_EVENTS = f"SELECT count(*) FROM {RETRIEVAL_EVENTS_TABLE} WHERE note_source = %s AND note_external_id = %s"
+
+# result_document_id is resolved in the same statement, so it names the row the
+# result points at now; an unknown or empty result resolves to null.
+_INSERT_EVENT = f"""
+INSERT INTO {RETRIEVAL_EVENTS_TABLE}
+    (note_source, note_external_id, document_id, session_id, parent_session, machine,
+     realm, collection, channel, tool, query, filters, "limit", retrieval_index,
+     retrieved_at, rank, source, external_id, result_document_id, chunk_id,
+     similarity, rrf, search_version)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s,
+        (SELECT d.id FROM {DOCUMENTS_TABLE} d WHERE d.source = %s AND d.external_id = %s),
+        %s, %s, %s, %s)
+"""
+
+_EVENTS_MISSING_WARNING = (
+    f"{RETRIEVAL_EVENTS_TABLE} does not exist; run `uv run ingest db migrate`. "
+    "Retrieval events are skipped for this run and written on the next one."
+)
+
+
+def _event_row(
+    event: RetrievalEvent, document_id: int, search_version: str | None
+) -> tuple[Any, ...]:
+    """One ``_INSERT_EVENT`` parameter tuple, in column order."""
+    return (
+        event.note_source,
+        event.note_external_id,
+        document_id,
+        event.session_id,
+        event.parent_session,
+        event.machine,
+        event.realm,
+        event.collection,
+        event.channel,
+        event.tool,
+        event.query,
+        dumps(event.filters),
+        event.limit,
+        event.retrieval_index,
+        event.retrieved_at,
+        event.rank,
+        event.source,
+        event.external_id,
+        event.source,
+        event.external_id,
+        event.chunk_id,
+        event.similarity,
+        event.rrf,
+        search_version,
+    )
+
 
 class ChunkStore(Protocol):
     """What the pipeline needs from a persistence layer."""
@@ -184,6 +254,17 @@ class ChunkStore(Protocol):
         self, source: str, external_ids: Sequence[str], realm: str | None = None
     ) -> int: ...
 
+    def replace_retrieval_events(self, document_id: int, document: SourceDocument) -> int:
+        """Replace every event row of ``document`` with its ``retrievals``.
+
+        Returns the rows written; 0 when the table does not exist yet.
+        """
+        ...
+
+    def count_retrieval_events(self, document: SourceDocument) -> int | None:
+        """Event rows stored for ``document``; None when the table does not exist."""
+        ...
+
     def close(self) -> None: ...
 
 
@@ -208,6 +289,10 @@ class PostgresStore:
         # The exact kwargs the first connection used, so a reconnect can never
         # come back with weaker TLS or without keepalives.
         self._connect_options = dict(connect_options or {"autocommit": False})
+        # Checked once per run, on first use: whether rag.retrieval_events
+        # exists, and the rag.search version its rows are stamped with.
+        self._events_table: bool | None = None
+        self._search_version: str | None = None
 
     # -- connection resilience ---------------------------------------------
 
@@ -465,6 +550,90 @@ class PostgresStore:
             raise StoreError(f"Deleting orphans from {source} failed: {exc}") from exc
         return int(deleted if deleted is not None and deleted >= 0 else len(ids))
 
+    # -- retrieval events --------------------------------------------------
+
+    def _events_table_ready(self) -> bool:
+        """Does rag.retrieval_events exist? Asked once per run.
+
+        A store that has not run the migration yet keeps ingesting documents;
+        its events are skipped with one warning for the whole run, and the
+        pipeline's count comparison writes them on the first run after it.
+        """
+        if self._events_table is not None:
+            return self._events_table
+
+        def _probe() -> tuple[bool, str | None]:
+            with self._conn.cursor() as cur:
+                cur.execute(_EVENTS_TABLE_EXISTS)
+                row = cur.fetchone()
+                exists = bool(row and row[0])
+                version = None
+                if exists:
+                    cur.execute(_LEDGER_EXISTS)
+                    ledger = cur.fetchone()
+                    if ledger and ledger[0]:
+                        cur.execute(_SEARCH_VERSION)
+                        found = cur.fetchone()
+                        version = None if not found or found[0] is None else str(found[0])
+            self._conn.rollback()  # end the implicit read transaction
+            return exists, version
+
+        try:
+            exists, version = self._run("Retrieval events table check", _probe)
+        except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
+            self._safe_rollback()
+            raise StoreError(f"Checking for {RETRIEVAL_EVENTS_TABLE} failed: {exc}") from exc
+
+        self._events_table, self._search_version = exists, version
+        if not exists:
+            log.warning(_EVENTS_MISSING_WARNING)
+        return exists
+
+    def replace_retrieval_events(self, document_id: int, document: SourceDocument) -> int:
+        if not isinstance(document_id, int) or isinstance(document_id, bool):
+            raise StoreError(f"document_id must be an int, got {document_id!r}")
+        if not self._events_table_ready():
+            return 0
+        rows = [_event_row(event, document_id, self._search_version) for event in document.retrievals]
+        key = (document.source, document.external_id)
+
+        def _write() -> int:
+            # Delete and insert commit together, so a retry after a dropped
+            # connection re-runs both and a note never has half its events.
+            with self._conn.cursor() as cur:
+                cur.execute(_DELETE_EVENTS, key)
+                if rows:
+                    cur.executemany(_INSERT_EVENT, rows)
+            self._conn.commit()
+            return len(rows)
+
+        try:
+            return self._run(f"Retrieval events for {document.external_id}", _write)
+        except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
+            self._safe_rollback()
+            raise StoreError(
+                f"Writing retrieval events for {document.source}/{document.external_id} failed: {exc}"
+            ) from exc
+
+    def count_retrieval_events(self, document: SourceDocument) -> int | None:
+        if not self._events_table_ready():
+            return None
+
+        def _count() -> int:
+            with self._conn.cursor() as cur:
+                cur.execute(_COUNT_EVENTS, (document.source, document.external_id))
+                row = cur.fetchone()
+            self._conn.rollback()
+            return int(row[0]) if row and row[0] is not None else 0
+
+        try:
+            return self._run(f"Retrieval event count for {document.external_id}", _count)
+        except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
+            self._safe_rollback()
+            raise StoreError(
+                f"Counting retrieval events for {document.source}/{document.external_id} failed: {exc}"
+            ) from exc
+
     # -- lifecycle ---------------------------------------------------------
 
     def close(self) -> None:
@@ -501,6 +670,13 @@ class NullStore:
 
     def delete_documents(self, source: str, external_ids, realm: str | None = None) -> int:
         raise StoreError("NullStore cannot delete. This is a --dry-run store.")
+
+    def replace_retrieval_events(self, document_id: int, document: SourceDocument) -> int:
+        raise StoreError("NullStore cannot write. This is a --dry-run store.")
+
+    def count_retrieval_events(self, document: SourceDocument) -> int | None:
+        # Nothing is stored, so a dry run plans every event of every document.
+        return 0
 
     def close(self) -> None:
         return None

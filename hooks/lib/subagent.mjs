@@ -52,6 +52,7 @@ import {
 import { ensureIndex, findNotesByName, persist, readNote, resolveChainHead, vaultAvailable } from './notes-io.mjs';
 import { redact } from './redact.mjs';
 import { resolveRepo } from './repo.mjs';
+import { extractRetrievals, retrievedLinks } from './retrievals.mjs';
 import { isoDate, toPosix, uniqueCapped } from './text.mjs';
 import { extractOrigin, extractOutcome, extractPrompts, extractTools, createAccumulator, firstPromptText, knownSecrets, readEntries } from './transcript.mjs';
 import { TITLE_SEPARATOR, workerTitle } from './title.mjs';
@@ -132,6 +133,8 @@ export function captureSubagent({
   }
 
   const secrets = knownSecrets(prompts, accumulator);
+  const searches = extractRetrievals(entries, { secrets, includeSidechain: true });
+
   const context = {
     sessionId: input.sessionId,
     noteId: childNoteId(input.sessionId, agentId),
@@ -183,6 +186,9 @@ export function captureSubagent({
     // A worker's transcript is all sidechain; its closing message is its report.
     outcome: extractOutcome(entries, { includeSidechain: true }),
     knownSecrets: secrets,
+    // R-P1: the worker's own searches; the parent note records only its own.
+    retrievals: searches.records,
+    retrieved: retrievedLinks(searches.hits, { vaultRoot, deadlineAt: deadlineAt - RESERVE_MS }),
     commands: accumulator.commands,
     commandCount: accumulator.commandCount,
     agents: accumulator.agents,

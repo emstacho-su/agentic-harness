@@ -14,7 +14,9 @@ emits one :class:`SourceDocument` per note.
 * ``agent``       = ``claude-code``
 * ``metadata``    = the frontmatter verbatim, plus an ``_ingest`` sub-object.
   Ingest-added keys are nested under ``_ingest`` so they can never collide with
-  a user's own frontmatter key named ``path`` or ``source``.
+  a user's own frontmatter key named ``path`` or ``source``. The one key left
+  out is ``retrievals``: it is parsed into ``SourceDocument.retrievals`` and
+  projected into ``rag.retrieval_events`` instead.
 
 Opting out. A note with frontmatter ``ingest: false`` stays in the vault for
 reading and linking but is never embedded. Class materials exported from bb2dash
@@ -34,7 +36,8 @@ from typing import Any, Sequence
 from ..config import DEFAULT_AGENT, ENV_REALMS, REALM_NAME, SDK_ORIGIN_PREFIX, SOURCE_OBSIDIAN
 from ..errors import SourceError
 from ..jsonutil import json_safe
-from ..models import SourceDocument
+from ..models import RetrievalEvent, SourceDocument
+from ..retrievals import parse_retrievals, session_fields_from
 from .base import LoadedSource, SkippedRecord
 
 log = logging.getLogger(__name__)
@@ -57,6 +60,10 @@ _H1 = re.compile(r"^\s{0,3}#\s+(.+?)\s*#*\s*$", re.MULTILINE)
 # Frontmatter key that overrides the path-based identity.
 ID_KEY = "id"
 MAX_ID_LENGTH = 512
+
+# Frontmatter key the capture hook records a session's searches under (SC-1).
+# Projected into rag.retrieval_events; never part of documents.metadata.
+RETRIEVALS_KEY = "retrievals"
 
 # Frontmatter key that opts a note out of embedding. Absent means ingest.
 INGEST_KEY = "ingest"
@@ -414,6 +421,8 @@ def _load_note(path: Path, relative: str, realm: str | None = None) -> SourceDoc
         return SkippedRecord(relative, SDK_SESSION_REASON)
 
     external_id = _derive_external_id(frontmatter, relative)
+    collection = _derive_collection(frontmatter, relative)
+    retrievals = _parse_retrievals(frontmatter, relative, external_id, collection, realm)
 
     stat = path.stat()
     ingest_meta: dict[str, Any] = {
@@ -430,16 +439,40 @@ def _load_note(path: Path, relative: str, realm: str | None = None) -> SourceDoc
     if realm is not None:
         ingest_meta["realm"] = realm
 
-    metadata = {**json_safe(frontmatter), "_ingest": ingest_meta}
+    # `retrievals` becomes rag.retrieval_events rows and stays out of metadata,
+    # which rag.search returns with every hit. `retrieved` stays: it is links.
+    kept = {key: value for key, value in frontmatter.items() if key != RETRIEVALS_KEY}
+    metadata = {**json_safe(kept), "_ingest": ingest_meta}
     return SourceDocument(
         source=SOURCE_OBSIDIAN,
         external_id=external_id,
         body=body,
         title=_derive_title(frontmatter, body, path),
         agent=DEFAULT_AGENT,
-        collection=_derive_collection(frontmatter, relative),
+        collection=collection,
         metadata=metadata,
+        retrievals=retrievals,
     )
+
+
+def _parse_retrievals(
+    frontmatter: dict,
+    relative: str,
+    external_id: str,
+    collection: str | None,
+    realm: str | None,
+) -> tuple[RetrievalEvent, ...]:
+    """The note's retrieval events. A malformed entry is logged and dropped, never fatal."""
+    if RETRIEVALS_KEY not in frontmatter:
+        return ()
+    events, warnings = parse_retrievals(
+        frontmatter[RETRIEVALS_KEY],
+        note_external_id=external_id,
+        session_fields=session_fields_from(frontmatter, collection=collection, realm=realm),
+    )
+    for warning in warnings:
+        log.warning("%s: %s", relative, warning)
+    return tuple(events)
 
 
 def _is_sdk_session(frontmatter: dict) -> bool:

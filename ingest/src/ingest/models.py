@@ -7,9 +7,46 @@ transformations return new objects.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import Any
 
 from .errors import DocumentError
+
+
+@dataclass(frozen=True)
+class RetrievalEvent:
+    """One row destined for ``rag.retrieval_events``: one result of one retrieval.
+
+    A retrieval that returned nothing is still one event, with ``rank`` and every
+    result field ``None`` — an empty result is an answer worth reporting (R-P3).
+    The store fills what it alone knows: the row id, the session note's
+    ``document_id``, the ``result_document_id`` looked up by ``(source,
+    external_id)``, ``search_version`` and the timestamps. ``used`` and
+    ``judged_relevant`` belong to the feedback loop and start null.
+    """
+
+    note_source: str
+    note_external_id: str
+    session_id: str
+    parent_session: str | None
+    machine: str | None
+    realm: str | None
+    collection: str | None
+    channel: str
+    tool: str
+    query: str
+    filters: dict[str, Any]
+    limit: int | None
+    #: Position of the retrieval in the note's ``retrievals:`` list.
+    retrieval_index: int
+    retrieved_at: datetime
+    #: 1-based rank within the retrieval; None for an empty result.
+    rank: int | None = None
+    source: str | None = None
+    external_id: str | None = None
+    chunk_id: int | None = None
+    similarity: float | None = None
+    rrf: float | None = None
 
 
 @dataclass(frozen=True)
@@ -25,6 +62,9 @@ class SourceDocument:
     # Mirrors the vault folder structure; exposed as filter_collection on rag.search.
     collection: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Parsed from the note's ``retrievals:`` frontmatter, which is kept out of
+    # ``metadata``; projected into ``rag.retrieval_events`` after the document.
+    retrievals: tuple[RetrievalEvent, ...] = ()
 
     def __post_init__(self) -> None:
         # Validate at the boundary: a loader bug must not reach the database.
@@ -36,6 +76,8 @@ class SourceDocument:
             raise DocumentError(self.external_id, "body is empty")
         if not isinstance(self.metadata, dict):
             raise DocumentError(self.external_id, "metadata must be a dict")
+        if not isinstance(self.retrievals, tuple):
+            raise DocumentError(self.external_id, "retrievals must be a tuple")
 
     def with_metadata(self, **extra: Any) -> "SourceDocument":
         return replace(self, metadata={**self.metadata, **extra})

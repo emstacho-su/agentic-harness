@@ -9,6 +9,10 @@
 # HARNESS_HOOKS_DIR, HARNESS_NODE, HARNESS_UV, HARNESS_NIGHTLY_LOG, REALM_SYNC,
 # TRANSCRIPT_IDLE_HOURS, STALE_AFTER_HOURS) with the environment winning. The
 # ingest and the hooks read the rest of that file (DATABASE_URL, ...) themselves.
+# STATE_SWEEP (apply|dryrun|skip, default apply) and STATE_MAX_AGE_DAYS (default
+# 7) come from the environment only: the state sweep removes SessionStart records
+# (~/.harness/state/session-start/*.json) older than that, right after the
+# transcript sweep.
 # Register with cron, e.g.  0 3 * * * /path/to/agentic-harness/scripts/nightly-ingest.sh
 # or with launchd on macOS; both are documented in docs/portable.md.
 #
@@ -33,6 +37,8 @@ LOG="${HARNESS_NIGHTLY_LOG:-$HOME/.claude/hooks/nightly-ingest.log}"
 REALM_SYNC="${REALM_SYNC:-apply}"
 TRANSCRIPT_IDLE_HOURS="${TRANSCRIPT_IDLE_HOURS:-6}"
 STALE_AFTER_HOURS="${STALE_AFTER_HOURS:-24}"
+STATE_SWEEP="${STATE_SWEEP:-apply}"
+STATE_MAX_AGE_DAYS="${STATE_MAX_AGE_DAYS:-7}"
 
 mkdir -p "$(dirname "$LOG")"
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"; }
@@ -64,6 +70,18 @@ if [ "$REALM_SYNC" != "skip" ]; then
 fi
 
 run_step transcripts "$NODE_BIN" "$HOOKS/sweep-transcripts.mjs" --vault "$VAULT" --min-idle-hours "$TRANSCRIPT_IDLE_HOURS"; transcript_code=$?
+
+# Step 0a: session-start records older than STATE_MAX_AGE_DAYS. Never fatal;
+# a missing folder is exit 0, a bad STATE_MAX_AGE_DAYS is the CLI's exit 2.
+state_code=0
+case "$STATE_SWEEP" in
+  skip) log "state: skipped by STATE_SWEEP=skip" ;;
+  apply|dryrun)
+    state_args=(--max-age-days "$STATE_MAX_AGE_DAYS"); [ "$STATE_SWEEP" = "dryrun" ] && state_args+=(--dry-run)
+    run_step state "$NODE_BIN" "$HOOKS/sweep-state.mjs" "${state_args[@]}"; state_code=$? ;;
+  *) log "state: unknown STATE_SWEEP=$STATE_SWEEP (apply|dryrun|skip); not swept"; state_code=2 ;;
+esac
+
 run_step checkpoints "$NODE_BIN" "$HOOKS/collect-checkpoints.mjs" --vault "$VAULT"; checkpoint_code=$?
 run_step sweep "$UV_BIN" --directory "$PROJECT" run ingest sweep-concluded --path "$VAULT" --stale-after-hours "$STALE_AFTER_HOURS" --apply; sweep_code=$?
 run_step ingest "$UV_BIN" --directory "$PROJECT" run ingest --source obsidian --path "$VAULT" --prune; ingest_code=$?
@@ -76,5 +94,5 @@ if [ "$REALM_SYNC" != "skip" ]; then
   run_step realms-push "$NODE_BIN" "$HOOKS/sync-realms.mjs" "${sync_args[@]}"; push_code=$?
 fi
 
-log "=== nightly reconcile finished (realms-pull $pull_code, transcripts $transcript_code, checkpoints $checkpoint_code, sweep $sweep_code, ingest $ingest_code, realms-push $push_code) ==="
+log "=== nightly reconcile finished (realms-pull $pull_code, transcripts $transcript_code, state $state_code, checkpoints $checkpoint_code, sweep $sweep_code, ingest $ingest_code, realms-push $push_code) ==="
 exit "$ingest_code"

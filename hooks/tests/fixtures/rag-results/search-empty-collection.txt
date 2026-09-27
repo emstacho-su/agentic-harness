@@ -1,0 +1,10 @@
+Nothing relevant found for "ledger invariants" in collection "agentic-harnes".
+
+No chunk cleared the 0.7 cosine similarity floor, and no chunk matched the query terms literally. On this corpus that normally means the store genuinely holds nothing on this topic — it is a real answer, not a failure.
+
+Collection names are matched exactly and are case-sensitive.
+Collections that exist: estac (513), ist335 (14).
+
+If you expected a hit, try in this order:
+- Drop the filters and search everything.
+- Lower `min_similarity` (e.g. 0.5) to widen the net deliberately.

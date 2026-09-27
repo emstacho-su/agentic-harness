@@ -14,12 +14,17 @@ UPDATE, no re-chunking and no embedding — and is counted separately.
 
 Widening the hash to cover frontmatter would be the other way to catch it, and
 would re-embed every document in the store the first time it ran.
+
+A session note's retrievals (R-P2) ride along: after any write they are
+re-projected into ``rag.retrieval_events``, and on an unchanged note the stored
+row count is compared with the note's, so a re-run writes nothing and a table
+migrated after the note was stored is filled on the next run.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Iterable
 
@@ -109,12 +114,26 @@ class Action(str, Enum):
     FAILED = "failed"
 
 
+class EventAction(str, Enum):
+    """What happened to a document's retrieval events (R-P2)."""
+
+    NONE = "none"
+    WRITTEN = "written"
+    PLANNED = "planned"
+    #: rag.retrieval_events does not exist yet; the next run after the
+    #: migration writes them.
+    SKIPPED = "skipped"
+
+
 @dataclass(frozen=True)
 class DocumentOutcome:
     external_id: str
     action: Action
     chunk_count: int = 0
     detail: str | None = None
+    #: Retrieval event rows written, planned or skipped, per ``event_action``.
+    event_count: int = 0
+    event_action: EventAction = EventAction.NONE
 
 
 @dataclass
@@ -147,8 +166,28 @@ class IngestStats:
     def failures(self) -> list[DocumentOutcome]:
         return [o for o in self.outcomes if o.action is Action.FAILED]
 
+    def _events(self, event_action: EventAction) -> int:
+        return sum(o.event_count for o in self.outcomes if o.event_action is event_action)
+
+    @property
+    def events_written(self) -> int:
+        return self._events(EventAction.WRITTEN)
+
+    @property
+    def events_planned(self) -> int:
+        return self._events(EventAction.PLANNED)
+
+    @property
+    def events_skipped(self) -> int:
+        return self._events(EventAction.SKIPPED)
+
     def summary(self) -> dict[str, int]:
-        return {action.value: self.count(action) for action in Action}
+        return {
+            **{action.value: self.count(action) for action in Action},
+            "events_written": self.events_written,
+            "events_planned": self.events_planned,
+            "events_skipped": self.events_skipped,
+        }
 
 
 class IngestPipeline:
@@ -211,18 +250,21 @@ class IngestPipeline:
 
         if self.dry_run:
             action = Action.PLANNED_NEW if is_new else Action.PLANNED_CHANGED
-            return DocumentOutcome(document.external_id, action, len(chunks))
+            return self._plan_events(
+                DocumentOutcome(document.external_id, action, len(chunks)), document
+            )
 
         assert self.embedder is not None  # guaranteed by __init__
         embeddings = self.embedder.embed([chunk.content for chunk in chunks])
-        _, inserted = self.store.replace_document(
+        document_id, inserted = self.store.replace_document(
             document, digest, chunks, embeddings
         )
-        return DocumentOutcome(
+        outcome = DocumentOutcome(
             document.external_id,
             Action.INSERTED if inserted else Action.UPDATED,
             len(chunks),
         )
+        return self._project_events(outcome, document_id, document, clear_stale=not inserted)
 
     # -- the body is identical; is the frontmatter? -------------------------
 
@@ -232,15 +274,81 @@ class IngestPipeline:
         difference = _metadata_difference(document, state)
         if difference is None:
             log.debug("%s unchanged, skipping", document.external_id)
-            return DocumentOutcome(document.external_id, Action.UNCHANGED)
+            return self._heal_events(
+                DocumentOutcome(document.external_id, Action.UNCHANGED),
+                state.document_id,
+                document,
+            )
 
         if self.dry_run:
-            return DocumentOutcome(
-                document.external_id, Action.PLANNED_METADATA, detail=difference
+            return self._plan_events(
+                DocumentOutcome(document.external_id, Action.PLANNED_METADATA, detail=difference),
+                document,
             )
 
         log.debug("%s: %s; refreshing metadata only", document.external_id, difference)
         self.store.update_document_metadata(state.document_id, document)
-        return DocumentOutcome(
+        outcome = DocumentOutcome(
             document.external_id, Action.METADATA_UPDATED, detail=difference
         )
+        return self._project_events(outcome, state.document_id, document, clear_stale=True)
+
+    # -- retrieval events (R-P2) ---------------------------------------------
+    #
+    # `retrievals` is kept out of metadata, so neither the body hash nor the
+    # metadata comparison sees it change. After a write the events are always
+    # re-projected; on an unchanged document the stored row count is compared
+    # with the expected one, which also fills a table created after the note was
+    # stored. Replacing is keyed by the note, so a re-run never duplicates rows.
+
+    def _project_events(
+        self,
+        outcome: DocumentOutcome,
+        document_id: int,
+        document: SourceDocument,
+        *,
+        clear_stale: bool = False,
+    ) -> DocumentOutcome:
+        expected = len(document.retrievals)
+        if not expected:
+            # A rewritten note that no longer carries retrievals must not keep
+            # the rows of the ones it lost. A new document has none to lose.
+            if clear_stale and self.store.count_retrieval_events(document):
+                self.store.replace_retrieval_events(document_id, document)
+                log.debug("%s: cleared retrieval events it no longer carries", document.external_id)
+            return outcome
+
+        written = self.store.replace_retrieval_events(document_id, document)
+        if written == 0:
+            # Only a missing table writes nothing for a non-empty list.
+            return replace(outcome, event_count=expected, event_action=EventAction.SKIPPED)
+        return replace(outcome, event_count=written, event_action=EventAction.WRITTEN)
+
+    def _heal_events(
+        self, outcome: DocumentOutcome, document_id: int, document: SourceDocument
+    ) -> DocumentOutcome:
+        expected = len(document.retrievals)
+        if not expected:
+            return outcome
+        stored = self.store.count_retrieval_events(document)
+        if stored is None:
+            return replace(outcome, event_count=expected, event_action=EventAction.SKIPPED)
+        if stored == expected:
+            return outcome
+        if self.dry_run:
+            return replace(outcome, event_count=expected, event_action=EventAction.PLANNED)
+        log.info(
+            "%s: %d retrieval event(s) stored, %d in the note; re-projecting",
+            document.external_id,
+            stored,
+            expected,
+        )
+        return self._project_events(outcome, document_id, document)
+
+    def _plan_events(self, outcome: DocumentOutcome, document: SourceDocument) -> DocumentOutcome:
+        expected = len(document.retrievals)
+        if not expected:
+            return outcome
+        if self.store.count_retrieval_events(document) is None:
+            return replace(outcome, event_count=expected, event_action=EventAction.SKIPPED)
+        return replace(outcome, event_count=expected, event_action=EventAction.PLANNED)

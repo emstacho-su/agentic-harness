@@ -51,13 +51,15 @@ agent: claude-code
 agent_type: ''
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.2.0'
+generator: 'session-capture.mjs 2.3.0'
 tools_used:
   Edit: 3
   Bash: 1
 up: '[[projects/bb2dash/bb2dash|bb2dash]]'
 related: []
 machine: ''
+retrievals: []
+retrieved: []
 ---
 
 # 2026-09-12 · bb2dash · From the bb2dash checkout, fix the

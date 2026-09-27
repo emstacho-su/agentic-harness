@@ -464,3 +464,29 @@ test('the CLI process: a dry run exits 0 and reports, bad usage exits 2', () => 
     sandbox.cleanup();
   }
 });
+
+test('the sweep reads session-start records from the state folder it is given', () => {
+  const sandbox = createSandbox();
+  try {
+    age(installTranscript(sandbox, 'plain-main', MAIN), 12);
+    const stateDir = path.join(sandbox.root, 'state', 'session-start');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, `${MAIN}.json`),
+      JSON.stringify({ at: '2026-09-11T14:00:00.000Z', session_id: MAIN, source: 'status', external_ids: ['projects/bb2dash/status.md'] }),
+      'utf8',
+    );
+
+    sweep(sandbox, { stateDir });
+
+    const parent = fields(sandbox, `projects/bb2dash/sessions/${MAIN}.md`);
+    assert.deepEqual(parent.retrievals.map((r) => r.tool), ['session-start']);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('the CLI takes the state folder from the merged environment, machine.env included', () => {
+  const parsed = parseArgs([], { HARNESS_STATE_DIR: 'C:/vm/state' }, 'C:/home');
+  assert.equal(parsed.options.stateDir, path.join('C:/vm/state', 'session-start'));
+});

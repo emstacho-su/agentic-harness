@@ -1,0 +1,5 @@
+No document in rag.documents with source="obsidian" and external_id="notes/gone.md".
+
+This is an empty result, not an error. Check that:
+- `source` is exactly one of the ingested producers (obsidian, claude-mem, hermes).
+- `external_id` is copied verbatim from a search_context result — for obsidian it is the vault-relative path, for claude-mem an observation id or a "summary:" / "prompt:" prefixed id.
