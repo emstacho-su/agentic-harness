@@ -156,7 +156,7 @@ def test_extract_and_ledger_refuse_to_run_without_their_required_arguments(capsy
         with pytest.raises(SystemExit) as info:
             run_curate([stage])
         assert info.value.code == 2
-    assert set(curate_cli.STAGES) == {"inventory", "extract", "ledger", "status", "history"}
+    assert set(curate_cli.STAGES) == {"inventory", "extract", "ledger", "status", "history", "report"}
 
 
 def test_an_unknown_stage_is_refused(capsys) -> None:

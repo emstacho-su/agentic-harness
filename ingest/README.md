@@ -508,9 +508,12 @@ never call a model.
   and prune candidates (every impact feature zero, and a scratchpad `cwd` or a
   body under 400 characters), one checkbox each, reasons joined by `; `:
   ``- [ ] condense `<note id>` [[link|date]] — reasons (no-loss: yes)``.
-  Tick a box to accept it; the next run records the tick (or a later untick) in
-  `curate.decisions`. `no-loss` is the verifier: nothing extracted from the note
-  would be lost.
+  Tick a box to accept it; the next run records it in `curate.decisions`. A box
+  left unticked counts as a rejection once the report is older than the run's
+  day, or when it undoes a recorded tick; today's unticked boxes stay undecided,
+  and a report with undecided boxes is shown as `(open)` in the tally and not
+  counted yet. `no-loss` is the verifier: nothing extracted from the note would
+  be lost.
 - **Tally and promotion (R-C7):** each report tallies, per action type and per
   earlier report, the share of proposals that were ticked; a report with no
   proposal of a type is not a run for it. Condense and prune are promoted
