@@ -427,7 +427,28 @@ cd ingest
 uv run ingest eval                       # read-only; prints scores and each failed case
 uv run ingest eval --json > before.json  # keep a run to diff against
 uv run ingest eval --min-hit-rate 0.8    # exit 1 below the bar or on any failed negative
+uv run ingest eval --history             # also append one JSON line to ingest/eval/history.jsonl
 ```
+
+Every positive case carries two labels, copied from the expected document's row in
+the store rather than guessed: `collection` (required, the `collection` column) and
+`realm` (the vault realm, `metadata._ingest.realm`; claude-mem rows have none, so their
+cases leave it out). A negative case carries neither. The labels give two more pieces of
+output:
+
+- **A per-collection table** after the three scores, one row per realm and collection
+  (`-` for no realm) with its case count, hit@3 and MRR, so a regression in one project or
+  class is not averaged away. `--json` carries it as `per_collection`.
+- **A label check**, printed only when it finds something: a case that hit, but whose
+  matching document came from a different collection than its label. It is not a
+  failure; it is how a note that moved between realms or collections gets noticed.
+  `--json` marks each such case `mislabelled: true`.
+
+`--history [PATH]` appends one line per run, after scoring: the time (UTC), k, the three
+scores, the case count, the per-collection table, and the ids of the failed and
+mislabelled cases. The default path is `ingest/eval/history.jsonl`, which is gitignored
+because it is a per-machine record, like the nightly log. A history that cannot be
+written is a warning on stderr and does not change the exit code.
 
 Run it before and after any change to capture, chunking, the embedding model or
 `rag.search`, and put both scores in the commit message. Add a case whenever
@@ -442,6 +463,10 @@ retrieval lets you down in real use; never edit a case to make a run pass.
 | 2026-09-21 | strict matches rank first in the text arm (20260921223612) | 0.85 | 0.69 | 1.00 |
 | 2026-09-21 | gradebook label corrected (two worker notes on the same phase) | 0.90 | 0.74 | 1.00 |
 | 2026-09-21 | `## Outcome` backfilled into 371 session notes and re-embedded | 0.95 | 0.72 | 1.00 |
+| 2026-09-24 | before the dogfood negative (20 positive, 5 negative cases) | 0.95 | 0.75 | 1.00 |
+| 2026-09-24 | dogfood negative `neg-retrieval-provenance` added; it fails on session boilerplate, as expected until unit P lands (R-Q2) | 0.95 | 0.75 | 0.83 |
+| 2026-09-24 | 41 coverage cases (R-Q3): three or more for every collection with sessions and every class with material, except `wa2-revision` (two); three honest misses stay in, all of them notes outranked by their own subagent notes | 0.93 | 0.81 | 0.83 |
+| 2026-09-27 | coverage reviewed against every expected document: `ah-orphan-index-row` dropped (its query copied the note's wording), two more expected ids on `ah-checkpoint-collect-times`, third `wa2-revision` case; the store also gained this review's own subagent notes | 0.93 | 0.79 | 0.83 |
 
 The one miss left after all of this, "why was claude-mem retired", is a decision that was
 made outside any captured session: no document in the store states it. The case stays in

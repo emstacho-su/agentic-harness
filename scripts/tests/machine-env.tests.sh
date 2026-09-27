@@ -36,6 +36,7 @@ failures=0
   printf '%s\n' 'BASH_ENV=/tmp/evil'
   printf '%s\n' 'export HARNESS_X=1'
   printf '%s\n' 'REALM_SYNC=dryrun'
+  printf '%s\n' 'STORE_VERIFY=skip' 'RETRIEVAL_EVAL=skip'
   printf '%s\n' 'HARNESS_ALREADY=from-file'
   printf '%s\n' "DATABASE_URL=postgresql://harness:${SECRET}@localhost:5433/harness"
   printf '%s' 'HARNESS_LAST=no-newline'
@@ -43,7 +44,7 @@ failures=0
 
 # The load runs in a subshell: nothing it exports can leak into this script.
 (
-  unset LD_PRELOAD BASH_ENV DATABASE_URL REALM_SYNC HARNESS_STORE_DB HARNESS_QUOTED \
+  unset LD_PRELOAD BASH_ENV DATABASE_URL REALM_SYNC STORE_VERIFY RETRIEVAL_EVAL HARNESS_STORE_DB HARNESS_QUOTED \
     HARNESS_CRLF HARNESS_X HARNESS_LAST
   export HARNESS_MACHINE_ENV="$FILE"
   export HARNESS_ALREADY=from-env
@@ -74,6 +75,7 @@ stderr_lacks() { ! stderr_has "$1"; }
 stderr_lacks_line() { ! grep -qxF -- "$1" "$ERR_OUT"; }
 nothing_has() { ! grep -qF -- "$1" "$ENV_OUT" "$ERR_OUT"; }
 cr_free() { ! grep -q $'\r' "$ENV_OUT"; }
+both_skip() { equals STORE_VERIFY skip && equals RETRIEVAL_EVAL skip; }
 
 check "the lib sources and loads (exit $load_code)" [ "$load_code" -eq 0 ]
 check "a last line without a newline is read" equals HARNESS_LAST no-newline
@@ -91,6 +93,7 @@ check "a quoted value loses its quotes" equals HARNESS_QUOTED "a value with spac
 check "a key already in the environment is not overridden" equals HARNESS_ALREADY from-env
 check "an 'export ' line is accepted" equals HARNESS_X 1
 check "the allowlisted REALM_SYNC is exported" equals REALM_SYNC dryrun
+check "the allowlisted STORE_VERIFY and RETRIEVAL_EVAL are exported" both_skip
 check "DATABASE_URL is left to its readers, not exported" not_exported DATABASE_URL
 check "DATABASE_URL is not reported as ignored" stderr_lacks "'DATABASE_URL'"
 check "no value from the file reaches the output unasked" nothing_has "$SECRET"

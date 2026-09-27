@@ -26,7 +26,7 @@ function Get-MachineEnvKeyVerdict {
     # Every harness setting carries this prefix.
     $prefix = 'HARNESS_'
     # The un-prefixed settings the nightly scripts read; exactly those.
-    $settings = @('REALM_SYNC', 'TRANSCRIPT_IDLE_HOURS', 'STALE_AFTER_HOURS')
+    $settings = @('REALM_SYNC', 'TRANSCRIPT_IDLE_HOURS', 'STALE_AFTER_HOURS', 'STORE_VERIFY', 'RETRIEVAL_EVAL')
     # Held in the file for ingest, the hooks and the MCP server, which read it themselves.
     $leftToReaders = @('DATABASE_URL', 'DATABASE_SSL', 'DATABASE_CA_CERT', 'FASTEMBED_CACHE_DIR')
 

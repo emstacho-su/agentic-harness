@@ -7,6 +7,16 @@
 #                    that may live in more than one note, or not exist yet
 # A negative case is off-topic and must return nothing.
 #
+# Every positive case is labelled with where its answer lives, taken from the
+# expected document's row in the store, never guessed:
+#   collection  the document's `collection` column (required)
+#   realm       its vault realm, `metadata._ingest.realm`; claude-mem rows have none
+# A negative case carries neither. When a case passes on an `expect` id whose
+# document sits in another collection or realm than the label says, the eval
+# prints it under "label check": the note moved, or the label is wrong. A case
+# with no realm matches a row with no realm. `expect_contains` matches are not
+# label-checked, since that form accepts the answer from any note.
+#
 # Add a case whenever retrieval lets you down in real use. Do not edit a case to
 # make a run pass; change it only when the corpus genuinely moved, or when a
 # returned document you did not list turns out to answer the question — read it
@@ -18,53 +28,72 @@ cases:
     query: how does bankroll balance tracking work in quant edge tracker
     # summary:109 is the session summary that describes the same architecture.
     expect: ["313", "314", "summary:109"]
+    collection: quant-edge-tracker
   - id: reconciliation-drift
     query: how did I get rid of the 15 cent reconciliation drift in the betting tracker
     expect: ["448"]
+    collection: quant-edge-tracker
   - id: missing-bets-fix
     query: bets were missing and duplicated in the betting database, what was the fix
     expect: ["314"]
+    collection: quant-edge-tracker
   - id: betting-schema
     query: what tables make up the betting database schema
     expect: ["440"]
+    collection: quant-edge-tracker
   - id: animation-config-conflict
     query: why were there two background animation settings systems
     expect: ["341", "342", "357", "338"]
+    collection: quant-edge-tracker
   - id: container-id-error
     query: container id error when using code execution with server tools in the news agent
     expect: ["110", "121"]
+    collection: ai-news-agent
   - id: routines-billing
     query: how are Claude Code routines billed and scheduled
     expect: ["252"]
+    collection: ai-news-agent
   - id: v1-routines-blockers
     query: what decisions had to be made before starting the v1-routines build
     expect: ["380", "352", "276"]
+    collection: ai-news-agent
   - id: first-briefing
     query: did the first production daily briefing run succeed
     expect: ["246"]
+    collection: ai-news-agent
   - id: vercel-dependencies
     query: what dependencies did the news dashboard need to deploy on Vercel
     # 384 and summary:120 both state the cause (empty dependencies in pyproject.toml).
     expect: ["382", "384", "summary:120"]
+    collection: ai-news-agent
   - id: harness-health-check
     query: harness health check after moving off claude-mem
     expect: ["66"]
+    collection: estac
   - id: nextjs-survey
     query: which of my spring 2026 projects are Next.js apps
     expect: ["84"]
+    collection: estac
 
   # -- captured sessions --------------------------------------------------------
   - id: navbar-redesign
     query: making the quant edge tracker nav bar horizontal across the top
     expect: ["session-918369a9-5cd6-4c0c-8391-cea3d5a453d3"]
+    collection: quant-edge-tracker
+    realm: projects
   - id: hero-grid
     query: thermodynamic grid for the portfolio site hero
     expect: ["session-8448de7e-0cb8-447f-9e68-72bc3d89ad38"]
+    collection: portfolio-website
+    realm: projects
   - id: planner-calendar-phase
     query: planner week grid and push-only Google Calendar sync
     expect:
       - session-031d51be-6a6f-4d8f-b141-6b9bb7b2e0b3
       - session-240d0141-4b89-4936-8bbb-468d06c073b1
+    # The first session is filed under `memory`, the second under `bb2dash`.
+    collection: memory
+    realm: projects
   - id: gradebook-phase
     query: gradebook mirror and grades screens for bb2dash
     # The Phase 10a grades researcher and the Phase 10b Grades-screen worker are
@@ -73,22 +102,333 @@ cases:
       - session-8bdd4d97-f492-4d8c-a0a6-7e148fde55d2
       - session-ac1f5264-046d-4f8f-83be-682428b248d4--a80e86194ed168de9
       - session-b453d876-aaef-424b-8ade-aba7f88c689a--a7328416f6668e18c
+    collection: bb2dash
+    realm: projects
   - id: capture-web-and-desktop
     query: capturing sessions from the desktop app and the web with their relationships
     expect: ["session-cp-7d2c52ab-be91-47aa-a148-5325de5849b9"]
+    collection: agentic-harness
+    realm: projects
 
   # -- vault notes ----------------------------------------------------------------
   - id: ist323-index
     query: what is IST 323 about
     expect: ["1e822b6f-1495-4d0f-bd73-84fa9f08aea3"]
+    collection: ist323
+    realm: classes
 
   # -- answers, not questions: these need the session outcome to be captured ----
+  # No document is named, so the label is where the answer would live: the
+  # harness's own sessions.
   - id: nightly-reconcile
     query: how does the nightly reconcile job work
     expect_contains: ["nightly reconcile", "nightly-ingest"]
+    collection: agentic-harness
+    realm: projects
   - id: claude-mem-retired
     query: why was claude-mem retired and what replaced it
     expect_contains: ["claude-mem was retired", "retired claude-mem", "retiring claude-mem", "replaces claude-mem"]
+    collection: agentic-harness
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): agentic-harness --------------------------------
+  # The harness realm does not exist yet (unit H-a). agentic-harness, projects and
+  # memory cases are labelled `realm: projects`, where they live today; unit Q-b
+  # relabels them after live step L3.
+  # Outcome table: AgenticHarness-CheckpointCollect runs at 12:00 and 18:00 (the nightly ingest at 03:00).
+  # Reviewed 2026-09-27: the cp-7d2c52ab checkpoint note ("register-checkpoint-collect.ps1 (12:00
+  # and 18:00)") and the 20c43c73 portable-harness session ("The collector (12:00, 18:00)") state
+  # the same times, so they are expected too.
+  - id: ah-checkpoint-collect-times
+    query: what times of day does the scheduled job that collects cloud checkpoint notes run
+    expect: ["session-5b32b609-c718-44e4-b797-598e4ed9fe30", "session-cp-7d2c52ab-be91-47aa-a148-5325de5849b9", "session-20c43c73-577a-4d20-bc8b-9a8a84767177"]
+    collection: agentic-harness
+    realm: projects
+  # Prompts 8-15: the infosec internship laptop blocks node by group policy; move to a VM and make the harness portable.
+  - id: ah-internship-laptop
+    query: could the harness run on my infosec internship laptop where group policy blocks node
+    expect: ["session-132a0a63-97a3-48f9-946b-2272d33e4171"]
+    collection: agentic-harness
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): bb2dash ------------------------------------------
+  # Outcome: Supabase is the source of truth; the desktop app is an Electron shell loading the same deployed URL.
+  - id: bb2dash-source-of-truth
+    query: is the desktop app or the browser the source of truth for my planner and grades
+    expect: ["session-c6b39327-b50c-4c97-a75e-8ab5e2c843b3"]
+    collection: bb2dash
+    realm: projects
+  # Outcome (the sprint 2 planning prompt): sprint 1 closed 2026-09-22 with PR #25; sprint 2 migrations start at 091.
+  - id: bb2dash-sprint2-migrations
+    query: what number do sprint 2 database migrations start at in bb2dash
+    expect: ["session-3a1f9923-4831-44f0-b2d9-9573ad43fc78"]
+    collection: bb2dash
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): memory -------------------------------------------
+  # Outcome: set "syncDryRun": false in %APPDATA%\bb2dash\config.json for the Sync button to run real syncs.
+  - id: memory-real-sync-setting
+    query: the desktop Sync button only does dry runs, what setting makes it run a real sync
+    expect: ["session-17eb4995-2504-4d28-b240-5a912de4cfdc"]
+    collection: memory
+    realm: projects
+  # Prompt 2, answer 1: launch at login is out of the Phase 12 Electron shell.
+  # misses today (rank 5): the answer is a bare "1)launch at login out" reply to numbered
+  # questions the note does not carry. Outranked by the later 17eb4995 session, its Electron
+  # security review (--a305843...), a sprint-2 shell-audit subagent (979397c7--ae38c1ea...) and an
+  # unrelated two-minute bb2dash session (62f29a2f); none of the four says anything about launch
+  # at login (all read 2026-09-27).
+  - id: memory-launch-at-login
+    query: did we decide to have the bb2dash desktop app start automatically when Windows logs in
+    expect: ["session-e5240482-ac40-4b5b-85f1-f87c565104f2"]
+    collection: memory
+    realm: projects
+  # Outcome: closing the window only hid the app to the tray; the old copy was force-stopped to free the worktree folder.
+  - id: memory-tray-worktree
+    query: why couldn't the electron worktree be deleted even after I closed the app window
+    expect: ["session-17eb4995-2504-4d28-b240-5a912de4cfdc"]
+    collection: memory
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): portfolio-website --------------------------------
+  # Prompt 1: the ThermodynamicGrid component defaults to resolution 25 and coolingFactor 0.98.
+  - id: portfolio-thermo-defaults
+    query: what are the default resolution and cooling rate of the heat grid component on my portfolio
+    expect: ["session-8448de7e-0cb8-447f-9e68-72bc3d89ad38"]
+    collection: portfolio-website
+    realm: projects
+  # Outcome: master fast-forwarded 9b19cf1 -> 52b594d (12 dev commits plus the thermo grid commit).
+  - id: portfolio-master-ff
+    query: did the portfolio site's dev branch get merged into master
+    expect: ["session-8448de7e-0cb8-447f-9e68-72bc3d89ad38"]
+    collection: portfolio-website
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): projects -----------------------------------------
+  # Prompt 2: grading validation was stubbed for later, a data-accuracy problem rather than a product feature.
+  # misses today (rank 9): the reason is one sentence in a long prompt chunk; the sprint 2
+  # grading analyst notes (979397c7--*), the W-20 grade-model worker and a claude-mem plan
+  # with a "grading & validation" phase match the words better. None says why V-1 was stubbed.
+  - id: projects-grading-validation-stubbed
+    query: why did we put the grading rules validation off until later
+    expect: ["session-b453d876-aaef-424b-8ade-aba7f88c689a"]
+    collection: projects
+    realm: projects
+  # Prompt 1: every computed figure is labelled as a model; IST.471 shows not-computable.
+  - id: projects-not-computable-course
+    query: which of my courses can't get a computed grade from the grade model
+    expect: ["session-b453d876-aaef-424b-8ade-aba7f88c689a"]
+    collection: projects
+    realm: projects
+  # Outcome: the deployed calendar-push code matches main, so nothing needs deploying.
+  # misses today (rank 8): three sprint-2 workflow analysts in this same collection
+  # (979397c7--a500d..., --a3f6f..., --acff4...) outrank it on calendar-push words but do not
+  # answer. Two bb2dash notes do answer and also outrank it: the session's own comparison worker
+  # (b453d876--a8861630cbbd046d0: all four deployed files identical to origin/main) and the 11b
+  # round-2 worker (240d0141--ac3f1fe69e7200b51, 2026-09-16: v5 live, files match the repo byte
+  # for byte). Neither is listed: a second id from another collection would make the label check
+  # report this case every night, and the label check is the signal that a note moved. Revisit
+  # once unit H-a re-routes harness work.
+  - id: projects-calendar-push-deployed
+    query: does the deployed calendar push function need redeploying
+    expect: ["session-b453d876-aaef-424b-8ade-aba7f88c689a"]
+    collection: projects
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): quant-edge-tracker -------------------------------
+  # Outcome: the prod bundle went from ~911 KB to 2.44 MB because three.js and @react-three/fiber load eagerly.
+  - id: qet-bundle-size
+    query: why did the quant edge tracker production bundle get so much bigger
+    expect: ["session-918369a9-5cd6-4c0c-8391-cea3d5a453d3"]
+    collection: quant-edge-tracker
+    realm: projects
+  # Prompt 6: on the live page each pick is one item; covering counts green, pushing yellow/orange, losing red.
+  - id: qet-live-losing-color
+    query: in RGB background mode, what color should a losing bet on the live page count as
+    expect: ["session-3d5a75d2-f529-417c-b81a-57dce310b59d"]
+    collection: quant-edge-tracker
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): wa2-revision -------------------------------------
+  # The collection is one single-prompt session and an empty hub. More WRT 205 history sits in
+  # the claude-mem collections unit2, unit 3 and estac, outside this collection's label.
+  # Prompt 1: revise wa2 to the filled-out reverse skeleton outline, add quotations, keep my writing style.
+  - id: wa2-reverse-outline
+    query: revising my second writing assignment from the reverse outline while keeping my voice
+    expect: ["session-e23aa6b4-1248-4fb9-a77b-4fe865ecc280"]
+    collection: wa2-revision
+    realm: projects
+  # Working directory: .../spring2026/school/wrt205/wa2 revision.
+  - id: wa2-course
+    query: which class was the WA2 essay revision for
+    expect: ["session-e23aa6b4-1248-4fb9-a77b-4fe865ecc280"]
+    collection: wa2-revision
+    realm: projects
+  # Added 2026-09-27. Header: "1 prompt, 1 shell command, 0 files touched"; the one command
+  # listed the folder. Two earlier drafts missed and were not kept: "did I want Claude to cut
+  # much of my original draft" (prompt's "removing only what is necessary"; not in the top 10)
+  # and "what day did I do the WRT 205 essay revision" (rank 10).
+  - id: wa2-no-files-changed
+    query: did claude actually change any files when I asked it to revise wa2
+    expect: ["session-e23aa6b4-1248-4fb9-a77b-4fe865ecc280"]
+    collection: wa2-revision
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): estac --------------------------------------------
+  # Prompts 1 and 3: bullets instead of numbers, bigger visuals on the hypothetical slide, paragraphs moved to speaker notes.
+  - id: estac-fbi-deck-edits
+    query: what changes did I make to my slides for the Apple vs FBI group presentation
+    expect: ["session-22581e0d-35e4-4269-9717-bc20edd76ccf"]
+    collection: estac
+    realm: projects
+  # Outcome: the speaker notes are on slides 4-9 of "Group 3 IST466 - Evan edits.pptx".
+  - id: estac-speaker-notes-slides
+    query: which slides in my edited IST 466 group deck have speaker notes
+    expect: ["session-22581e0d-35e4-4269-9717-bc20edd76ccf"]
+    collection: estac
+    realm: projects
+  # Prompts 1-2: does the crawler download new documents; make bb-sync pull the bytes and automate upload, extract, chunk and embed.
+  - id: estac-bb-sync-download-bytes
+    query: when did I ask for bb-sync to download the files for new materials and embed them automatically
+    expect: ["session-57e2339c-2b4f-49c7-8d24-98966e58d0ed"]
+    collection: estac
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): ist466 -------------------------------------------
+  # Outcome point 3: the FBI did not ask Apple to unlock the phone but to write a weakened iOS (no auto-erase, no delay, electronic passcodes).
+  - id: ist466-fbi-ask
+    query: in the Apple vs FBI case, what exactly did the FBI ask Apple to do
+    expect: ["session-46310334-055b-4bfe-92b2-45713c7b37a4"]
+    collection: ist466
+    realm: classes
+  # Outcome, assignment constraints: the team gets 20 slides total.
+  - id: ist466-slide-limit
+    query: how many slides does our team get for the ethics case study presentation
+    expect: ["session-46310334-055b-4bfe-92b2-45713c7b37a4"]
+    collection: ist466
+    realm: classes
+  # Hub: bb2dash course id IST.466.
+  - id: ist466-course-id
+    query: what course id does bb2dash use for my IM&T capstone
+    expect: ["9e7d7623-bfaf-4ee7-a694-b2384b8c0a0f"]
+    collection: ist466
+    realm: classes
+
+  # -- coverage, 2026-09-24 (R-Q3): bb2dash-inbox-decisions --------------------------
+  # Answer and Change: Blackboard's quiz-2 was a duplicate; the hand-entered quiz-02 series row was kept and the column folded into it.
+  - id: inbox-ecn304-quiz2-duplicate
+    query: ECN 304 quiz 2 showed up twice, which row did we keep
+    expect: ["bb2dash-inbox-decision-528"]
+    collection: bb2dash-inbox-decisions
+    realm: projects
+  # Finding: DECISIONS.md was right on both (Ethics Team 3, Major Case Group 2); group_notes was wrong.
+  - id: inbox-ist466-group-records
+    query: records disagreed about my IST 466 team numbers, which source turned out to be right
+    expect: ["bb2dash-inbox-decision-535"]
+    collection: bb2dash-inbox-decisions
+    realm: projects
+  # Answer: 100 points per Blackboard, run through the course's 104-point scheme rather than counted raw.
+  - id: inbox-ist323-presentation-points
+    query: how many points is the IST 323 presentation topic selection worth
+    expect: ["bb2dash-inbox-decision-138"]
+    collection: bb2dash-inbox-decisions
+    realm: projects
+
+  # -- coverage, 2026-09-24 (R-Q3): class hubs ---------------------------------------
+  # Class materials are `ingest: false` (searched through the bb2dash server), so a class
+  # without sessions holds only its hub note here. These cases only check that each class
+  # can be found by name; R-Q3 counts classes with sessions (2026-09-27). A hub states three
+  # things: the course title, the term and the bb2dash course id(s).
+  # Hub: Fall 2026.
+  - id: ist323-term
+    query: which semester am I taking intro to cybersecurity
+    expect: ["1e822b6f-1495-4d0f-bd73-84fa9f08aea3"]
+    collection: ist323
+    realm: classes
+  # Hub: bb2dash course id IST.323.
+  - id: ist323-course-id
+    query: what course id does bb2dash use for IST 323
+    expect: ["1e822b6f-1495-4d0f-bd73-84fa9f08aea3"]
+    collection: ist323
+    realm: classes
+  # Hub title: Info Analysis of Organization Systems.
+  - id: ist352-topic
+    query: what is IST 352
+    expect: ["51dd41b9-ff25-4061-995b-f7519d536bc6"]
+    collection: ist352
+    realm: classes
+  # Hub: Fall 2026.
+  - id: ist352-term
+    query: which term am I taking IST 352
+    expect: ["51dd41b9-ff25-4061-995b-f7519d536bc6"]
+    collection: ist352
+    realm: classes
+  # Hub: bb2dash course id IST.352.
+  - id: ist352-course-id
+    query: bb2dash course id for the organization systems analysis class
+    expect: ["51dd41b9-ff25-4061-995b-f7519d536bc6"]
+    collection: ist352
+    realm: classes
+  # Hub title: IST 471 — Internship.
+  - id: ist471-topic
+    query: what kind of course is IST 471
+    expect: ["e98e55e1-4b94-40e3-8f63-86181b43c533"]
+    collection: ist471
+    realm: classes
+  # Hub: Fall 2026.
+  - id: ist471-term
+    query: what semester is my internship course
+    expect: ["e98e55e1-4b94-40e3-8f63-86181b43c533"]
+    collection: ist471
+    realm: classes
+  # Hub: bb2dash course id IST.471.
+  - id: ist471-course-id
+    query: what course id does bb2dash use for the internship class
+    expect: ["e98e55e1-4b94-40e3-8f63-86181b43c533"]
+    collection: ist471
+    realm: classes
+  # Hub title: ECN 304 — The Economics of Social Issues.
+  - id: ecn304-topic
+    query: what is ECN 304 about
+    expect: ["054da1c6-9405-4db7-9dee-41a32283641e"]
+    collection: ecn304
+    realm: classes
+  # Hub: Fall 2026.
+  - id: ecn304-term
+    query: which term am I in the economics of social issues class
+    expect: ["054da1c6-9405-4db7-9dee-41a32283641e"]
+    collection: ecn304
+    realm: classes
+  # Hub: bb2dash course id ECN.304.
+  - id: ecn304-course-id
+    query: bb2dash course id for my economics class
+    expect: ["054da1c6-9405-4db7-9dee-41a32283641e"]
+    collection: ecn304
+    realm: classes
+  # Hub title: GEO 103 — Environment and Society.
+  - id: geo103-topic
+    query: what is GEO 103 about
+    expect: ["fdb623a7-f60b-41bd-9c61-4b7e5ceafdc2"]
+    collection: geo103
+    realm: classes
+  # Hub: Fall 2026.
+  - id: geo103-term
+    query: which semester am I taking the environment and society course
+    expect: ["fdb623a7-f60b-41bd-9c61-4b7e5ceafdc2"]
+    collection: geo103
+    realm: classes
+  # Hub: two bb2dash course ids, GEO.103.lecture and GEO.103.recitation.
+  - id: geo103-course-ids
+    query: GEO 103 has a lecture and a recitation, what are their course ids in bb2dash
+    expect: ["fdb623a7-f60b-41bd-9c61-4b7e5ceafdc2"]
+    collection: geo103
+    realm: classes
+  # Hub (ist335, prior term, no material): "Prior term", history migrated from claude-mem.
+  - id: ist335-term
+    query: is IST 335 a current class or one from a past semester
+    expect: ["1f61a8c7-6772-4242-951e-fe10fb3ee982"]
+    collection: ist335
+    realm: classes
 
   # -- off-topic: must return nothing ---------------------------------------------
   - id: neg-sourdough
@@ -105,4 +445,11 @@ cases:
     negative: true
   - id: neg-guitar
     query: how to tune a guitar by ear
+    negative: true
+  # Dogfood, 2026-09-24: this query returned six hits at cosine 0.72-0.74 from session
+  # boilerplate (`Commands run`, `Files created or modified`) although nothing in the store
+  # covered the topic. It is a negative case until unit P (retrieval provenance) goes live
+  # at L4; then it becomes a positive case and this one is retired (R-Q2).
+  - id: neg-retrieval-provenance
+    query: which chunks were retrieved by a session, retrieval logging, provenance
     negative: true

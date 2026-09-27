@@ -648,7 +648,7 @@ resolve at 03:00. `-StartWhenAvailable` is the setting that matters on a laptop:
 the machine is usually asleep at 03:00, and without it a missed run is simply
 lost.
 
-The script does three things, in this order:
+The script's steps, in this order:
 
 0. **`node hooks/sweep-transcripts.mjs --min-idle-hours 6`** — the transcript
    sweep. Every transcript under `~/.claude/projects/` that has no note in the
@@ -672,11 +672,19 @@ The script does three things, in this order:
 1. **`ingest sweep-concluded --apply`** — see below.
 2. **`ingest --source obsidian --path <vault>`** — a full walk, which picks up
    the notes both sweeps just wrote or edited in the same night.
+3. **`ingest verify --path <vault>`** — the read-only store audit, over the
+   store the ingest just left. See [below](#the-store-audit-and-the-nightly-eval).
+4. **`ingest eval --history`** — the read-only retrieval eval, which appends
+   one line to `ingest/eval/history.jsonl`.
 
 A failing sweep of either kind does not abort the ingest: a missing note or a
 stale status is a smaller problem than a stale index. The task's exit code is
 the ingest's, so Task Scheduler's "last result" means what it looks like it
-means.
+means. Verify and eval do not change that rule: they run after the ingest
+whether it worked or not, a non-zero exit from either is logged as
+`verify ended with N` or `eval ended with N`, and the job goes on to the realm
+push. Their codes appear in the closing `=== nightly reconcile finished (...)`
+line, after the ingest's.
 
 ### The 24 h conclude sweep
 
@@ -729,6 +737,36 @@ $ uv run ingest sweep-concluded --path "<vault>" --dry-run
 Before those notes gained a `status`, the same command refused all seven with
 `no 'status' in frontmatter; refusing to invent one` — which is the behaviour
 that matters: the sweep never guesses a lifecycle it cannot read.
+
+### The store audit and the nightly eval
+
+The ingest guards what it writes; `verify` checks what is actually in the store
+afterwards (R-Q1). It is read-only — it never writes a row, a note or a file —
+and checks that every document has chunks with no `chunk_index` gaps, that no
+embedding is null and every vector has unit length, that no chunk is over 512
+tokens by the real tokenizer, that every ingestable note in each realm has a row
+with a matching `content_hash` and every row still has its note, that no
+`external_id` sits in two collections, and that a random sample of chunks,
+re-embedded, still matches the stored vectors.
+
+```bash
+uv run ingest verify --path "<vault>"   # 0 clean, 1 findings, 2 could not run
+```
+
+The last line it prints is `verify: clean` or `verify: N finding(s) in K check(s)`,
+so the nightly log answers "is the store sound" in one grep. Each check and each
+finding is described in [../ingest/README.md](../ingest/README.md).
+
+Step 4 is the retrieval eval with `--history`, which scores the golden set and
+appends one JSON line per night to `ingest/eval/history.jsonl` (gitignored, one
+per machine), so a slow drift in hit@3 or MRR shows up as a trend rather than a
+surprise (R-Q3). No `--min-hit-rate` is passed, so it reports and never gates.
+The eval itself is described in [retrieval.md](retrieval.md#measuring-it).
+
+Either step can be switched off on one machine: `-Verify Skip` and `-Eval Skip`
+on `scripts/nightly-ingest.ps1`, or `STORE_VERIFY=skip` and
+`RETRIEVAL_EVAL=skip` (in the environment or `~/.harness/machine.env`) for
+`scripts/nightly-ingest.sh`. Both default to on.
 
 ### Health is staleness, not failure
 

@@ -9,6 +9,7 @@
     uv run ingest eval                [--json] [--min-hit-rate 0.8]
     uv run ingest db migrate          [--dry-run]
     uv run ingest embed-check         [--json] [--threshold 0.999] [--record [--force]]
+    uv run ingest verify              --path C:/Users/you/vault [--sample 50] [--seed N] [--json]
     uv run ingest report retrievals   [--json] [--since 14d] [--limit 20]
     uv run ingest --health
 
@@ -52,6 +53,7 @@ from .runstate import DEFAULT_MAX_AGE_HOURS, health, state_file
 from .store import ChunkStore, NullStore, PostgresStore
 from .sweep_cli import SUBCOMMAND as SWEEP_SUBCOMMAND, run_sweep
 from .tokenizer import HeuristicTokenCounter, model_token_counter, tokenizer_from_embedder
+from .verify_cli import SUBCOMMAND as VERIFY_SUBCOMMAND, run_verify
 
 log = logging.getLogger("ingest")
 
@@ -64,6 +66,7 @@ SUBCOMMANDS = {
     EVAL_SUBCOMMAND: run_eval_command,
     DB_SUBCOMMAND: run_db,
     EMBED_CHECK_SUBCOMMAND: run_embed_check,
+    VERIFY_SUBCOMMAND: run_verify,
     REPORT_SUBCOMMAND: run_report,
 }
 

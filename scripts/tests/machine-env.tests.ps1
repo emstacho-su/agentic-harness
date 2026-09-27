@@ -93,6 +93,8 @@ try {
         'BASH_ENV=/tmp/evil'
         'export HARNESS_X=1'
         'REALM_SYNC=dryrun'
+        'STORE_VERIFY=skip'
+        'RETRIEVAL_EVAL=skip'
         'HARNESS_ALREADY=from-file'
         'HARNESS_LITERAL=$(Write-Output PWNED)'
         "DATABASE_URL=postgresql://harness:$($script:Secret)@localhost:5433/harness"
@@ -117,6 +119,7 @@ try {
     Test-Check 'Get-MachineSetting falls back to the default' ($r.Settings['HARNESS_MISSING'] -eq 'default')
     Test-Check "an 'export ' line is accepted" ($r.Values['HARNESS_X'] -eq '1')
     Test-Check 'the allowlisted REALM_SYNC is read' ($r.Values['REALM_SYNC'] -eq 'dryrun')
+    Test-Check 'the allowlisted STORE_VERIFY and RETRIEVAL_EVAL are read' ($r.Values['STORE_VERIFY'] -eq 'skip' -and $r.Values['RETRIEVAL_EVAL'] -eq 'skip')
     Test-Check 'a value is never expanded' ($r.Values['HARNESS_LITERAL'] -ceq '$(Write-Output PWNED)')
     Test-Check 'DATABASE_URL is left to its readers, not read' (-not $r.Values.ContainsKey('DATABASE_URL'))
     Test-Check 'DATABASE_URL is not reported as ignored' (-not $r.Stderr.Contains("'DATABASE_URL'"))
