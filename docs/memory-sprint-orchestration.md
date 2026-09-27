@@ -174,7 +174,8 @@ Prerequisite for everything below: the nights of 2026-09-25, 26 and 27 each show
   scratch user profile.
 - [ ] **L3 — H-a.** `init-realm --realm harness`, the private remote `vault-harness`, Stack adds
   `harness:push` to `~/.harness/machine.env`; `move-to-realm --dry-run`, Stack reads every line,
-  `--apply`; sync; ingest (only `metadata-updated`, 0 deleted); eval.
+  `--apply`; sync; ingest (only `metadata-updated`, 0 deleted); eval. *Ran 2026-09-27 (gate
+  waived); 332 moved, eval unchanged. Record under Phase H in the requirements doc.*
 - [ ] **L4 — P.** `ingest db migrate --dry-run`, then live; reinstall the hook; full ingest; check that
   `retrieved:` draws edges in the graph; first `ingest report retrievals`. *Ran 2026-09-27 (gate
   waived); only the MANUAL graph check is left. Record under Phase P in the requirements doc.*
