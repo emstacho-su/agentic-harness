@@ -190,17 +190,6 @@ def test_vault_rows_without_a_realm_are_the_legacy_rows() -> None:
     assert params == ("obsidian",)
 
 
-def test_all_vault_rows_are_every_obsidian_row() -> None:
-    conn = FakeConnection({"content_hash": [("a.md", "abc", "a.md"), ("b.md", "def", "b.md")]})
-
-    rows = PostgresReader(conn).all_vault_rows()
-
-    assert len(rows) == 2
-    sql, params = conn.log[1]
-    assert "@>" not in sql
-    assert params == ("obsidian",)
-
-
 def test_chunk_ids_come_back_as_ints() -> None:
     conn = FakeConnection({"SELECT id FROM rag.chunks": [(3,), (1,), (2,)]})
 

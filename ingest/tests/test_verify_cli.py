@@ -116,6 +116,46 @@ def test_a_missing_model_exits_two(clean_vault: Path, capsys) -> None:
     assert "error: Could not load embedding model" in capsys.readouterr().err
 
 
+class CrashingEmbedder(HashEmbedder):
+    def embed(self, texts):
+        raise RuntimeError("tokenizer blew up")
+
+
+class UnreadableReader(FakeReader):
+    def chunk_texts(self):
+        raise OSError("permission denied reading a note")
+
+
+@pytest.mark.parametrize(
+    ("reader_of", "embedder", "expected"),
+    [
+        (reader_for, CrashingEmbedder(), "error: RuntimeError: tokenizer blew up"),
+        (lambda vault: UnreadableReader(), HashEmbedder(), "error: OSError: permission denied reading a note"),
+    ],
+    ids=["embedder", "reader"],
+)
+def test_an_unexpected_failure_exits_two_not_one(clean_vault: Path, capsys, reader_of, embedder, expected) -> None:
+    # Exit 1 means "findings"; a crash must never be logged by the nightly job as one.
+    assert run(clean_vault, reader_of(clean_vault), embedder=embedder) == EXIT_UNAVAILABLE
+    err = capsys.readouterr().err.strip().splitlines()
+    assert err[-1] == expected
+
+
+def test_an_unexpected_failure_never_prints_the_database_url(clean_vault: Path, monkeypatch, capsys) -> None:
+    url = f"postgresql://u:{SECRET}@h/db"
+    monkeypatch.setenv("DATABASE_URL", url)
+
+    class LeakyReader(FakeReader):
+        def documents(self):
+            raise RuntimeError(f"bad conninfo {url}")
+
+    assert run(clean_vault, LeakyReader()) == EXIT_UNAVAILABLE
+    captured = capsys.readouterr()
+    assert SECRET not in captured.err
+    assert SECRET not in captured.out
+    assert "RuntimeError" in captured.err
+
+
 def test_a_realm_this_machine_does_not_list_exits_two(clean_vault: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("HARNESS_REALMS", "projects:push")
 

@@ -23,7 +23,7 @@ import os
 import sys
 from pathlib import Path
 
-from .config import ENV_REALMS, load_db_settings, parse_realm_policies
+from .config import ENV_DATABASE_URL, ENV_REALMS, load_db_settings, parse_realm_policies
 from .embedding import Embedder, FastEmbedEmbedder
 from .envfile import load_env_file
 from .errors import EmbeddingError, IngestError
@@ -96,7 +96,13 @@ def run_verify(
         counter = count_tokens or build_token_counter(model)
         report = run_audit(reader, snapshot, model, counter, sample_size=args.sample, seed=args.seed)
     except IngestError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {_redacted(str(exc))}", file=sys.stderr)
+        return EXIT_UNAVAILABLE
+    except Exception as exc:  # noqa: BLE001 - reported; exit 1 would read as "findings"
+        # A bug or an untyped failure (tokenizer, filesystem, driver) still means the
+        # audit could not run, so it must exit 2, never Python's default 1.
+        # No traceback: its message lines could carry what _redacted strips.
+        print(f"error: {type(exc).__name__}: {_redacted(str(exc))}", file=sys.stderr)
         return EXIT_UNAVAILABLE
     finally:
         if owned is not None:
@@ -104,6 +110,12 @@ def run_verify(
 
     print(json.dumps(as_json(report), indent=2) if args.json else as_text(report, snapshot))
     return EXIT_CLEAN if report.clean else EXIT_FINDINGS
+
+
+def _redacted(message: str) -> str:
+    """``message`` with the connection string masked, should an error have echoed it."""
+    url = (os.environ.get(ENV_DATABASE_URL) or "").strip()
+    return message.replace(url, f"<{ENV_DATABASE_URL}>") if url else message
 
 
 def _walk(path: str) -> VaultSnapshot:

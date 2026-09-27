@@ -165,8 +165,9 @@ def check_vault(
 ) -> CheckResult:
     """Per scope (a realm, or the whole unmarked vault): notes and rows agree.
 
-    A note's scope is its ``_ingest.realm``; in an unmarked vault every note and
-    every scope is ``None``, so the same comparison covers both layouts.
+    A note's scope is its ``_ingest.realm``; in an unmarked vault every note is
+    ``None`` and so is the one scope (the legacy rows), so the same comparison
+    covers both layouts.
     """
     skipped = {record.external_id: record.reason for record in snapshot.loaded.skipped}
     findings: list[Finding] = []
@@ -228,9 +229,14 @@ def _path_of(document: SourceDocument) -> str:
 def _vault_rows(
     reader: StoreReader, snapshot: VaultSnapshot
 ) -> tuple[dict[str | None, Sequence[VaultRow]], Sequence[VaultRow]]:
-    """Rows per realm plus the legacy rows; an unmarked vault is one scope of every row."""
+    """Rows per realm plus the legacy rows, scoped exactly as cli.py's orphan sweep is.
+
+    An unmarked vault is one scope: the legacy rows, the only ones its sweep
+    (``--prune-legacy``, realm ``None``) can delete. Rows another machine wrote
+    under a realm are outside it, so they are neither compared nor reported.
+    """
     if not snapshot.realms:
-        return {None: reader.all_vault_rows()}, ()
+        return {None: reader.vault_rows(None)}, ()
     scoped = {realm: reader.vault_rows(realm) for realm in snapshot.realms}
     return scoped, reader.vault_rows(None)
 

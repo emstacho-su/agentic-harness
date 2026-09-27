@@ -118,9 +118,6 @@ class PostgresReader:
         scope = f"realm {realm}" if realm else "legacy rows"
         return self._select(f"vault rows ({scope})", sql, (SOURCE_OBSIDIAN, *params), _vault_row)
 
-    def all_vault_rows(self) -> tuple[VaultRow, ...]:
-        return self._select("vault rows", _SELECT_VAULT_ROWS, (SOURCE_OBSIDIAN,), _vault_row)
-
     def chunk_ids(self) -> tuple[int, ...]:
         return self._select("chunk ids", _SELECT_CHUNK_IDS, (), lambda r: int(r[0]))
 

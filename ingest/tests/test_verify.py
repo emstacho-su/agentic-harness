@@ -200,9 +200,6 @@ class FakeReader:
         return [VaultRow(d.external_id, d.content_hash, d.path) for d in self.docs
                 if d.source == "obsidian" and d.realm == realm]
 
-    def all_vault_rows(self) -> list[VaultRow]:
-        return [VaultRow(d.external_id, d.content_hash, d.path) for d in self.docs if d.source == "obsidian"]
-
     def chunk_ids(self) -> list[int]:
         return [c.chunk_id for c in reversed(self.chunks)]  # order must not matter
 
@@ -499,6 +496,22 @@ def test_a_vault_without_markers_is_compared_as_one_scope(tmp_path: Path) -> Non
 
     assert [f.subject for f in findings_of(report, CHECK_VAULT)] == ["projects/alpha/notes/deleted.md"]
     assert only_failing(report) == {CHECK_VAULT}
+
+
+def test_a_vault_without_markers_leaves_realm_tagged_rows_alone(tmp_path: Path) -> None:
+    # An unmarked vault is swept as the legacy rows only (``--prune-legacy``, realm None),
+    # so a row another machine wrote under a realm is outside its scope: reporting it
+    # would be a finding no prune here could ever clear.
+    vault = tmp_path / "vault"
+    shutil.copytree(FIXTURE_VAULT / "projects", vault / "projects")
+    (vault / "projects" / ".realm").unlink()
+    (vault / "projects" / "alpha" / "notes" / "shared-b.md").unlink()
+    snap = snapshot_of(vault)
+    assert snap.realms == ()
+    reader = FakeReader.from_loaded(snap.loaded)
+    reader.add_document("obsidian", "work-vm/notes/x.md", "a" * 64, "work-vm", ["elsewhere"])
+
+    assert not findings_of(audit(reader, snap), CHECK_VAULT)
 
 
 # -- duplicate-ids ----------------------------------------------------------------------------
