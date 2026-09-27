@@ -52,7 +52,7 @@ test('a dry run reports the plan and writes nothing', (t) => {
   assert.equal(report.refused.length, 1);
   assert.deepEqual(report.indexes, ['projects/bb2dash']);
   assert.equal(fs.readFileSync(path.join(sessions, `${PARENT}.md`), 'utf8'), before);
-  assert.ok(!fs.existsSync(path.join(vault, 'projects', 'bb2dash', 'index.md')));
+  assert.ok(!fs.existsSync(path.join(vault, 'projects', 'bb2dash', 'bb2dash.md')));
 });
 
 test('a real run links, backs up the originals, and leaves the broken note alone', (t) => {
@@ -63,11 +63,11 @@ test('a real run links, backs up the originals, and leaves the broken note alone
   const report = linkSessions({ vault, backup, ensureIndexes: true });
 
   assert.equal(report.linked.length, 2);
-  assert.match(fs.readFileSync(path.join(sessions, `${PARENT}.md`), 'utf8'), /^up: '\[\[projects\/bb2dash\/index\|bb2dash\]\]'$/m);
-  assert.ok(fs.readFileSync(path.join(sessions, `${WORKER}.md`), 'utf8').includes(`\nup: '[[${PARENT}]]'\n`));
+  assert.match(fs.readFileSync(path.join(sessions, `${PARENT}.md`), 'utf8'), /^up: '\[\[projects\/bb2dash\/bb2dash\|bb2dash\]\]'$/m);
+  assert.ok(fs.readFileSync(path.join(sessions, `${WORKER}.md`), 'utf8').includes(`\nup: '[[projects/bb2dash/sessions/${PARENT}]]'\n`));
   assert.equal(fs.readFileSync(path.join(backup, 'projects', 'bb2dash', 'sessions', `${WORKER}.md`), 'utf8'), original);
   assert.equal(fs.readFileSync(path.join(sessions, 'broken.md'), 'utf8'), broken);
-  assert.ok(fs.existsSync(path.join(vault, 'projects', 'bb2dash', 'index.md')));
+  assert.ok(fs.existsSync(path.join(vault, 'projects', 'bb2dash', 'bb2dash.md')));
 });
 
 test('a backup already in place is the original, and is never replaced', (t) => {
@@ -93,4 +93,13 @@ test('a second run changes nothing', (t) => {
   assert.equal(again.linked.length, 0);
   assert.equal(again.unchanged, 2);
   assert.deepEqual(again.indexes, []);
+});
+
+test('a collection whose hub is still the legacy index.md is not counted as a hub to create (review #9)', (t) => {
+  const { vault, backup } = scratchVault(t);
+  fs.writeFileSync(path.join(vault, 'projects', 'bb2dash', 'index.md'), "---\ntype: index\n---\n", 'utf8');
+
+  assert.deepEqual(linkSessions({ vault, dryRun: true, ensureIndexes: true }).indexes, []);
+  assert.deepEqual(linkSessions({ vault, backup, ensureIndexes: true }).indexes, []);
+  assert.ok(!fs.existsSync(path.join(vault, 'projects', 'bb2dash', 'bb2dash.md')));
 });

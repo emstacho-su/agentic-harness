@@ -1,6 +1,6 @@
 ---
 id: 'session-88888888-8888-4888-8888-888888888888'
-title: 'Session 2026-09-16 — bb2dash'
+title: '2026-09-16 · bb2dash · Spawn two workers: one to finish'
 type: session
 schema_version: 2
 collection: 'bb2dash'
@@ -59,12 +59,12 @@ tools_used:
   Bash: 1
   Read: 1
   Write: 1
-up: '[[projects/bb2dash/index|bb2dash]]'
+up: '[[projects/bb2dash/bb2dash|bb2dash]]'
 related: []
 machine: ''
 ---
 
-# Session 2026-09-16 — bb2dash
+# 2026-09-16 · bb2dash · Spawn two workers: one to finish
 
 Working directory `__SANDBOX__/repos/bb2dash`. Ran 45m, 1 prompt, 1 shell command, 4 files touched. Ended: clear.
 

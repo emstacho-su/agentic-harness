@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { indexLink, noteStem, sessionLink, withLinks } from '../lib/links.mjs';
+import { hubFilename, hubLink, noteStem, sessionLink, withLinks } from '../lib/links.mjs';
 
 const UUID = '422db168-8894-4b80-ac32-384e765cad3c';
 
@@ -44,32 +44,77 @@ test('sessionLink: the short form, because a UUID stem is unique vault-wide', ()
   assert.equal(sessionLink('a]]b'), '');
 });
 
-test('indexLink: the full path, because every collection has a note called index', () => {
-  assert.equal(indexLink('projects', 'bb2dash'), '[[projects/bb2dash/index|bb2dash]]');
-  assert.equal(indexLink('classes', 'ist323'), '[[classes/ist323/index|ist323]]');
+test('hubFilename: a hub note is named after its collection folder', () => {
+  assert.equal(hubFilename('bb2dash'), 'bb2dash.md');
+  assert.equal(hubFilename('ist323'), 'ist323.md');
 });
 
-test('indexLink: an unknown area or an unsafe collection yields no link', () => {
-  assert.equal(indexLink('elsewhere', 'bb2dash'), '');
-  assert.equal(indexLink('projects', 'a|b'), '');
-  assert.equal(indexLink('projects', ''), '');
-  assert.equal(indexLink('', 'bb2dash'), '');
+test('hubFilename: an unsafe collection yields no filename', () => {
+  assert.equal(hubFilename(''), '');
+  assert.equal(hubFilename('a|b'), '');
+  assert.equal(hubFilename('../x'), '');
+  assert.equal(hubFilename(undefined), '');
 });
 
-test('withLinks: a top-level session links up to its collection index', () => {
+test('hubLink: the full path to the hub, labelled with the collection', () => {
+  assert.equal(hubLink('projects', 'bb2dash'), '[[projects/bb2dash/bb2dash|bb2dash]]');
+  assert.equal(hubLink('classes', 'ist323'), '[[classes/ist323/ist323|ist323]]');
+});
+
+test('hubLink: an unknown area or an unsafe collection yields no link', () => {
+  assert.equal(hubLink('elsewhere', 'bb2dash'), '');
+  assert.equal(hubLink('projects', 'a|b'), '');
+  assert.equal(hubLink('projects', ''), '');
+  assert.equal(hubLink('', 'bb2dash'), '');
+});
+
+test('withLinks: a top-level session links up to its collection hub', () => {
   const linked = withLinks(BASE, 'projects');
-  assert.equal(linked.up, '[[projects/agentic-harness/index|agentic-harness]]');
+  assert.equal(linked.up, '[[projects/agentic-harness/agentic-harness|agentic-harness]]');
   assert.deepEqual(linked.related, []);
 });
 
-test('withLinks: a worker links up to its parent session, not the index', () => {
+test('withLinks: a worker links up to its parent session by full path, not the hub', () => {
+  // A bare `[[<uuid>]]` followed before the parent note exists makes Obsidian
+  // create the note at the vault root (2026-09-24). The full path creates it
+  // where the hook will write it.
   const linked = withLinks({ ...BASE, parent_session: UUID }, 'projects');
-  assert.equal(linked.up, `[[${UUID}]]`);
+  assert.equal(linked.up, `[[projects/agentic-harness/sessions/${UUID}]]`);
 });
 
-test('withLinks: a hostile parent id falls back to the index', () => {
+test("withLinks: the parent's own folder and title, when the caller knows them", () => {
+  const parent = { area: 'classes', collection: 'ist323', title: '2026-09-24 · ist323' };
+  const linked = withLinks({ ...BASE, parent_session: UUID }, 'projects', 'agentic-harness', parent);
+  assert.equal(linked.up, `[[classes/ist323/sessions/${UUID}|2026-09-24 · ist323]]`);
+});
+
+test("withLinks: the parent folder defaults to the note's own placement, collection override included", () => {
+  const linked = withLinks({ ...BASE, collection: 'misc', parent_session: UUID }, 'projects', 'bb2dash', { title: 'Parent' });
+  assert.equal(linked.up, `[[projects/bb2dash/sessions/${UUID}|Parent]]`);
+});
+
+test('withLinks: a parent title cannot break out of the link, and is capped', () => {
+  const link = (title) => withLinks({ ...BASE, parent_session: UUID }, 'projects', undefined, { title }).up;
+  const stem = `projects/agentic-harness/sessions/${UUID}`;
+  assert.equal(link('a [[b]] | c\n\td\u0000'), `[[${stem}|a b c d]]`);
+  assert.equal(link('   '), `[[${stem}]]`, 'an empty alias is no alias');
+  assert.equal(link('[]|'), `[[${stem}]]`);
+  assert.equal(link(undefined), `[[${stem}]]`);
+  // 80 code points, not 80 UTF-16 units: an emoji is never cut in half.
+  assert.equal(link('\u{1F600}'.repeat(100)), `[[${stem}|${'\u{1F600}'.repeat(80)}]]`);
+  assert.equal(link(`${'x'.repeat(79)} tail`), `[[${stem}|${'x'.repeat(79)}]]`, 'no trailing space after the cut');
+});
+
+test('withLinks: a parent folder that is not a collection falls back to the hub', () => {
+  for (const parent of [{ area: 'elsewhere' }, { collection: 'a|b' }, { collection: '../x' }]) {
+    const linked = withLinks({ ...BASE, parent_session: UUID }, 'projects', undefined, parent);
+    assert.equal(linked.up, '[[projects/agentic-harness/agentic-harness|agentic-harness]]', JSON.stringify(parent));
+  }
+});
+
+test('withLinks: a hostile parent id falls back to the hub', () => {
   const linked = withLinks({ ...BASE, parent_session: 'x]]|[[evil' }, 'projects');
-  assert.equal(linked.up, '[[projects/agentic-harness/index|agentic-harness]]');
+  assert.equal(linked.up, '[[projects/agentic-harness/agentic-harness|agentic-harness]]');
 });
 
 test('withLinks: a parent that is filename-safe but not a session id is not followed', () => {
@@ -77,13 +122,13 @@ test('withLinks: a parent that is filename-safe but not a session id is not foll
   // note in the vault this note's parent.
   for (const parent of ['README', 'index', `${UUID}-r2`, `session-${UUID}`]) {
     const linked = withLinks({ ...BASE, parent_session: parent }, 'projects');
-    assert.equal(linked.up, '[[projects/agentic-harness/index|agentic-harness]]', parent);
+    assert.equal(linked.up, '[[projects/agentic-harness/agentic-harness|agentic-harness]]', parent);
   }
 });
 
-test('withLinks: the index is where the note is filed, when the caller knows better', () => {
+test('withLinks: the hub is where the note is filed, when the caller knows better', () => {
   const linked = withLinks({ ...BASE, collection: 'misc' }, 'projects', 'bb2dash');
-  assert.equal(linked.up, '[[projects/bb2dash/index|bb2dash]]');
+  assert.equal(linked.up, '[[projects/bb2dash/bb2dash|bb2dash]]');
   assert.equal(linked.collection, 'misc', 'the field itself is a fact and is left alone');
 });
 
@@ -102,7 +147,7 @@ test('withLinks: related is resumed_from then supersedes, de-duplicated', () => 
 test('withLinks: links are recomputed, never accumulated', () => {
   const stale = { ...BASE, up: '[[old]]', related: ['[[gone]]'] };
   const linked = withLinks(stale, 'projects');
-  assert.equal(linked.up, '[[projects/agentic-harness/index|agentic-harness]]');
+  assert.equal(linked.up, '[[projects/agentic-harness/agentic-harness|agentic-harness]]');
   assert.deepEqual(linked.related, []);
 });
 
@@ -116,4 +161,18 @@ test('withLinks: returns a new object and leaves its input alone', () => {
 test('withLinks: a hand-mangled supersedes that is not a list is tolerated', () => {
   const linked = withLinks({ ...BASE, supersedes: 'session-abc' }, 'projects');
   assert.deepEqual(linked.related, []);
+});
+
+test('a pass that knows no parent keeps a worker link already qualified for the same parent (review #3)', () => {
+  const parentId = '11111111-1111-4111-8111-111111111111';
+  const up = `[[projects/agentic-harness/sessions/${parentId}|2026-09-24 · agentic-harness · build it]]`;
+  const fields = withLinks({ parent_session: parentId, collection: 'misc', up }, 'projects', 'misc');
+  assert.equal(fields.up, up);
+});
+
+test('an up naming another parent is re-derived, not kept', () => {
+  const parentId = '11111111-1111-4111-8111-111111111111';
+  const up = '[[projects/misc/sessions/22222222-2222-4222-8222-222222222222|old]]';
+  const fields = withLinks({ parent_session: parentId, collection: 'misc', up }, 'projects', 'misc');
+  assert.equal(fields.up, `[[projects/misc/sessions/${parentId}]]`);
 });

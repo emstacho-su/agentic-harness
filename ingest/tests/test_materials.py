@@ -24,6 +24,8 @@ from ingest.materials.client import (
 )
 from ingest.materials.render import (
     collection_for_course,
+    hub_filename,
+    hub_link,
     plan_notes,
     render_note,
     slugify,
@@ -103,14 +105,19 @@ def test_note_path_carries_the_bb2dash_id_and_frontmatter_is_complete():
     assert "week" not in frontmatter  # null week_no is omitted, not written as null
 
 
-def test_note_links_up_to_its_course_index_as_a_quoted_wikilink():
+def test_note_links_up_to_its_course_hub_as_a_quoted_wikilink():
     content = render_note(row()).content
     frontmatter, _ = split_frontmatter(content)
-    # Obsidian draws a graph edge only for a wikilink, and the full path is
-    # needed because every course has a note called `index`.
-    assert frontmatter["up"] == "[[classes/ist323/index|ist323]]"
+    # Obsidian draws a graph edge only for a wikilink. The hub is named after
+    # its folder (SC-3), and the link carries the full path.
+    assert frontmatter["up"] == "[[classes/ist323/ist323|ist323]]"
     # Unquoted, YAML reads `[[...]]` as a nested list and says nothing about it.
-    assert "up: '[[classes/ist323/index|ist323]]'" in content
+    assert "up: '[[classes/ist323/ist323|ist323]]'" in content
+
+
+def test_hub_helpers_mirror_the_hooks_contract():
+    assert hub_filename("ist323") == "ist323.md"
+    assert hub_link("geo103") == "[[classes/geo103/geo103|geo103]]"
 
 
 def test_units_render_in_order_with_headings_and_trimmed_text():

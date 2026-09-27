@@ -22,8 +22,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { backfillSession } from './lib/backfill.mjs';
-import { DEFAULT_VAULT_SEGMENTS, VAULT_ENV_VAR } from './lib/constants.mjs';
+import { DEFAULT_VAULT_SEGMENTS, LEGACY_HUB_FILENAME, VAULT_ENV_VAR } from './lib/constants.mjs';
 import { serializeFrontmatter } from './lib/frontmatter.mjs';
+import { hubFilename } from './lib/links.mjs';
+
 import { COLLECTION_OVERRIDES, RETIRED_FOLDERS, alreadyMigrated, migrateNote, planNote } from './lib/migrate.mjs';
 import { makeRepoResolver } from './lib/paths.mjs';
 import { resolveRepo } from './lib/repo.mjs';
@@ -160,16 +162,20 @@ function removeRetiredFolders(vaultRoot, dryRun, report, movedOut, backupDir) {
       report.push(`kept ${folder}/: ${leftovers.length} file(s) still in sessions/`);
       continue;
     }
-    const remaining = fs.readdirSync(dir).filter((name) => name !== 'sessions' && name !== 'index.md');
+    // Either name: a vault `rename-hubs.mjs --apply` has not reached yet
+    // still calls the hub `index.md`.
+    const hubs = [hubFilename(folder), LEGACY_HUB_FILENAME];
+    const hub = hubs.find((name) => fs.existsSync(path.join(dir, name))) ?? hubs[0];
+    const remaining = fs.readdirSync(dir).filter((name) => name !== 'sessions' && !hubs.includes(name));
     if (remaining.length) {
       report.push(`kept ${folder}/: unexpected contents ${remaining.join(', ')}`);
       continue;
     }
     if (dryRun) {
-      report.push(`would remove projects/${folder}/ (empty sessions/ and its index.md)`);
+      report.push(`would remove projects/${folder}/ (empty sessions/ and its ${hub})`);
       continue;
     }
-    // The index note is hand-authored and `readSessionNotes` never saw it, so
+    // The hub note is hand-authored and `readSessionNotes` never saw it, so
     // it has not been backed up by the plan loop. Rule 2 says every original is
     // copied before anything is written; this is the rest of that promise.
     const saved = backupTree(dir, vaultRoot, backupDir);

@@ -10,8 +10,9 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { AREAS, INDEX_FILENAME, SESSIONS_DIR } from './constants.mjs';
+import { AREAS, HUB_NOTE_TYPE, LEGACY_HUB_FILENAME, SESSIONS_DIR } from './constants.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
+import { hubFilename } from './links.mjs';
 import { noteFilename } from './note.mjs';
 import { isSafeFilenameSegment, yamlStr } from './text.mjs';
 
@@ -21,21 +22,29 @@ export const MAX_RESUME_INDEX = 50;
 /**
  * Read a note.
  *
- * @returns {{fields: object|null, body: string, error: string}} — `fields: null`
- *          with an empty `error` means the note is simply not there, which is
- *          the ordinary case for a first capture.
+ * A stub reads as absent, with `stub: true`: a file that is empty, holds only
+ * whitespace, has no frontmatter block at all, or has an empty one. Obsidian
+ * makes exactly that when a link to a note that does not exist yet is
+ * followed — a worker's `up` link, clicked while the parent session is still
+ * running — and it lands where the capture will write. Refusing to write over
+ * it would lose the session's note to a click. A block that is there but
+ * malformed is different: somebody typed it, so it is still an `error`.
+ *
+ * @returns {{fields: object|null, body: string, error: string, stub: boolean}}
+ *          `fields: null` with an empty `error` means there is no note to
+ *          merge into, which is the ordinary case for a first capture.
  */
 export function readNote(notePath) {
   let raw;
   try {
     raw = fs.readFileSync(notePath, 'utf8');
   } catch {
-    return { fields: null, body: '', error: '' }; // absent is not an error
+    return { fields: null, body: '', error: '', stub: false }; // absent is not an error
   }
   const parsed = parseFrontmatter(raw);
-  if (!parsed.ok) return { fields: null, body: '', error: parsed.error };
-  if (Object.keys(parsed.fields).length === 0) return { fields: null, body: '', error: 'no frontmatter' };
-  return { fields: parsed.fields, body: parsed.body.replace(/^\n+/, ''), error: '' };
+  if (!parsed.ok) return { fields: null, body: '', error: parsed.error, stub: false };
+  if (Object.keys(parsed.fields).length === 0) return { fields: null, body: '', error: '', stub: true };
+  return { fields: parsed.fields, body: parsed.body.replace(/^\n+/, ''), error: '', stub: false };
 }
 
 /**
@@ -147,13 +156,13 @@ export function resolveChainHead(sessionsDir, sessionId) {
 }
 
 /**
- * Make sure `<area>/<collection>/index.md` exists. Never throws, never
- * overwrites.
+ * Make sure the collection's hub note, `<area>/<collection>/<collection>.md`,
+ * exists. Never throws, never overwrites.
  *
  * Every session note links `up` to this note, and a collection the hook creates
- * on demand does not have one. The body carries no links on purpose: an index
- * is ingested like any other note, and a list of links would be embedded as
- * text. The `wx` flag is what makes "never overwrites" true even when two hooks
+ * on demand does not have one. The body carries no links on purpose: a hub is
+ * ingested like any other note, and a list of links would be embedded as text.
+ * The `wx` flag is what makes "never overwrites" true even when two hooks
  * finish at once.
  *
  * @returns {{ok: boolean, created: boolean, path: string, error: string}}
@@ -162,15 +171,21 @@ export function ensureIndex(vaultRoot, area, collection) {
   if (!vaultRoot || !AREAS.includes(area) || !isSafeFilenameSegment(collection)) {
     return { ok: false, created: false, path: '', error: 'not a collection folder' };
   }
-  const indexPath = path.join(vaultRoot, area, collection, INDEX_FILENAME);
+  const hubPath = path.join(vaultRoot, area, collection, hubFilename(collection));
   // The ordinary case, answered with one stat. `wx` below is for the race.
-  if (fs.existsSync(indexPath)) return { ok: true, created: false, path: indexPath, error: '' };
+  if (fs.existsSync(hubPath)) return { ok: true, created: false, path: hubPath, error: '' };
+  // Transitional, and retires once `rename-hubs.mjs --apply` has run on the
+  // live vault: until then a collection's hub is still `index.md`, and writing
+  // `<collection>.md` beside it would make two `type: index` notes. The new
+  // notes' `up` links already name `<collection>`, and resolve after the rename.
+  const legacyPath = path.join(vaultRoot, area, collection, LEGACY_HUB_FILENAME);
+  if (fs.existsSync(legacyPath)) return { ok: true, created: false, path: legacyPath, error: '' };
   const text = [
     '---',
     `id: ${yamlStr(randomUUID())}`,
     `title: ${yamlStr(collection)}`,
     `collection: ${yamlStr(collection)}`,
-    'type: index',
+    `type: ${HUB_NOTE_TYPE}`,
     '---',
     '',
     `# ${collection}`,
@@ -179,11 +194,11 @@ export function ensureIndex(vaultRoot, area, collection) {
     '',
   ].join('\n');
   try {
-    fs.mkdirSync(path.dirname(indexPath), { recursive: true });
-    fs.writeFileSync(indexPath, text, { encoding: 'utf8', flag: 'wx' });
-    return { ok: true, created: true, path: indexPath, error: '' };
+    fs.mkdirSync(path.dirname(hubPath), { recursive: true });
+    fs.writeFileSync(hubPath, text, { encoding: 'utf8', flag: 'wx' });
+    return { ok: true, created: true, path: hubPath, error: '' };
   } catch (err) {
-    if (err?.code === 'EEXIST') return { ok: true, created: false, path: indexPath, error: '' };
-    return { ok: false, created: false, path: indexPath, error: err?.code || err?.message || 'unknown' };
+    if (err?.code === 'EEXIST') return { ok: true, created: false, path: hubPath, error: '' };
+    return { ok: false, created: false, path: hubPath, error: err?.code || err?.message || 'unknown' };
   }
 }

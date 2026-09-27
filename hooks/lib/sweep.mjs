@@ -66,6 +66,12 @@ const AGENT_PREFIX = 'agent-';
  * not enough: an older hook filed workers by the directory they stopped in, and
  * on 2026-09-24 eight worker notes existed twice, once in each collection.
  * A session id never ends in `-r<digits>`, so the strip cannot eat into it.
+ *
+ * An empty `<id>.md` does not count either, at the cost of one `stat` per
+ * session note. Following a worker's `up` link before its parent is captured
+ * makes Obsidian create the parent's file with nothing in it; counted as a
+ * note, it would hide that session from every sweep after. Any other content
+ * counts: this is a filename index, and the capture decides what a file holds.
  */
 export function indexNotedSessions(vaultRoot) {
   const noted = new Set();
@@ -74,7 +80,7 @@ export function indexNotedSessions(vaultRoot) {
       const sessionsDir = path.join(vaultRoot, area, collection, SESSIONS_DIR);
       for (const name of readDirNames(sessionsDir)) {
         const sessionId = sessionIdFromNoteName(name);
-        if (sessionId) noted.add(sessionId);
+        if (sessionId && statFile(path.join(sessionsDir, name))?.size > 0) noted.add(sessionId);
       }
     }
   }

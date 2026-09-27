@@ -279,15 +279,15 @@ OneDrive.
 ```
 vault/
   projects/
-    agentic-harness/     index.md  sessions/  notes/  decisions/
-    bb2dash/             sessions/
-    ev-trainer/          index.md  sessions/  notes/  decisions/
-    quant-edge-tracker/  index.md  sessions/  notes/  decisions/
-    misc/                index.md  sessions/  notes/  decisions/
+    agentic-harness/     agentic-harness.md     sessions/  notes/  decisions/
+    bb2dash/                                    sessions/
+    ev-trainer/          ev-trainer.md          sessions/  notes/  decisions/
+    quant-edge-tracker/  quant-edge-tracker.md  sessions/  notes/  decisions/
+    misc/                misc.md                sessions/  notes/  decisions/
   classes/
     ist323/  ist352/  ist466/  ist471/  ecn304/  geo103/     (Fall 2026)
-                         index.md  sessions/  notes/  materials/
-    ist335/              index.md  sessions/  notes/
+                         <course>.md            sessions/  notes/  materials/
+    ist335/              ist335.md              sessions/  notes/
   daily/                 one note per day, from templates/daily.md
   templates/             skipped by the loader
   .obsidian/             skipped by the loader
@@ -305,9 +305,13 @@ the same repository; both had grown their own folder, splitting one project's
 history three ways. They are gone, and the session-capture hook now resolves the
 collection from the git remote so they cannot come back.
 
-Every project and class folder carries an `index.md` whose frontmatter has a
-UUID `id:`, a `title:` and the `collection:`, so a rename never strands a row.
-Class indexes also record `term:` and the exact `bb2dash_course:` id(s).
+Every project and class folder carries a hub note named after the folder,
+`<realm>/<collection>/<collection>.md` (`projects/agentic-harness/agentic-harness.md`,
+`classes/ist323/ist323.md`), whose frontmatter has `type: index`, a UUID `id:`, a
+`title:` and the `collection:`, so a rename never strands a row. Class hubs also
+record `term:` and the exact `bb2dash_course:` id(s). The hub is named after its
+folder because Obsidian labels a graph node by its filename; a session note links
+`up` to it as `[[<realm>/<collection>/<collection>|<collection>]]`.
 
 ### Opting out: `ingest: false`
 
@@ -443,12 +447,21 @@ field keeps one type for metadata filtering.
 | `commits`, `prs` | commits in the session's window; PR numbers as **integers** |
 | `phase`, `tags` | `phase-<n>` and the controlled vocabulary in [tags.md](./tags.md) |
 | `parent_session`, `child_sessions` | the spawning session, and the agent transcripts this one spawned |
+| `up`, `related` | Obsidian wikilinks derived on every write: `up` to the collection's hub, or a worker's parent session; `related` the resume chain |
 | `memory_files`, `plan_file`, `docs_touched`, `artifacts` | lifted out of the touched-file list |
 | `files_modified` | repo-relative, with scratchpad, transcript and `node_modules` paths dropped |
 | `prompt_count`, `command_count`, `duration_minutes`, `tools_used` | volume |
 
 The v1 fields (`title`, `type`, `session_id`, `date`, `started_at`, `ended_at`,
 `cwd`, `cwds_seen`, `end_reason`, `agent`, `generator`) are unchanged.
+
+A new note's `title` is `<date> · <collection> · <first six words of the first
+prompt>`, e.g. `2026-09-24 · agentic-harness · ultracode. You are the orchestrator
+for`; a worker's is `<date> · <collection> · <agent type> · <first six words of the
+task>`. Files are named by UUID, so the title is what a person reads, and the graph
+shows it once the Front Matter Title plugin is installed (a MANUAL step per machine,
+in both runbooks of [portable.md](./portable.md)). Notes written before 2026-09-24
+keep the titles they have.
 
 ### Subagent capture
 
@@ -463,6 +476,13 @@ The list is complete whichever order the events arrive in. A worker usually
 stops long before its parent, and the parent's `SessionEnd` back-fills
 `child_sessions` from the `subagents/` directory; a worker that stops after the
 parent was captured merges itself into the existing note.
+
+A worker's `up` is path-qualified,
+`[[<realm>/<collection>/sessions/<parent-uuid>|<parent title>]]`. Obsidian creates
+the target of a link that is followed before its note exists; a bare `[[<uuid>]]`
+put that file at the vault root, while the qualified link puts it where the hook
+will write the parent's note. The hook treats a 0-byte or frontmatter-less file at
+its target path as absent and writes over it.
 
 ### One note per session, and what "merge" means
 
@@ -515,6 +535,15 @@ could not be derived were left empty.
 `bb2dash-retrieval` and `bb2dash-wt-sl` were emptied and removed. Neither
 checkout exists on disk any more, so an explicit table in `hooks/lib/migrate.mjs`
 maps them to `bb2dash`; nothing is inferred from a folder name.
+
+### The hub rename
+
+`node hooks/rename-hubs.mjs --dry-run`, then `--apply`, names each collection's hub
+note after its folder: one `git mv` per realm, and every `up:` link that names a
+hub rewritten to the new path, nothing else touched. The hub keeps its `id`, so the
+store sees a metadata update, not a re-embed. A second run changes nothing, and
+`--check` afterwards must report 0 broken hub links (worker links whose parent is
+not captured yet are listed as pending, not broken).
 
 ### Ingest on capture
 
