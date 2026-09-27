@@ -11,8 +11,11 @@
 # expected document's row in the store, never guessed:
 #   collection  the document's `collection` column (required)
 #   realm       its vault realm, `metadata._ingest.realm`; claude-mem rows have none
-# A negative case carries neither. When a hit comes from another collection the
-# eval prints it under "label check" — the note moved, or the label is wrong.
+# A negative case carries neither. When a case passes on an `expect` id whose
+# document sits in another collection or realm than the label says, the eval
+# prints it under "label check": the note moved, or the label is wrong. A case
+# with no realm matches a row with no realm. `expect_contains` matches are not
+# label-checked, since that form accepts the answer from any note.
 #
 # Add a case whenever retrieval lets you down in real use. Do not edit a case to
 # make a run pass; change it only when the corpus genuinely moved, or when a

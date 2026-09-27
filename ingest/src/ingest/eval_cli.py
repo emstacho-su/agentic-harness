@@ -181,7 +181,7 @@ def _as_json(report: EvalReport) -> dict[str, object]:
                 "realm": r.case.realm,
                 "rank": r.rank,
                 "passed": r.passed(report.k),
-                "mislabelled": r.mislabelled,
+                "mislabelled": r.mislabelled(report.k),
                 "returned": [h.external_id for h in r.hits[:MAX_SHOWN_HITS]],
             }
             for r in report.results
@@ -232,8 +232,15 @@ def _collection_table(scores: tuple[CollectionScore, ...], k: int) -> list[str]:
 
 def _label_line(result: CaseResult) -> str:
     matched = result.matched_hit
-    came_from = (matched.collection if matched else None) or "-"
-    return f"  {result.case.id}: expected {result.case.collection}, hit came from {came_from}"
+    expected = _label(result.case.realm, result.case.collection)
+    came_from = _label(matched.realm, matched.collection) if matched else "-"
+    return f"  {result.case.id}: expected {expected}, hit came from {came_from}"
+
+
+def _label(realm: str | None, collection: str | None) -> str:
+    """``realm/collection``, or just the collection when there is no realm."""
+    home = collection or "-"
+    return f"{realm}/{home}" if realm else home
 
 
 def _passed(results: tuple[CaseResult, ...], k: int) -> int:

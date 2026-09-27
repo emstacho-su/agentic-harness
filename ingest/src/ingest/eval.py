@@ -18,8 +18,10 @@ it exists.
 Every positive case is also labelled with the ``collection`` (and, for vault
 notes, the ``realm``) its answer lives in. The labels give a per-collection
 table, so a regression in one project or class is not averaged away, and a
-label check: a hit that came from a different collection than the label says
-is reported, which is how a note moving between realms or collections shows up.
+label check: a case that passed on an ``expect`` id whose document sits in a
+different collection or realm than the label says is reported, which is how a
+note moving between realms or collections shows up. ``expect_contains`` matches
+are not label-checked; that form accepts the answer from any note.
 
 Scoring is pure; only :class:`PostgresSearcher` touches the database, and it
 calls ``rag.search`` with the MCP server's defaults so the eval measures what a
@@ -72,6 +74,8 @@ class Hit:
     content: str
     similarity: float | None
     collection: str | None = None
+    realm: str | None = None
+    """The document's ``metadata._ingest.realm``; ``None`` for claude-mem rows."""
 
 
 @dataclass(frozen=True)
@@ -91,14 +95,20 @@ class CaseResult:
         """The first hit that satisfied the case; ``None`` on a miss or a negative case."""
         return self.hits[self.rank - 1] if self.rank else None
 
-    @property
-    def mislabelled(self) -> bool:
-        """The case hit, but in a different collection than its label says.
+    def mislabelled(self, k: int) -> bool:
+        """The case passed at ``k`` on an expected document id, but that document
+        sits in a different collection or realm than the case's label says.
 
         Not a failure: the answer was found. It means the label (or the note's
-        home) moved, and a person should look."""
+        home) moved, and a person should look. A case that failed is reported as a
+        failure only, never here as well. An ``expect_contains`` match is not
+        checked: that form accepts the answer from any note, so where the matching
+        chunk lives says nothing about the label. A case with no realm matches a
+        hit with no realm (claude-mem rows carry none)."""
         matched = self.matched_hit
-        return matched is not None and matched.collection != self.case.collection
+        if matched is None or not self.passed(k) or matched.external_id not in self.case.expect:
+            return False
+        return (matched.collection, matched.realm) != (self.case.collection, self.case.realm)
 
 
 @dataclass(frozen=True)
@@ -145,7 +155,7 @@ class EvalReport:
 
     @property
     def mislabelled(self) -> tuple[CaseResult, ...]:
-        return tuple(r for r in self.results if r.mislabelled)
+        return tuple(r for r in self.results if r.mislabelled(self.k))
 
     def by_collection(self) -> Mapping[tuple[str, str], CollectionScore]:
         """hit@k and MRR per ``(realm, collection)``, sorted by that key.
@@ -309,7 +319,8 @@ def run_eval(
 # Bound by name, never positionally: the signature has changed before and a
 # positional call silently shifts one parameter into another.
 _SEARCH_SQL = """
-SELECT doc_source, doc_external, doc_title, chunk_content, vector_similarity, doc_collection
+SELECT doc_source, doc_external, doc_title, chunk_content, vector_similarity, doc_collection,
+       doc_metadata -> '_ingest' ->> 'realm'
 FROM rag.search(
     query_embedding    => %(embedding)s::extensions.vector,
     query_text         => %(query)s,
@@ -360,6 +371,7 @@ class PostgresSearcher:
                 content=row[3],
                 similarity=row[4],
                 collection=row[5],
+                realm=row[6],
             )
             for row in rows
         ]

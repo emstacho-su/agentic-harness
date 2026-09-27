@@ -17,6 +17,7 @@ from ingest.eval import (
     EvalReport,
     GoldenCase,
     Hit,
+    PostgresSearcher,
     load_golden,
     run_eval,
     score_case,
@@ -25,7 +26,11 @@ from ingest.eval_cli import run_eval_command
 
 
 def hit(
-    external_id: str, content: str = "", source: str = "obsidian", collection: str | None = None
+    external_id: str,
+    content: str = "",
+    source: str = "obsidian",
+    collection: str | None = None,
+    realm: str | None = None,
 ) -> Hit:
     return Hit(
         source=source,
@@ -34,6 +39,7 @@ def hit(
         content=content,
         similarity=0.8,
         collection=collection,
+        realm=realm,
     )
 
 
@@ -195,19 +201,101 @@ def test_a_hit_from_another_collection_is_flagged_as_mislabelled() -> None:
     case = GoldenCase(id="a", query="q", expect=("want",), collection="bb2dash")
     moved = score_case(case, [hit("other", collection="bb2dash"), hit("want", collection="memory")])
     assert moved.passed(k=3) is True
-    assert moved.mislabelled is True
+    assert moved.mislabelled(k=3) is True
     assert moved.matched_hit is not None and moved.matched_hit.collection == "memory"
 
     same = score_case(case, [hit("want", collection="bb2dash")])
-    assert same.mislabelled is False
+    assert same.mislabelled(k=3) is False
 
 
 def test_a_miss_or_a_negative_is_never_mislabelled() -> None:
     miss = score_case(GoldenCase(id="a", query="q", expect=("want",), collection="c"), [hit("x", collection="d")])
     negative = score_case(GoldenCase(id="n", query="q", negative=True), [hit("x", collection="d")])
-    assert miss.mislabelled is False
+    assert miss.mislabelled(k=3) is False
     assert miss.matched_hit is None
-    assert negative.mislabelled is False
+    assert negative.mislabelled(k=3) is False
+
+
+def test_a_case_found_below_k_is_a_failure_and_not_also_mislabelled(fake_embedder) -> None:
+    case = GoldenCase(id="deep", query="q", expect=("want",), collection="bb2dash")
+    hits = [hit("x1", collection="bb2dash"), hit("x2"), hit("x3"), hit("want", collection="memory")]
+    result = score_case(case, hits)
+
+    assert result.rank == 4
+    assert result.mislabelled(k=3) is False
+    assert result.mislabelled(k=4) is True
+
+    report = run_eval([case], FakeSearcher({"q": hits}), fake_embedder, k=3, limit=10)
+    assert [r.case.id for r in report.failures] == ["deep"]
+    assert report.mislabelled == ()
+
+
+def test_a_text_match_is_never_label_checked() -> None:
+    """expect_contains accepts the answer from any note, so where it came from says nothing."""
+    by_text = GoldenCase(id="t", query="q", expect_contains=("relevance floor",), collection="estac")
+    result = score_case(by_text, [hit("elsewhere", "the relevance floor is 0.70", collection="memory")])
+    assert result.passed(k=3) is True
+    assert result.mislabelled(k=3) is False
+
+    both = GoldenCase(id="b", query="q", expect=("want",), expect_contains=("floor",), collection="estac")
+    by_id = score_case(both, [hit("want", "no match here", collection="memory")])
+    assert by_id.mislabelled(k=3) is True
+    by_text_only = score_case(both, [hit("other", "the floor", collection="memory")])
+    assert by_text_only.mislabelled(k=3) is False
+
+
+def test_a_hit_from_another_realm_is_flagged_as_mislabelled() -> None:
+    case = GoldenCase(id="a", query="q", expect=("want",), collection="notes", realm="classes")
+    assert score_case(case, [hit("want", collection="notes", realm="projects")]).mislabelled(k=3) is True
+    assert score_case(case, [hit("want", collection="notes", realm="classes")]).mislabelled(k=3) is False
+    assert score_case(case, [hit("want", collection="notes")]).mislabelled(k=3) is True
+
+    no_realm = GoldenCase(id="m", query="q", expect=("want",), collection="quant-edge-tracker")
+    same_home = [hit("want", collection="quant-edge-tracker")]
+    gained_a_realm = [hit("want", collection="quant-edge-tracker", realm="projects")]
+    assert score_case(no_realm, same_home).mislabelled(k=3) is False
+    assert score_case(no_realm, gained_a_realm).mislabelled(k=3) is True
+
+
+class FakeCursor:
+    def __init__(self, rows: list[tuple]) -> None:
+        self.rows = rows
+        self.executed: list[tuple[str, dict]] = []
+
+    def __enter__(self) -> "FakeCursor":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: dict) -> None:
+        self.executed.append((sql, params))
+
+    def fetchall(self) -> list[tuple]:
+        return self.rows
+
+
+class FakeConnection:
+    def __init__(self, rows: list[tuple]) -> None:
+        self.cursor_obj = FakeCursor(rows)
+
+    def cursor(self) -> FakeCursor:
+        return self.cursor_obj
+
+
+def test_the_live_searcher_reads_the_realm_from_the_same_row() -> None:
+    rows = [
+        ("obsidian", "notes/a.md", "A", "text", 0.81, "bb2dash", "projects"),
+        ("claude-mem", "313", None, "text", 0.77, "quant-edge-tracker", None),
+    ]
+    connection = FakeConnection(rows)
+
+    hits = PostgresSearcher(connection).search("q", [0.0, 1.0], 10)
+
+    assert [(h.collection, h.realm) for h in hits] == [("bb2dash", "projects"), ("quant-edge-tracker", None)]
+    sql, _params = connection.cursor_obj.executed[0]
+    assert len(connection.cursor_obj.executed) == 1
+    assert "doc_metadata -> '_ingest' ->> 'realm'" in sql
 
 
 def test_by_collection_scores_each_realm_and_collection_and_skips_negatives(fake_embedder) -> None:
@@ -316,14 +404,34 @@ def test_the_text_report_prints_the_table_and_a_label_check_block(tmp_path: Path
     rows = [line.split() for line in lines if line.startswith(("classes", "projects"))]
     assert rows == [["classes", "ist323", "1", "0.00", "0.00"], ["projects", "bb2dash", "1", "1.00", "1.00"]]
     assert "label check:" in lines
-    assert "  found: expected bb2dash, hit came from memory" in lines
+    assert "  found: expected projects/bb2dash, hit came from memory" in lines
 
 
 def test_the_text_report_omits_the_label_check_when_every_label_holds(tmp_path: Path, fake_embedder, capsys) -> None:
     golden = write_golden(tmp_path, GOLDEN)
-    searcher = FakeSearcher({"one": [hit("a", collection="bb2dash")]})
+    searcher = FakeSearcher({"one": [hit("a", collection="bb2dash", realm="projects")]})
     run_eval_command(["--golden", str(golden)], searcher=searcher, embedder=fake_embedder)
     assert "label check" not in capsys.readouterr().out
+
+
+def test_a_case_found_below_k_is_reported_only_as_a_failure(tmp_path: Path, fake_embedder, capsys) -> None:
+    golden = write_golden(tmp_path, GOLDEN)
+    history = tmp_path / "history.jsonl"
+    deep = [hit("x1"), hit("x2"), hit("x3"), hit("b", collection="memory")]
+    searcher = FakeSearcher({"one": [hit("a", collection="bb2dash", realm="projects")], "two": deep})
+
+    run_eval_command(["--golden", str(golden), "--json"], searcher=searcher, embedder=fake_embedder)
+    by_id = {case["id"]: case for case in json.loads(capsys.readouterr().out)["cases"]}
+    assert (by_id["lost"]["passed"], by_id["lost"]["mislabelled"]) == (False, False)
+
+    run_eval_command(
+        ["--golden", str(golden), "--history", str(history)], searcher=searcher, embedder=fake_embedder
+    )
+    out = capsys.readouterr().out
+    assert "label check" not in out
+    assert "lost: rank 4" in out
+    record = json.loads(history.read_text(encoding="utf-8"))
+    assert (record["failures"], record["mislabelled"]) == (["lost"], [])
 
 
 # -- history -----------------------------------------------------------------
