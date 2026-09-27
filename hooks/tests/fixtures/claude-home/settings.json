@@ -1,0 +1,23 @@
+{
+  "env": { "FIXTURE_ONLY": "1" },
+  "model": "fixture-model",
+  "apiKeyHelper": "C:\\Users\\fixture\\bin\\key-helper.cmd",
+  "mcpServers": { "fixture": { "command": "node" } },
+  "permissions": {
+    "allow": ["Read(C:\\Users\\fixture\\notes\\**)", "Bash(git status)"],
+    "defaultMode": "auto"
+  },
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Program Files/nodejs/node.exe\" \"C:/Users/fixture/.claude/hooks/session-capture.mjs\"",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}
