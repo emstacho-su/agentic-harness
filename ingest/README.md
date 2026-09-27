@@ -93,6 +93,12 @@ uv run ingest --source obsidian --path "C:/Users/estac/OneDrive - Syracuse Unive
 # bb2dash class materials -> vault notes (ingest: false; read-only against bb2dash)
 uv run export-materials --env-file C:/Users/estac/projects/bb2dash/.env \
     --vault "C:/Users/estac/OneDrive - Syracuse University/vault" [--dry-run] [--course IST.323]
+
+# Retrieval provenance report (read-only): most/never retrieved, empty-result queries,
+# similarity histogram, per collection, cross-collection searches. --since takes an
+# ISO date or datetime (UTC when naive) or Nd; it bounds every section but never-retrieved.
+uv run ingest report retrievals [--since 14d] [--limit 20]
+uv run ingest report retrievals --since 2026-09-10 --json > retrievals.json
 ```
 
 | Flag | Effect |

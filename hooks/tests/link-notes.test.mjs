@@ -56,21 +56,22 @@ test('a session gains its links and nothing else changes', () => {
 
   assert.equal(result.error, '');
   assert.equal(result.changed, true);
-  assert.deepEqual(result.added, ["up: '[[projects/agentic-harness/index|agentic-harness]]'", 'related: []']);
+  assert.deepEqual(result.added, ["up: '[[projects/agentic-harness/agentic-harness|agentic-harness]]'", 'related: []']);
   assert.deepEqual(result.removed, []);
   assert.ok(result.text.endsWith(BODY), 'the body, handwritten tail and trailing whitespace included, is byte-identical');
 });
 
-test('a worker links up to its parent session', () => {
+test('a worker links up to its parent session, by the path of the folder it is in', () => {
+  // The backfill knows no parent title, so the link carries no alias.
   const result = relink(note({ parent: UUID }));
-  assert.ok(result.added.includes(`up: '[[${UUID}]]'`));
+  assert.ok(result.added.includes(`up: '[[projects/agentic-harness/sessions/${UUID}]]'`));
 });
 
-test('the index linked is the folder the note is in, whatever its collection field says', () => {
+test('the hub linked is the folder the note is in, whatever its collection field says', () => {
   for (const collection of ['misc', '']) {
     const result = relink(note({ collection }));
     assert.equal(result.error, '');
-    assert.ok(result.added.includes("up: '[[projects/agentic-harness/index|agentic-harness]]'"), `collection: '${collection}'`);
+    assert.ok(result.added.includes("up: '[[projects/agentic-harness/agentic-harness|agentic-harness]]'"), `collection: '${collection}'`);
   }
 });
 

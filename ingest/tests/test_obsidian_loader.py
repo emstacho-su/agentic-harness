@@ -222,3 +222,80 @@ def test_file_instead_of_directory_raises(tmp_path: Path):
     target.write_text("x", encoding="utf-8")
     with pytest.raises(SourceError):
         load_vault(target)
+
+
+# --------------------------------------------------------------------------
+# retrievals (R-P2): parsed into events, stripped from metadata
+# --------------------------------------------------------------------------
+
+
+SESSION_NOTE = """---
+id: session-1a2b
+type: session
+session_id: 1a2b3c4d
+machine: stack-desktop
+parent_session: ''
+retrievals:
+  - at: '2026-09-24T14:03:11Z'
+    channel: tool
+    tool: search_context
+    query: 'how does prune work'
+    filters: {collection: agentic-harness, limit: 10}
+    results: ['obsidian:session-9f@0.8123', 'claude-mem:summary:12@0.8540']
+    chunks: ['1849/4752@0.016393']
+  - at: '2026-09-24T14:05:00Z'
+    channel: carrier-pigeon
+    tool: search_context
+    results: []
+retrieved: ['[[projects/agentic-harness/sessions/9f|2026-09-20 · agentic-harness]]']
+---
+
+# Session
+
+What happened.
+"""
+
+
+def session_vault(tmp_path: Path) -> Path:
+    vault = tmp_path / "vault"
+    (vault / "projects").mkdir(parents=True)
+    (vault / "projects" / ".realm").write_text("projects\n", encoding="utf-8")
+    sessions = vault / "projects" / "agentic-harness" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "1a2b.md").write_text(SESSION_NOTE, encoding="utf-8")
+    return vault
+
+
+def test_retrievals_are_stripped_from_metadata_and_retrieved_is_kept(tmp_path):
+    doc = load_vault(session_vault(tmp_path)).documents[0]
+    assert "retrievals" not in doc.metadata
+    assert doc.metadata["retrieved"] == [
+        "[[projects/agentic-harness/sessions/9f|2026-09-20 · agentic-harness]]"
+    ]
+
+
+def test_retrievals_become_events_on_the_document(tmp_path):
+    doc = load_vault(session_vault(tmp_path)).documents[0]
+    assert [(e.rank, e.source, e.external_id) for e in doc.retrievals] == [
+        (1, "obsidian", "session-9f"),
+        (2, "claude-mem", "summary:12"),
+    ]
+    first = doc.retrievals[0]
+    assert first.note_external_id == "session-1a2b"
+    assert first.session_id == "1a2b3c4d"
+    assert first.collection == "agentic-harness"
+    assert first.realm == "projects"
+    assert first.machine == "stack-desktop"
+    assert first.parent_session is None
+
+
+def test_a_malformed_retrieval_is_logged_with_the_note_path_and_the_note_still_loads(tmp_path, caplog):
+    with caplog.at_level("WARNING"):
+        loaded = load_vault(session_vault(tmp_path))
+    assert len(loaded.documents) == 1 and not loaded.skipped
+    assert "projects/agentic-harness/sessions/1a2b.md" in caplog.text
+    assert "retrievals[1]" in caplog.text
+
+
+def test_a_note_without_retrievals_has_none(vault_path):
+    assert all(doc.retrievals == () for doc in load_vault(vault_path).documents)

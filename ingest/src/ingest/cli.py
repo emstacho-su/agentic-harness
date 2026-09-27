@@ -10,7 +10,12 @@
     uv run ingest db migrate          [--dry-run]
     uv run ingest embed-check         [--json] [--threshold 0.999] [--record [--force]]
     uv run ingest verify              --path C:/Users/you/vault [--sample 50] [--seed N] [--json]
+    uv run ingest report retrievals   [--json] [--since 14d] [--limit 20]
     uv run ingest --health
+
+A session note's ``retrievals:`` frontmatter is projected into
+``rag.retrieval_events`` as part of any obsidian ingest; the summary reports the
+rows written, planned (``--dry-run``) or skipped (table not migrated yet).
 
 Windows note: always pass ``C:/Users/...``. An MSYS-style ``/c/Users/...`` path
 resolves to ``C:\\c\\Users\\...`` for anything that is not the bash shell itself.
@@ -43,6 +48,7 @@ from .eval_cli import SUBCOMMAND as EVAL_SUBCOMMAND, run_eval_command
 from .loaders import LoadedSource, load_claude_mem, load_vault, load_vault_notes
 from .pipeline import Action, IngestPipeline, IngestStats
 from .prune import PruneResult, prune_orphans
+from .report_cli import SUBCOMMAND as REPORT_SUBCOMMAND, run_report
 from .runstate import DEFAULT_MAX_AGE_HOURS, health, state_file
 from .store import ChunkStore, NullStore, PostgresStore
 from .sweep_cli import SUBCOMMAND as SWEEP_SUBCOMMAND, run_sweep
@@ -61,6 +67,7 @@ SUBCOMMANDS = {
     DB_SUBCOMMAND: run_db,
     EMBED_CHECK_SUBCOMMAND: run_embed_check,
     VERIFY_SUBCOMMAND: run_verify,
+    REPORT_SUBCOMMAND: run_report,
 }
 
 
@@ -413,13 +420,15 @@ def _report_load(loaded: LoadedSource) -> None:
 
 def _report_stats(stats: IngestStats, *, dry_run: bool) -> None:
     print("\n--- dry run, nothing written ---" if dry_run else "\n--- ingest complete ---")
-    for action, count in stats.summary().items():
+    for action in Action:
+        count = stats.count(action)
         if count:
-            print(f"  {count:5}  {action}")
+            print(f"  {count:5}  {action.value}")
     if dry_run:
         print(f"  chunks that would be written: {stats.chunks_planned}")
     else:
         print(f"  chunks written: {stats.chunks_written}")
+    _report_events(stats)
 
     # Say what "metadata-updated" means where it is counted, rather than leaving
     # an unexplained action name in the nightly log.
@@ -434,6 +443,19 @@ def _report_stats(stats: IngestStats, *, dry_run: bool) -> None:
         )
 
     _report_failures(stats)
+
+
+def _report_events(stats: IngestStats) -> None:
+    """One line on rag.retrieval_events (R-P2), and only when there is something to say."""
+    parts = []
+    if stats.events_written:
+        parts.append(f"{stats.events_written} written")
+    if stats.events_planned:
+        parts.append(f"{stats.events_planned} would be written")
+    if stats.events_skipped:
+        parts.append(f"{stats.events_skipped} skipped (rag.retrieval_events missing)")
+    if parts:
+        print(f"  retrieval events: {', '.join(parts)}")
 
 
 def _report_prune(result: PruneResult, *, dry_run: bool) -> None:

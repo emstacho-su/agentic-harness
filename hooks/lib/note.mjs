@@ -22,6 +22,7 @@ import {
 import { serializeFrontmatter } from './frontmatter.mjs';
 import { redact, redactLiterals } from './redact.mjs';
 import { humanDuration, normalizeLineBreaks, toPosix } from './text.mjs';
+import { sessionTitle } from './title.mjs';
 
 /** `session-<id>` — the stable `external_id` ingest keys on. */
 export function noteId(sessionId, resumeIndex = 1) {
@@ -75,7 +76,14 @@ export function buildFields(ctx) {
     id: ctx.noteId,
     // A subagent supplies its own title so its note is distinguishable from its
     // parent's in a search result, where the title is most of what you see.
-    title: ctx.title || `Session ${ctx.date} — ${ctx.collection}`,
+    title:
+      ctx.title ||
+      sessionTitle({
+        date: ctx.date,
+        collection: ctx.collection,
+        prompt: ctx.titlePrompt ?? ctx.prompts[0]?.text,
+        knownSecrets: ctx.knownSecrets,
+      }),
     type: 'session',
     schema_version: SCHEMA_VERSION,
     collection: ctx.collection,
@@ -119,6 +127,9 @@ export function buildFields(ctx) {
     up: '',
     related: [],
     machine: ctx.machine ?? '',
+    // SC-1: the session's searches and the vault notes they returned.
+    retrievals: ctx.retrievals ?? [],
+    retrieved: ctx.retrieved ?? [],
   };
 }
 

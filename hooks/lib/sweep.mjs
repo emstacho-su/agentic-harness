@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { capture } from './capture.mjs';
+import { defaultStateDir } from './session-start.mjs';
 import {
   AREA_CLASSES,
   AREA_PROJECTS,
@@ -66,6 +67,12 @@ const AGENT_PREFIX = 'agent-';
  * not enough: an older hook filed workers by the directory they stopped in, and
  * on 2026-09-24 eight worker notes existed twice, once in each collection.
  * A session id never ends in `-r<digits>`, so the strip cannot eat into it.
+ *
+ * An empty `<id>.md` does not count either, at the cost of one `stat` per
+ * session note. Following a worker's `up` link before its parent is captured
+ * makes Obsidian create the parent's file with nothing in it; counted as a
+ * note, it would hide that session from every sweep after. Any other content
+ * counts: this is a filename index, and the capture decides what a file holds.
  */
 export function indexNotedSessions(vaultRoot) {
   const noted = new Set();
@@ -74,7 +81,7 @@ export function indexNotedSessions(vaultRoot) {
       const sessionsDir = path.join(vaultRoot, area, collection, SESSIONS_DIR);
       for (const name of readDirNames(sessionsDir)) {
         const sessionId = sessionIdFromNoteName(name);
-        if (sessionId) noted.add(sessionId);
+        if (sessionId && statFile(path.join(sessionsDir, name))?.size > 0) noted.add(sessionId);
       }
     }
   }
@@ -162,6 +169,7 @@ export function sweepOne({
   budgetMs = SWEEP_BUDGET_MS,
   excludes = SWEEP_EXCLUDED_CWD_SEGMENTS,
   log = () => {},
+  stateDir = defaultStateDir(process.env),
 }) {
   const base = { sessionId: candidate.sessionId, transcriptPath: candidate.transcriptPath };
   try {
@@ -195,6 +203,7 @@ export function sweepOne({
       deadlineAt: now + budgetMs,
       runGit,
       capturedBy: CAPTURED_BY_SWEEP,
+      stateDir,
     });
 
     const children = listSubagentTranscripts(candidate.transcriptPath, candidate.sessionId).map((worker) =>
@@ -266,6 +275,7 @@ export function runSweep({
   log = () => {},
   runGit = sweepGit,
   excludes = SWEEP_EXCLUDED_CWD_SEGMENTS,
+  stateDir = defaultStateDir(process.env),
 }) {
   // A missing root is a configuration error, not a candidate that failed: a
   // mistyped --projects would otherwise report "nothing to do", and a mistyped
@@ -281,7 +291,7 @@ export function runSweep({
   const results = dryRun
     ? []
     : selected.map((candidate) => {
-        const result = sweepOne({ candidate, vaultRoot, projectsRoot, runGit, excludes, log });
+        const result = sweepOne({ candidate, vaultRoot, projectsRoot, runGit, excludes, log, stateDir });
         log(`${result.action} ${result.sessionId} ${result.detail}`);
         for (const child of result.children) {
           log(`  ${child.action} ${result.sessionId}--${child.agentId} ${child.detail}`);

@@ -52,8 +52,10 @@ import {
 import { ensureIndex, findNotesByName, persist, readNote, resolveChainHead, vaultAvailable } from './notes-io.mjs';
 import { redact } from './redact.mjs';
 import { resolveRepo } from './repo.mjs';
+import { extractRetrievals, retrievedLinks } from './retrievals.mjs';
 import { isoDate, toPosix, uniqueCapped } from './text.mjs';
-import { extractOrigin, extractOutcome, extractPrompts, extractTools, createAccumulator, knownSecrets, readEntries } from './transcript.mjs';
+import { extractOrigin, extractOutcome, extractPrompts, extractTools, createAccumulator, firstPromptText, knownSecrets, readEntries } from './transcript.mjs';
+import { TITLE_SEPARATOR, workerTitle } from './title.mjs';
 import { parentTranscriptBeside, readTranscriptHead } from './transcript-head.mjs';
 
 /**
@@ -130,10 +132,21 @@ export function captureSubagent({
     return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
   }
 
+  const secrets = knownSecrets(prompts, accumulator);
+  const searches = extractRetrievals(entries, { secrets, includeSidechain: true });
+
   const context = {
     sessionId: input.sessionId,
     noteId: childNoteId(input.sessionId, agentId),
-    title: `Subagent ${agentType || agentId} ${date} — ${placement.collection}`,
+    title: workerTitle({
+      date,
+      collection: placement.collection,
+      agentType: agentType || agentId,
+      // The task, from the head when the transcript was read from its tail; the
+      // Agent call's description when no prompt line survives there.
+      prompt: firstPromptText(transcriptPath, prompts, SUBAGENT_BUDGET_BYTES) || meta.description,
+      knownSecrets: secrets,
+    }),
     collection: placement.collection,
     collectionSource: placement.collectionSource,
     date,
@@ -172,7 +185,10 @@ export function captureSubagent({
     prompts,
     // A worker's transcript is all sidechain; its closing message is its report.
     outcome: extractOutcome(entries, { includeSidechain: true }),
-    knownSecrets: knownSecrets(prompts, accumulator),
+    knownSecrets: secrets,
+    // R-P1: the worker's own searches; the parent note records only its own.
+    retrievals: searches.records,
+    retrieved: retrievedLinks(searches.hits, { vaultRoot, deadlineAt: deadlineAt - RESERVE_MS }),
     commands: accumulator.commands,
     commandCount: accumulator.commandCount,
     agents: accumulator.agents,
@@ -182,6 +198,11 @@ export function captureSubagent({
     transcriptPath,
   };
 
+  // Read for its title, which labels this worker's `up` link. The link into
+  // the parent below reads it again: the parent's own SessionEnd may write it
+  // in between, and writing back this copy would undo that capture.
+  const parent = readParentHead(placement.parentSessionsDir, input.sessionId);
+
   // The same merge rule as a session note: lists grow, scalars only improve,
   // and a tag added by hand survives. A subagent's note is rewritten if the
   // same agent id stops twice.
@@ -189,6 +210,11 @@ export function captureSubagent({
     current.fields ? mergeFields(current.fields, buildFields(context)) : buildFields(context),
     placement.area,
     placement.collection,
+    {
+      area: placement.parentArea,
+      collection: placement.parentCollection,
+      title: parentTitle(parent.note, placement, date),
+    },
   );
   const merged = { ...context, previousBody: current.body };
   const result = persist(targetPath, renderNote(fields, renderBody(merged, fields)));
@@ -200,9 +226,8 @@ export function captureSubagent({
   // `SubagentStop` fires at every stop of a multi-turn worker; only the first can matter.
   const index = current.fields ? { ok: true } : ensureIndex(vaultRoot, placement.area, placement.collection);
   const linked = linkIntoParent({
-    sessionsDir: placement.parentSessionsDir,
+    parent: readParentHead(placement.parentSessionsDir, input.sessionId),
     area: placement.parentArea,
-    sessionId: input.sessionId,
     childId: fields.id,
   });
 
@@ -222,7 +247,8 @@ export function captureSubagent({
       `${vaultRelative(vaultRoot, targetPath)} ` +
       `agent_type=${agentType || 'unknown'} placed_by=${placement.basis} parent=${linked.status}` +
       (result.changed ? '' : ' (identical on disk)') +
-      (index.ok ? '' : ` (index not written: ${index.error})`),
+      (index.ok ? '' : ` (index not written: ${index.error})`) +
+      (current.stub ? ' (replaced stub)' : ''),
   };
 }
 
@@ -232,7 +258,7 @@ const PLACED_BY_OWN_CWD = 'own-cwd';
 const PLACED_BY_EARLIER_NOTE = 'earlier-note';
 
 /** A note that is not there yet: what a fresh capture starts from. */
-const NO_NOTE = Object.freeze({ fields: null, body: '', error: '' });
+const NO_NOTE = Object.freeze({ fields: null, body: '', error: '', stub: false });
 
 /**
  * Where a worker's note is filed, and the note already there.
@@ -251,19 +277,28 @@ const NO_NOTE = Object.freeze({ fields: null, body: '', error: '' });
  * is still looked for in the parent's collection, because that is where the
  * session files itself.
  *
+ * The parent's own folder travels with the placement, apart from the worker's:
+ * a worker merged into an older copy elsewhere still links up to, and is
+ * linked into, the parent where the parent files.
+ *
  * @returns {{area: string, collection: string, collectionSource: string,
  *            notePath: string, current: object, parentArea: string,
- *            parentSessionsDir: string, basis: string}}
+ *            parentCollection: string, parentSessionsDir: string,
+ *            parentStartedAt: string, basis: string}}
  */
 function placeWorker({ input, agentId, agentTranscriptPath, facts, vaultRoot, log }) {
   const fromParent = parentPlacement({ input, agentTranscriptPath, vaultRoot });
-  const home = fromParent ?? { area: facts.area, collection: facts.collection, collectionSource: facts.collectionSource };
+  const home = fromParent
+    ? { area: fromParent.area, collection: fromParent.collection, collectionSource: fromParent.collectionSource }
+    : { area: facts.area, collection: facts.collection, collectionSource: facts.collectionSource };
   const parentSessionsDir = path.join(vaultRoot, home.area, home.collection, SESSIONS_DIR);
   const filename = childNoteFilename(input.sessionId, agentId);
   const atHome = {
     ...home,
     parentArea: home.area,
+    parentCollection: home.collection,
     parentSessionsDir,
+    parentStartedAt: fromParent?.timestamp ?? '',
     notePath: path.join(parentSessionsDir, filename),
     basis: fromParent ? PLACED_BY_PARENT : PLACED_BY_OWN_CWD,
   };
@@ -287,6 +322,8 @@ function placeWorker({ input, agentId, agentTranscriptPath, facts, vaultRoot, lo
  * in sorted order, is merged into where it sits and keeps describing its
  * folder. A stray the parser cannot read is left alone and a fresh note is
  * written at home: a hand-edited note elsewhere must not cost this worker's.
+ * A stray that is only a stub — an empty file Obsidian made when a link was
+ * followed — is not a note to merge into either, and is left the same way.
  *
  * @returns {{placement: object, claimed: object|null}}
  */
@@ -295,8 +332,9 @@ function chooseTarget({ atHome, homeExists, strays, vaultRoot, log }) {
   if (homeExists || !earlier) return { placement: { ...atHome, current: readNote(atHome.notePath) }, claimed: null };
 
   const current = readNote(earlier.notePath);
-  if (current.error) {
-    log(`existing note unreadable at ${vaultRelative(vaultRoot, earlier.notePath)}; writing beside the parent`);
+  if (current.error || current.stub) {
+    const what = current.stub ? 'empty stray left' : 'existing note unreadable';
+    log(`${what} at ${vaultRelative(vaultRoot, earlier.notePath)}; writing beside the parent`);
     return { placement: { ...atHome, current: NO_NOTE }, claimed: earlier };
   }
   const placement = {
@@ -323,7 +361,8 @@ function vaultRelative(vaultRoot, notePath) {
 
 /**
  * The collection the parent session files under, from the `cwd` its own
- * transcript declares; `null` when no parent transcript says.
+ * transcript declares, and the `timestamp` its first record carries (`''`
+ * when none does); `null` when no parent transcript declares a `cwd`.
  *
  * The transcript beside the worker's `subagents/` folder is asked first, then
  * the payload's `transcript_path`, which on `SubagentStop` is the session's.
@@ -337,15 +376,41 @@ export function parentPlacement({ input, agentTranscriptPath, vaultRoot, readHea
   const named = [parentTranscriptBeside(agentTranscriptPath, input.sessionId), input.transcriptPath].map(toPosix);
   const candidates = [...new Set(named)].filter((candidate) => candidate && candidate !== own);
   for (const candidate of candidates) {
-    const { cwd } = readHead(candidate);
-    if (cwd) return deriveCollection({ cwd, vaultRoot, repo: resolveRepo(cwd) });
+    const { cwd, timestamp = '' } = readHead(candidate);
+    if (cwd) return { ...deriveCollection({ cwd, vaultRoot, repo: resolveRepo(cwd) }), timestamp };
   }
   return null;
 }
 
 /**
+ * The parent session's note as it stands: the head of its resume chain, as for
+ * the session's own write — once `-r2` exists the base note is superseded, and
+ * a link to it, or into it, is a link to history.
+ *
+ * @returns {{path: string, note: object}} `note` is what `readNote` returns.
+ */
+function readParentHead(sessionsDir, sessionId) {
+  const parentPath = resolveChainHead(sessionsDir, sessionId).path;
+  return { path: parentPath, note: readNote(parentPath) };
+}
+
+/**
+ * The label on a worker's `up` link: the parent note's own title when there is
+ * one, else `<date> · <collection>` — the date the parent session started, or
+ * the worker's own when no parent transcript said. The fallback is the usual
+ * case, because a worker normally stops before its parent is captured.
+ */
+function parentTitle(parentNote, placement, workerDate) {
+  const title = String(parentNote.fields?.title ?? '').trim();
+  if (title) return title;
+  const date = isoDate(placement.parentStartedAt) || workerDate;
+  return `${date}${TITLE_SEPARATOR}${placement.parentCollection}`;
+}
+
+/**
  * Add this child to the parent note's `child_sessions`, if the parent note is
- * already there.
+ * already there. `parent` is `readParentHead`'s result, read just before
+ * this call so the write-back starts from the note as it stands.
  *
  * It usually is not — a worker normally stops long before the session that
  * spawned it — and that is fine: the parent's own `SessionEnd` back-fills the
@@ -356,27 +421,24 @@ export function parentPlacement({ input, agentTranscriptPath, vaultRoot, readHea
  *          call actually changed the parent note, so the caller knows whether it
  *          has to be re-ingested.
  */
-function linkIntoParent({ sessionsDir, area, sessionId, childId }) {
+function linkIntoParent({ parent, area, childId }) {
   const untouched = (status) => ({ status, notePath: '' });
 
-  // The head of the chain, as for the session's own write: once `-r2` exists
-  // the base note is superseded, and a link added there is a link to history.
-  const parentPath = resolveChainHead(sessionsDir, sessionId).path;
-  const parent = readNote(parentPath);
-  if (!parent.fields || parent.error) {
-    return untouched(parent.error ? 'unreadable' : 'not yet written');
+  const { note } = parent;
+  if (!note.fields || note.error) {
+    return untouched(note.error ? 'unreadable' : 'not yet written');
   }
 
-  const existing = Array.isArray(parent.fields.child_sessions) ? parent.fields.child_sessions : [];
+  const existing = Array.isArray(note.fields.child_sessions) ? note.fields.child_sessions : [];
   if (existing.includes(childId)) return untouched('already linked');
 
   const fields = withLinks(
-    { ...parent.fields, child_sessions: uniqueCapped([...existing, childId], MAX_CHILD_SESSIONS) },
+    { ...note.fields, child_sessions: uniqueCapped([...existing, childId], MAX_CHILD_SESSIONS) },
     area,
   );
-  const written = persist(parentPath, renderNote(fields, parent.body));
+  const written = persist(parent.path, renderNote(fields, note.body));
   if (!written.ok) return untouched('link failed');
-  return { status: 'linked', notePath: written.changed ? parentPath : '' };
+  return { status: 'linked', notePath: written.changed ? parent.path : '' };
 }
 
 /**

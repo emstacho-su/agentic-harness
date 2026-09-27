@@ -7,8 +7,12 @@
  */
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 
+import { MAX_RETRIEVALS, MAX_RETRIEVED } from '../lib/constants.mjs';
+import { parseFrontmatter, serializeFrontmatter } from '../lib/frontmatter.mjs';
 import {
   ACTION_CREATE,
   ACTION_MERGE,
@@ -21,6 +25,7 @@ import {
   planWrite,
   statusRank,
 } from '../lib/merge.mjs';
+import { GOLDEN_DIR } from './helpers/sandbox.mjs';
 
 const BASE = Object.freeze({
   id: 'session-abc',
@@ -142,4 +147,102 @@ test('an unknown field on the existing note is carried through the merge', () =>
   const merged = mergeFields({ ...BASE, reviewed_by: 'stack' }, { ...BASE });
   assert.equal(merged.reviewed_by, 'stack');
   assert.equal(planWrite({ ...BASE, reviewed_by: 'stack' }, { ...BASE }).action, ACTION_MERGE);
+});
+
+// ------------------------------------------------ retrieval records (SC-1)
+
+function record(n, extra = {}) {
+  return {
+    at: `2026-09-24T14:${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}Z`,
+    channel: 'tool',
+    tool: 'search_context',
+    query: `query ${n}`,
+    filters: { collection: 'agentic-harness', limit: 10 },
+    results: [`obsidian:session-${n}@0.8123`],
+    chunks: [`${n}/1@0.016393`],
+    ...extra,
+  };
+}
+
+test('retrievals merge as a union, existing first, deduped by content', () => {
+  const merged = mergeFields(
+    { ...BASE, retrievals: [record(1), record(2)] },
+    { ...BASE, retrievals: [record(2), record(3)] },
+  );
+  assert.deepEqual(merged.retrievals, [record(1), record(2), record(3)]);
+});
+
+test('record identity ignores key order, nested key order included', () => {
+  const reordered = Object.fromEntries(Object.entries(record(1)).reverse());
+  reordered.filters = { limit: 10, collection: 'agentic-harness' };
+  const merged = mergeFields({ ...BASE, retrievals: [record(1)] }, { ...BASE, retrievals: [reordered] });
+  assert.equal(merged.retrievals.length, 1);
+});
+
+test('a record that differs in any value is a different record', () => {
+  const merged = mergeFields(
+    { ...BASE, retrievals: [record(1)] },
+    { ...BASE, retrievals: [record(1, { results: ['obsidian:session-1@0.9000'] })] },
+  );
+  assert.equal(merged.retrievals.length, 2);
+});
+
+test('a record is compared as it will read back, so a re-merge adds nothing', () => {
+  // A query with a line break is written on one line; the copy read back from
+  // disk must still match the fresh copy the next capture derives.
+  const fresh = record(1, { query: 'line one\nline two' });
+  const first = mergeFields({ ...BASE }, { ...BASE, retrievals: [fresh] });
+  const again = mergeFields(first, { ...BASE, retrievals: [fresh] });
+  assert.equal(again.retrievals.length, 1);
+  assert.equal(again.retrievals[0].query, 'line one line two');
+});
+
+test('retrievals are capped at MAX_RETRIEVALS, earliest kept', () => {
+  const existing = Array.from({ length: 70 }, (_, i) => record(i));
+  const next = Array.from({ length: 70 }, (_, i) => record(i + 70));
+  const merged = mergeFields({ ...BASE, retrievals: existing }, { ...BASE, retrievals: next });
+  assert.equal(MAX_RETRIEVALS, 100);
+  assert.equal(merged.retrievals.length, MAX_RETRIEVALS);
+  assert.deepEqual(merged.retrievals[0], record(0));
+  assert.deepEqual(merged.retrievals.at(-1), record(99));
+});
+
+test('an unknown key inside a record survives the merge', () => {
+  const annotated = record(1, { reviewed_by: 'stack' });
+  const merged = mergeFields({ ...BASE, retrievals: [annotated] }, { ...BASE, retrievals: [record(2)] });
+  assert.equal(merged.retrievals[0].reviewed_by, 'stack');
+  assert.equal(merged.retrievals.length, 2);
+});
+
+test('retrieved is a list capped at MAX_RETRIEVED', () => {
+  const links = (from, count) => Array.from({ length: count }, (_, i) => `[[projects/x/sessions/${from + i}]]`);
+  const merged = mergeFields({ ...BASE, retrieved: links(0, 15) }, { ...BASE, retrieved: [...links(10, 15)] });
+  assert.equal(MAX_RETRIEVED, 20);
+  assert.equal(merged.retrieved.length, MAX_RETRIEVED);
+  assert.equal(merged.retrieved[0], '[[projects/x/sessions/0]]');
+  assert.equal(merged.retrieved.at(-1), '[[projects/x/sessions/19]]');
+});
+
+test('a note written before retrievals existed merges cleanly and gains empty lists', () => {
+  const golden = fs.readFileSync(path.join(GOLDEN_DIR, 'plain-main.md'), 'utf8');
+  // The same note as GENERATOR 2.2.0 wrote it: no retrieval keys at all.
+  const old = golden
+    .split('\n')
+    .filter((line) => !/^(retrievals|retrieved):/.test(line))
+    .join('\n')
+    .replace(/session-capture\.mjs \d+\.\d+\.\d+/, 'session-capture.mjs 2.2.0');
+  const parsed = parseFrontmatter(old);
+  assert.equal(parsed.ok, true, parsed.error);
+  assert.equal('retrievals' in parsed.fields, false);
+
+  const next = { ...parsed.fields, generator: 'session-capture.mjs 2.3.0', retrievals: [], retrieved: [] };
+  const merged = mergeFields(parsed.fields, next);
+  assert.deepEqual(merged.retrievals, []);
+  assert.deepEqual(merged.retrieved, []);
+
+  const text = serializeFrontmatter(merged);
+  assert.ok(text.includes('\nretrievals: []\nretrieved: []\n---'), 'appended after machine, as the last fields');
+  const round = parseFrontmatter(`${text}\n${parsed.body}`);
+  assert.equal(round.ok, true, round.error);
+  assert.deepEqual(round.fields, merged);
 });

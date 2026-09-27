@@ -10,7 +10,7 @@ import pytest
 
 from ingest.config import EMBEDDING
 from ingest.errors import StoreError
-from ingest.models import Chunk, DocumentState, SourceDocument
+from ingest.models import Chunk, DocumentState, RetrievalEvent, SourceDocument
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -69,6 +69,12 @@ class FakeStore:
         self.lookup_calls = 0
         self._next_id = 1
         self.closed = False
+        # Retrieval events, keyed like the store keys them: by the note.
+        self.events: dict[tuple[str, str], list[tuple[int, RetrievalEvent]]] = {}
+        #: One (document_id, note external_id, rows written) per projection.
+        self.event_projections: list[tuple[int, str, int]] = []
+        #: Flip to False to stand for a store that has not run the migration.
+        self.events_table_exists = True
 
     def get_document_state(self, source: str, external_id: str) -> DocumentState | None:
         self.lookup_calls += 1
@@ -126,6 +132,20 @@ class FakeStore:
             self.embeddings.pop(state.document_id, None)
             deleted += 1
         return deleted
+
+    def replace_retrieval_events(self, document_id: int, document: SourceDocument) -> int:
+        """Delete the note's rows and insert all of them, as the real store does."""
+        if not self.events_table_exists:
+            return 0
+        key = (document.source, document.external_id)
+        self.events[key] = [(document_id, event) for event in document.retrievals]
+        self.event_projections.append((document_id, document.external_id, len(document.retrievals)))
+        return len(document.retrievals)
+
+    def count_retrieval_events(self, document: SourceDocument) -> int | None:
+        if not self.events_table_exists:
+            return None
+        return len(self.events.get((document.source, document.external_id), []))
 
     def close(self) -> None:
         self.closed = True

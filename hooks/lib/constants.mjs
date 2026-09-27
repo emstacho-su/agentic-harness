@@ -6,7 +6,7 @@
  */
 
 /** Written into `generator:`; bumped whenever the note's shape changes. */
-export const GENERATOR_VERSION = '2.2.0';
+export const GENERATOR_VERSION = '2.3.0';
 
 /** Written into `schema_version:`. Lets a reader tell "old note" from "unknown". */
 export const SCHEMA_VERSION = 2;
@@ -98,6 +98,14 @@ export const MAX_ARTIFACTS = 10;
 export const MAX_CWDS_SEEN = 20;
 export const MAX_REPOS_TOUCHED = 10;
 export const MAX_CHILD_SESSIONS = 40;
+/**
+ * `retrievals:` records per note (SC-1). A session with 44 searches exists on
+ * this machine, so 100 leaves room; past it the earliest records are kept,
+ * because a merge appends the newest last.
+ */
+export const MAX_RETRIEVALS = 100;
+/** `retrieved:` links per note (R-P2): the distinct vault notes a session got back. */
+export const MAX_RETRIEVED = 20;
 
 /** Tools whose input names a file the session edited. */
 export const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -138,9 +146,18 @@ export const SESSIONS_DIR = 'sessions';
 /** Claude Code's folder for worker transcripts: `<project dir>/<session id>/subagents/`. */
 export const SUBAGENTS_DIR = 'subagents';
 
-/** Every collection's hub note: what a session links `up` to. */
-export const INDEX_NOTE = 'index';
-export const INDEX_FILENAME = `${INDEX_NOTE}.md`;
+/**
+ * The `type:` of every collection's hub note, the note a session links `up` to.
+ * The hub itself is named after its folder, `<collection>.md` (SC-3; see
+ * `hubFilename` in links.mjs), because Obsidian labels graph nodes by filename.
+ */
+export const HUB_NOTE_TYPE = 'index';
+
+/**
+ * A hub's name before SC-3. It stays readable until `rename-hubs.mjs --apply`
+ * has run on the live vault; see the transitional branch in `ensureIndex`.
+ */
+export const LEGACY_HUB_FILENAME = 'index.md';
 
 /** `collection_source:` — how the collection name was decided. */
 export const COLLECTION_FROM_GIT = 'git';

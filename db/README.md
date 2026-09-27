@@ -58,6 +58,34 @@ verbatim from that table.
 | `20260915144257_rag_search_filter_metadata.sql` | Adds `filter_metadata jsonb` (a `@>` contains-match on frontmatter, pushed into both arms) and `include_superseded boolean default true`; re-asserts the `documents_metadata_idx` GIN index the filter needs, and pins the function's `search_path` |
 | `20260921223446_rag_search_question_tolerant_text.sql` | The text arm also admits a chunk matching at least half the query's lexemes (minimum two) whose cosine is within 0.08 of `min_similarity`, so a natural-language question gets keyword support instead of an all-terms-or-nothing match. Signature unchanged |
 | `20260921223612_rag_search_strict_matches_first.sql` | Inside the text arm, chunks matching every term rank ahead of partial matches. Fixes two golden cases the previous migration pushed out of the top 3 |
+| `20260924201225_rag_retrieval_events.sql` | Table `rag.retrieval_events`: one row per result of each search a session made, projected by ingest from the session notes' `retrievals:` frontmatter. Unique `nulls not distinct` key on the note and the retrieval's position, RLS enabled. Applied with `uv run ingest db migrate` (see below) |
+
+### `rag.retrieval_events` (retrieval provenance, R-P2)
+
+The capture hook writes each search a session made into the session's note as frontmatter
+`retrievals:`. The note is the record; this table is a projection of it that ingest rebuilds, and
+nothing else writes to it. `retrievals` never reaches `documents.metadata`, so `rag.search` output
+stays small.
+
+- **One row per (retrieval, result)**, in rank order. A search that returned nothing is one row
+  with a null `rank` and null result columns, so empty-result queries can be reported.
+- **Idempotent.** Ingesting a note deletes that note's rows and inserts them again in one
+  transaction, keyed by `(note_source, note_external_id)`. On an unchanged note, ingest compares
+  the stored row count with the note's and re-projects only when they differ, which also fills
+  the table the first time ingest runs after the migration.
+- **Before the migration is applied**, ingest keeps working: it logs one warning per run and
+  reports the events as skipped.
+- **A pruned note takes its events with it.** `document_id` is the session note's own row and
+  cascades on delete, so the table's count keeps matching the notes' `retrievals` entries.
+- `result_document_id` is looked up by `(source, external_id)` when the row is written, and is
+  not a foreign key, because the event outlives a pruned *result* document. `search_version` is the newest
+  applied `rag.search` migration in `rag_meta.schema_migrations`.
+- `used` and `judged_relevant` are left null for the feedback loop. Re-projecting a note replaces
+  its rows, so a value set directly in the table does not survive the next change to that note.
+
+```sql
+select count(*) from rag.retrieval_events;   -- should equal the result rows in the notes' retrievals
+```
 
 ## Access model
 
@@ -113,7 +141,9 @@ order by version;
 ```
 
 Every row should have a matching `<version>_<name>.sql` in `migrations/`, and the six files
-above are the complete list as of 2026-09-21.
+above are the complete list as of 2026-09-21. `20260924201225_rag_retrieval_events.sql` and later
+are applied with `uv run ingest db migrate`, which records them in `rag_meta.schema_migrations`
+rather than in `supabase_migrations.schema_migrations`.
 
 "Mirror" means byte-identical, and that is checkable. `apply_migration` stores the query it was
 given verbatim — one array element, comments and all — so the file and the row must hash the

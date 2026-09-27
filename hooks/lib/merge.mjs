@@ -13,7 +13,7 @@
  *      stale SessionEnd replayed over a concluded note writes nothing at all.
  */
 
-import { FIELD_SPEC } from './frontmatter.mjs';
+import { FIELD_SPEC, normalizeRecord } from './frontmatter.mjs';
 import {
   MAX_ARTIFACTS,
   MAX_CHILD_SESSIONS,
@@ -24,6 +24,8 @@ import {
   MAX_MEMORY_FILES,
   MAX_PRS,
   MAX_REPOS_TOUCHED,
+  MAX_RETRIEVALS,
+  MAX_RETRIEVED,
   STATUS_CONCLUDED,
   STATUS_RANK,
   STATUS_SUPERSEDED,
@@ -48,9 +50,15 @@ const LIST_CAPS = Object.freeze({
   files_modified: MAX_FILES_LISTED,
   cwds_seen: MAX_CWDS_SEEN,
   repos_touched: MAX_REPOS_TOUCHED,
+  retrieved: MAX_RETRIEVED,
+});
+
+const RECORD_CAPS = Object.freeze({
+  retrievals: MAX_RETRIEVALS,
 });
 
 const LIST_KINDS = new Set(['list', 'numlist']);
+const RECORDS_KIND = 'records';
 const KIND_BY_FIELD = new Map(FIELD_SPEC);
 
 /** Rank of a status string; an unknown value ranks lowest rather than throwing. */
@@ -130,6 +138,10 @@ export function mergeFields(existing, next) {
       merged[key] = uniqueCapped([...asList(existing[key]), ...asList(next[key])], LIST_CAPS[key] ?? null);
       continue;
     }
+    if (kind === RECORDS_KIND) {
+      merged[key] = mergeRecords(existing[key], next[key], RECORD_CAPS[key] ?? MAX_RETRIEVALS);
+      continue;
+    }
     if (kind === 'map') {
       merged[key] = next[key];
       continue;
@@ -137,6 +149,9 @@ export function mergeFields(existing, next) {
     merged[key] = preferNonEmpty(next[key], existing[key]);
   }
 
+  // The one scalar the note keeps over a derived value (R-N3): a title written
+  // before the readable form, or retitled by hand, stays until C5 improves it.
+  merged.title = preferNonEmpty(existing.title, next.title);
   merged.status = STATUS_RANK[Math.max(statusRank(existing.status), statusRank(next.status))];
   // `tags` is not in LIST_CAPS: manual tags are uncapped, and mergeTags owns
   // the union and the `unclassified` rule outright.
@@ -163,6 +178,39 @@ export function mergeTags(existingTags, nextTags) {
   const union = uniqueCapped([...asList(existingTags), ...asList(nextTags)], null);
   const real = union.filter((tag) => tag !== UNCLASSIFIED);
   return real.length > 0 ? real : [UNCLASSIFIED];
+}
+
+/**
+ * Union of two record lists, existing first, capped with the earliest kept.
+ *
+ * A record's identity is its whole content as it reads back from disk, in
+ * canonical JSON (sorted keys). Normalising first matters: a query with a line
+ * break is written on one line, and comparing the fresh copy against the one
+ * read back would append the same search again on every merge.
+ */
+export function mergeRecords(existingRecords, nextRecords, cap) {
+  const out = [];
+  const seen = new Set();
+  for (const candidate of [...asList(existingRecords), ...asList(nextRecords)]) {
+    const record = normalizeRecord(candidate);
+    if (record === null) continue;
+    const identity = canonicalJson(record);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    out.push(record);
+    if (out.length >= cap) break;
+  }
+  return out;
+}
+
+/** JSON with object keys sorted at every level, so key order never changes identity. */
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
 
 /** The earlier of two ISO instants, preferring whichever one exists. */

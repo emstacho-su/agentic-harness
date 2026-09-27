@@ -152,7 +152,10 @@ test('a worker and its parent, both ending in the vault, land in one collection 
     assert.deepEqual(collectionsHolding(sandbox.vaultRoot, parentFile), [home]);
 
     const child = fieldsAt(sandbox, `${home}/sessions/${workerFile}`);
-    assert.equal(child.up, `[[${PARENT.sessionId}]]`);
+    // The worker stopped before its parent had a note: the parent's start date
+    // and collection label the link, and its path is the parent note's.
+    const collection = home.split('/')[1];
+    assert.equal(child.up, `[[${home}/sessions/${PARENT.sessionId}|2026-09-16 · ${collection}]]`);
     assert.ok(fs.existsSync(path.join(sandbox.vaultRoot, home, 'sessions', parentFile)), 'the up link names a note beside it');
     assert.ok(fieldsAt(sandbox, `${home}/sessions/${parentFile}`).child_sessions.includes(child.id));
   } finally {

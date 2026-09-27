@@ -19,13 +19,19 @@
  * Nothing here touches the filesystem, so a link may point at a note that does
  * not exist yet. That is the ordinary case — a worker stops long before the
  * session that spawned it is captured — and Obsidian resolves the link the
- * moment the note appears.
+ * moment the note appears. That is also why a link to a session carries its
+ * full path: a bare `[[<uuid>]]` followed before the note exists makes
+ * Obsidian create the note at the vault root (2026-09-24), where nothing will
+ * ever write it.
  */
 
-import { AREAS, INDEX_NOTE } from './constants.mjs';
+import { AREAS, SESSIONS_DIR } from './constants.mjs';
 import { isSafeFilenameSegment } from './text.mjs';
 
 const NOTE_ID_PREFIX = 'session-';
+
+/** A parent's title is a label on a graph edge, not a sentence. */
+const MAX_ALIAS_CODE_POINTS = 80;
 
 /**
  * A session id, exactly. `parent_session` is the one link source that can arrive
@@ -59,38 +65,100 @@ export function sessionLink(idOrSessionId) {
   return stem ? `[[${stem}]]` : '';
 }
 
-/** The link to a parent session, or `''` when the value is not a session id. */
-function parentLink(parentSession) {
-  return SESSION_ID.test(String(parentSession ?? '')) ? sessionLink(parentSession) : '';
+/**
+ * `[[<area>/<collection>/sessions/<uuid>|<alias>]]` — the link to a parent
+ * session, or `''` when the value is not a session id or the folder is not a
+ * collection. The path is the parent's, which is not always the child's: a
+ * worker merged into an older copy in another collection still points home.
+ */
+function parentLink(parentSession, { area, collection, title }) {
+  const sessionId = String(parentSession ?? '');
+  if (!SESSION_ID.test(sessionId) || !AREAS.includes(area) || !isSafeFilenameSegment(collection)) return '';
+  const alias = linkAlias(title);
+  return `[[${area}/${collection}/${SESSIONS_DIR}/${sessionId}${alias ? `|${alias}` : ''}]]`;
 }
 
 /**
- * `[[<area>/<collection>/index|<collection>]]` — the full path, because every
- * collection has a note called `index` and a bare `[[index]]` picks one of them.
+ * A title made safe to sit after the `|` of a wikilink: no brackets or pipe
+ * that would end the link early, no control characters, one line, capped in
+ * code points so a surrogate pair is never cut in half. `''` means no alias.
  */
-export function indexLink(area, collection) {
+function linkAlias(title) {
+  const text = String(title ?? '')
+    .replace(/[[\]|]/g, '')
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return [...text].slice(0, MAX_ALIAS_CODE_POINTS).join('').trimEnd();
+}
+
+/**
+ * `<collection>.md` — a collection's hub note is named after its folder (SC-3),
+ * because Obsidian labels a graph node by its filename, and a vault of notes
+ * all called `index` is a graph of identical labels. `''` for an unsafe name.
+ */
+export function hubFilename(collection) {
+  return isSafeFilenameSegment(collection) ? `${collection}.md` : '';
+}
+
+/**
+ * `[[<area>/<collection>/<collection>|<collection>]]` (SC-3) — the full path,
+ * because a class and a project may share a collection name, and a bare
+ * `[[<collection>]]` would pick one of them.
+ */
+export function hubLink(area, collection) {
   if (!AREAS.includes(area) || !isSafeFilenameSegment(collection)) return '';
-  return `[[${area}/${collection}/${INDEX_NOTE}|${collection}]]`;
+  return `[[${area}/${collection}/${collection}|${collection}]]`;
 }
 
 /**
  * `fields` with `up` and `related` derived afresh. Returns a new object.
  *
  * A worker links up to the session that spawned it and a session links up to
- * its collection index, which keeps the index from becoming a hub for every
- * worker note as well. The graph is undirected, so the parent needs no list of
- * its children to be joined to them.
+ * its collection's hub note, which keeps the hub from collecting every worker
+ * note as well. The graph is undirected, so the parent needs no list of its
+ * children to be joined to them.
  *
  * `collection` is where the note is filed. It defaults to the note's own field,
  * which for a capture is the same thing; the backfill passes the folder it
- * found the note in, because that is where the index actually is.
+ * found the note in, because that is where the hub actually is.
+ *
+ * `parent` says where the parent session files and what it is called, when the
+ * caller knows: `area` and `collection` default to this note's own placement,
+ * which is where a parent almost always is, and `title` becomes the link's
+ * alias. Only `SubagentStop` knows better; every other caller omits it.
  */
-export function withLinks(fields, area, collection = fields.collection) {
+export function withLinks(fields, area, collection = fields.collection, parent = {}) {
   const supersedes = Array.isArray(fields.supersedes) ? fields.supersedes : [];
   const related = [fields.resumed_from, ...supersedes].map(sessionLink).filter(Boolean);
-  return {
-    ...fields,
-    up: parentLink(fields.parent_session) || indexLink(area, collection),
-    related: [...new Set(related)],
-  };
+  const knowsParent = Boolean(parent.area || parent.collection || parent.title);
+  const up =
+    (!knowsParent && keptParentLink(fields.up, fields.parent_session)) ||
+    parentLink(fields.parent_session, {
+      area: parent.area || area,
+      collection: parent.collection || collection,
+      title: parent.title,
+    }) ||
+    hubLink(area, collection);
+  return { ...fields, up, related: [...new Set(related)] };
+}
+
+/**
+ * The note's own `up`, when it already names this parent session by path.
+ * `SubagentStop` wrote it knowing where the parent files and what it is
+ * called; a later pass that knows neither (the backfill, `link-sessions`)
+ * would re-derive it from the worker's folder and drop the alias.
+ */
+function keptParentLink(up, parentSession) {
+  const sessionId = String(parentSession ?? '');
+  if (typeof up !== 'string' || !SESSION_ID.test(sessionId)) return '';
+  const target = up.match(/^\[\[([^\]|]+)(?:\|[^\]]*)?\]\]$/)?.[1] ?? '';
+  const [realm, collection, folder, stem, ...rest] = target.split('/');
+  const qualified =
+    rest.length === 0 &&
+    AREAS.includes(realm) &&
+    isSafeFilenameSegment(collection) &&
+    folder === SESSIONS_DIR &&
+    stem === sessionId;
+  return qualified ? up : '';
 }

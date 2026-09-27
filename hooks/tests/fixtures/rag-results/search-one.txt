@@ -1,0 +1,16 @@
+1 result for "ledger invariants" (source "claude-mem", top 5).
+Hybrid search: semantic (cosine) and full-text ranked separately, then fused with RRF.
+Judge relevance by `similarity` — real cosine, where ~0.8 is a strong match and below ~0.65 is usually unrelated. `rrf` only sets the ordering and is not a percentage.
+
+### 1. (untitled)
+- source: claude-mem
+- collection: quant-edge-tracker
+- external_id: summary:77
+- similarity: 0.8801
+- rrf: 0.032786 (ordering only)
+- ids: doc 10, chunk 1
+- metadata: {"project":"quant-edge-tracker"}
+
+The ledger emits cash and wager events; cash must never exceed zero.
+
+To read a full document, call get_document with the `source` and `external_id` shown above.

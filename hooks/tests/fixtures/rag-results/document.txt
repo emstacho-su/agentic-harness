@@ -1,0 +1,20 @@
+# Ledger model
+
+- source: obsidian
+- collection: agentic-harness
+- external_id: notes/ledger.md
+- agent: claude-code
+- created_at: 2026-04-15T00:00:00.000Z
+- updated_at: 2026-05-01T00:00:00.000Z
+- doc_id: 10
+- metadata: {"tags":["ledger"]}
+
+---
+
+Full note body.
+
+---
+
+- source: not-a-field
+
+Document sentinel body text.

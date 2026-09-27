@@ -213,6 +213,9 @@ export function migrateNote({ note, plan, backfill, repoFor }) {
     generator: `session-capture.mjs ${GENERATOR_VERSION} (migrated)`,
     tools_used: old.tools_used && typeof old.tools_used === 'object' ? old.tools_used : {},
     machine: '',
+    // A v1 note never recorded its searches.
+    retrievals: [],
+    retrieved: [],
   };
 
   const emptied = ['branch', 'commits', 'prs', 'phase', 'parent_session', 'child_sessions', 'artifacts'].filter(

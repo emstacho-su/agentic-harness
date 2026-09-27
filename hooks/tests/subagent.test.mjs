@@ -399,6 +399,8 @@ test('a note already filed for this worker in another collection is merged there
     assert.equal(merged.collection_source, 'folder');
     assert.ok(merged.tags.includes('kept-by-hand'), 'a merge, not a rewrite');
     assert.ok(merged.files_modified.includes('web/src/lib/retrieval/filter.ts'));
+    // Its link still points where the parent files, not at the folder it sits in.
+    assert.equal(merged.up, `[[projects/bb2dash/sessions/${SESSION_ID}|2026-09-16 · bb2dash]]`);
   } finally {
     sandbox.cleanup();
   }
@@ -506,6 +508,125 @@ test('the parent transcript is read once per distinct file, and the worker trans
     calls.length = 0;
     assert.equal(place(windows(agent)), null);
     assert.deepEqual(calls, [parentFile]);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+// ------------------------------------------------ the link up to the parent
+//
+// 2026-09-24: a worker's bare `up: [[<parent-uuid>]]`, followed in Obsidian
+// before the parent note existed, created an empty note at the vault root.
+// The link now carries the parent's path, so a click creates the file where
+// the hook will write it, and the hook writes over that empty file.
+
+const PARENT_LINK = `projects/bb2dash/sessions/${SESSION_ID}`;
+const SEP = ' · ';
+
+test("a worker whose parent has no note yet links up by path, labelled with the parent's start date and collection", () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    stop(sandbox, transcriptPath, 'c0ffee01', 'general-purpose');
+    // The parent transcript's first record is 2026-09-16T09:00:00Z.
+    assert.equal(fieldsAt(sandbox, WORKER_ONE).up, `[[${PARENT_LINK}|2026-09-16${SEP}bb2dash]]`);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test("a worker whose parent note exists is labelled with the parent's title, made safe for a link", () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    const parent = ['---', `id: "session-${SESSION_ID}"`, `session_id: "${SESSION_ID}"`, 'title: "Parent [draft] | notes"', '---', '', '# parent', ''].join('\n');
+    fs.writeFileSync(path.join(sandbox.vaultRoot, PARENT_NOTE), parent, 'utf8');
+
+    const outcome = stop(sandbox, transcriptPath, 'c0ffee01', 'general-purpose');
+    assert.match(outcome.detail, /parent=linked/, 'the one read of the parent serves both the title and the link');
+    assert.equal(fieldsAt(sandbox, WORKER_ONE).up, `[[${PARENT_LINK}|Parent draft notes]]`);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test("a worker with no readable parent transcript is labelled with its own date", () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    fs.rmSync(transcriptPath);
+    stopIn(sandbox, transcriptPath, 'c0ffee01', VAULT_CWD);
+    const child = fieldsAt(sandbox, WORKER_ONE);
+    assert.equal(child.up, `[[${PARENT_LINK}|${child.date}${SEP}bb2dash]]`);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('parentPlacement reports when the parent session started, beside where it files', () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    const agent = path.join(sandbox.transcriptsDir, SESSION_ID, 'subagents', 'agent-c0ffee01.jsonl');
+    const placed = parentPlacement({ input: { sessionId: SESSION_ID, transcriptPath }, agentTranscriptPath: agent, vaultRoot: sandbox.vaultRoot });
+    assert.equal(placed.collection, 'bb2dash');
+    assert.equal(placed.timestamp, '2026-09-16T09:00:00.000Z');
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('an empty file Obsidian made at the parent path is left for the parent, which then writes over it', () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    const parentPath = path.join(sandbox.vaultRoot, PARENT_NOTE);
+    fs.writeFileSync(parentPath, '', 'utf8');
+
+    const outcome = stop(sandbox, transcriptPath, 'c0ffee01', 'general-purpose');
+    assert.match(outcome.detail, /parent=not yet written/);
+    assert.equal(fs.readFileSync(parentPath, 'utf8'), '', 'a worker never writes the parent note');
+    assert.equal(fieldsAt(sandbox, WORKER_ONE).up, `[[${PARENT_LINK}|2026-09-16${SEP}bb2dash]]`);
+
+    const parent = runScenario(sandbox, PARENT);
+    assert.equal(parent.action, 'create', `${parent.action}: ${parent.skip}`);
+    assert.match(parent.detail, /\(replaced stub\)/);
+    assert.ok(fieldsAt(sandbox, PARENT_NOTE).child_sessions.includes(`session-${SESSION_ID}--c0ffee01`));
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test("an empty file at the worker's own path is written over, and the log says so", () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    const home = path.join(sandbox.vaultRoot, WORKER_ONE);
+    fs.writeFileSync(home, '', 'utf8');
+
+    const outcome = stop(sandbox, transcriptPath, 'c0ffee01', 'general-purpose');
+    assert.equal(outcome.action, 'create', `${outcome.action}: ${outcome.skip}`);
+    assert.match(outcome.detail, /\(replaced stub\)$/);
+    assert.equal(fieldsAt(sandbox, WORKER_ONE).parent_session, SESSION_ID);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('an empty stray is not claimed: the worker is written beside its parent', () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    const stray = writeStray(sandbox, 'c0ffee01', '');
+
+    const lines = [];
+    const outcome = stopIn(sandbox, transcriptPath, 'c0ffee01', VAULT_CWD, (line) => lines.push(line));
+
+    assert.equal(outcome.action, 'create', `${outcome.action}: ${outcome.skip}`);
+    assert.equal(outcome.notePath, path.join(sandbox.vaultRoot, WORKER_ONE));
+    const name = `${SESSION_ID}--c0ffee01.md`;
+    assert.deepEqual(lines, [`empty stray left at ${VAULT_SESSIONS}/${name}; writing beside the parent`]);
+    assert.equal(fs.readFileSync(stray, 'utf8'), '', 'the stray is reported, never deleted or rewritten');
   } finally {
     sandbox.cleanup();
   }

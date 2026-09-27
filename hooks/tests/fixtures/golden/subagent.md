@@ -1,6 +1,6 @@
 ---
 id: 'session-44444444-4444-4444-8444-444444444444'
-title: 'Session 2026-09-15 — agentic-harness'
+title: '2026-09-15 · agentic-harness · You are W-H1. Build the hook'
 type: session
 schema_version: 2
 collection: 'agentic-harness'
@@ -43,16 +43,18 @@ agent: claude-code
 agent_type: ''
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.2.0'
+generator: 'session-capture.mjs 2.3.0'
 tools_used:
   Bash: 1
   Write: 1
-up: '[[a1b2c3d4-0000-4000-8000-000000000001]]'
+up: '[[projects/agentic-harness/sessions/a1b2c3d4-0000-4000-8000-000000000001]]'
 related: []
 machine: ''
+retrievals: []
+retrieved: []
 ---
 
-# Session 2026-09-15 — agentic-harness
+# 2026-09-15 · agentic-harness · You are W-H1. Build the hook
 
 Working directory `__SANDBOX__/repos/agentic-harness`. Ran 45m, 1 prompt, 1 shell command, 1 file touched. Ended: other.
 

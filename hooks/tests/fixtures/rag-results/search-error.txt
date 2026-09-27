@@ -1,0 +1,3 @@
+search_context failed.
+Database error: rag.search() timed out.
+Fix: Retry the call.

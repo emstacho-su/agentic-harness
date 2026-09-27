@@ -32,7 +32,6 @@ SOURCE_NAME = "bb2dash"
 MATERIALS_FOLDER = "materials"
 CLASSES_FOLDER = "classes"
 FALLBACK_SLUG = "material"
-INDEX_NOTE = "index"
 
 # SUBJECT.NUMBER with an optional lowercase section suffix (.lecture, .recitation).
 _COURSE_ID = re.compile(r"^([A-Z]{2,4})\.(\d{3})(?:\.[a-z]+)?$")
@@ -122,16 +121,27 @@ def _folder_for(course_id: str) -> str:
     return f"{CLASSES_FOLDER}/{collection_for_course(course_id)}/{MATERIALS_FOLDER}"
 
 
-def _index_link(collection: str) -> str:
-    """The wikilink to the course index, which is what Obsidian's graph draws.
+def hub_filename(collection: str) -> str:
+    """``<collection>.md``: a course's hub note is named after its folder.
 
-    The full path, because every course has a note called ``index``. It lives in
-    frontmatter and these notes carry ``ingest: false``, so it costs the harness
-    RAG nothing. ``collection`` is lowercase letters then three digits by
-    construction (``collection_for_course``), so nothing in it can end the link
-    early.
+    Mirrors ``hubFilename`` in ``hooks/lib/links.mjs`` (shared contract SC-3).
+    Obsidian labels a graph node by its filename, so a hub named after its
+    folder reads as the course, not as one of many ``index`` nodes.
     """
-    return f"[[{CLASSES_FOLDER}/{collection}/{INDEX_NOTE}|{collection}]]"
+    return f"{collection}.md"
+
+
+def hub_link(collection: str) -> str:
+    """The wikilink to the course hub, which is what Obsidian's graph draws.
+
+    Mirrors ``hubLink("classes", collection)`` in ``hooks/lib/links.mjs``
+    (shared contract SC-3): ``[[classes/<c>/<c>|<c>]]``, the full path so it
+    cannot resolve to a project of the same name. It lives in frontmatter and
+    these notes carry ``ingest: false``, so it costs the harness RAG nothing.
+    ``collection`` is lowercase letters then three digits by construction
+    (``collection_for_course``), so nothing in it can end the link early.
+    """
+    return f"[[{CLASSES_FOLDER}/{collection}/{collection}|{collection}]]"
 
 
 def _frontmatter(row: dict[str, Any]) -> str:
@@ -150,7 +160,7 @@ def _frontmatter(row: dict[str, Any]) -> str:
         "sha256": row.get("sha256"),
         "captured_at": row.get("captured_at"),
         "generator": GENERATOR,
-        "up": _index_link(collection),
+        "up": hub_link(collection),
     }
     present = {key: value for key, value in fields.items() if value is not None}
     dumped = yaml.safe_dump(present, sort_keys=False, allow_unicode=True, width=1000)

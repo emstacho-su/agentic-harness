@@ -1,0 +1,27 @@
+2 results for "ledger invariants" (all sources and collections, top 10).
+Hybrid search: semantic (cosine) and full-text ranked separately, then fused with RRF.
+Judge relevance by `similarity` — real cosine, where ~0.8 is a strong match and below ~0.65 is usually unrelated. `rrf` only sets the ordering and is not a percentage.
+
+### 1. Ledger event types
+- source: claude-mem
+- collection: quant-edge-tracker
+- external_id: 4821
+- similarity: 0.8123
+- rrf: 0.032786 (ordering only)
+- ids: doc 10, chunk 1
+- metadata: {"project":"quant-edge-tracker","marker":"metadata-sentinel"}
+
+The ledger emits cash and wager events; cash must never exceed zero.
+
+---
+
+### 2. Keyword-only hit
+- source: obsidian
+- external_id: notes/ledger-keywords.md
+- similarity: 0.5412 (below the 0.7 floor — surfaced by literal keyword match, not semantic similarity)
+- rrf: 0.016129 (ordering only)
+- ids: doc 11, chunk 22
+
+Only the words matched here: zebra quartz ledger.
+
+To read a full document, call get_document with the `source` and `external_id` shown above.

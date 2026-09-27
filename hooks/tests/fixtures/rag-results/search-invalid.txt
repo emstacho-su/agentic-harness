@@ -1,0 +1,2 @@
+Invalid arguments for search_context:
+- query: query must not be empty

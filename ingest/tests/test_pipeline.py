@@ -406,3 +406,155 @@ def test_a_realm_change_is_still_a_metadata_update(fake_store, fake_embedder):
     stats = pipeline(fake_store, fake_embedder).run([document(metadata=with_ingest(realm="work-vm"))])
     assert stats.count(Action.METADATA_UPDATED) == 1
     assert fake_store.metadata_writes == 1
+
+
+# --------------------------------------------------------------------------
+# retrieval events (R-P2): projected after the document, idempotent on re-runs
+# --------------------------------------------------------------------------
+
+
+def session_note(results=("obsidian:a@0.9", "obsidian:b@0.8"), **overrides) -> SourceDocument:
+    from ingest.retrievals import parse_retrievals
+
+    raw = [
+        {
+            "at": "2026-09-24T14:03:11Z",
+            "channel": "tool",
+            "tool": "search_context",
+            "query": "q",
+            "results": list(results),
+        }
+    ]
+    session = {"session_id": "s1", "collection": "bb2dash"}
+    events, _ = parse_retrievals(raw, note_external_id="notes/a.md", session_fields=session)
+    base = document()
+    return SourceDocument(
+        source=base.source,
+        external_id=base.external_id,
+        body=overrides.get("body", base.body),
+        title=base.title,
+        agent=base.agent,
+        collection=base.collection,
+        metadata=overrides.get("metadata", base.metadata),
+        retrievals=tuple(events),
+    )
+
+
+def test_events_are_projected_when_a_document_is_inserted(fake_store, fake_embedder):
+    stats = pipeline(fake_store, fake_embedder).run([session_note()])
+
+    assert stats.count(Action.INSERTED) == 1
+    assert stats.events_written == 2
+    assert fake_store.event_projections == [(1, "notes/a.md", 2)]
+    assert stats.outcomes[0].event_count == 2
+
+
+def test_events_are_projected_on_a_body_change(fake_store, fake_embedder):
+    run = pipeline(fake_store, fake_embedder)
+    run.run([session_note()])
+    stats = run.run([session_note(results=("obsidian:c@0.7",), body=BODY + "\nMore.\n")])
+
+    assert stats.count(Action.UPDATED) == 1
+    assert stats.events_written == 1
+    assert len(fake_store.events[("obsidian", "notes/a.md")]) == 1
+
+
+def test_events_are_projected_on_a_metadata_only_update(fake_store, fake_embedder):
+    run = pipeline(fake_store, fake_embedder)
+    run.run([session_note()])
+    stats = run.run([session_note(metadata={"tags": ["rag"], "status": "concluded"})])
+
+    assert stats.count(Action.METADATA_UPDATED) == 1
+    assert stats.events_written == 2
+    assert len(fake_store.event_projections) == 2
+
+
+def test_an_unchanged_document_with_matching_counts_writes_no_events(fake_store, fake_embedder):
+    run = pipeline(fake_store, fake_embedder)
+    run.run([session_note()])
+    stats = run.run([session_note()])
+
+    assert stats.count(Action.UNCHANGED) == 1
+    assert stats.events_written == 0
+    assert len(fake_store.event_projections) == 1, "no second projection"
+    assert len(fake_store.events[("obsidian", "notes/a.md")]) == 2
+
+
+def test_an_unchanged_document_whose_counts_differ_is_re_projected(fake_store, fake_embedder):
+    run = pipeline(fake_store, fake_embedder)
+    run.run([session_note()])
+    # Retrievals changed and nothing else: they are not in metadata, so only the
+    # count comparison can see it.
+    stats = run.run([session_note(results=("obsidian:a@0.9", "obsidian:b@0.8", "obsidian:c@0.7"))])
+
+    assert stats.count(Action.UNCHANGED) == 1
+    assert stats.events_written == 3
+    assert len(fake_store.events[("obsidian", "notes/a.md")]) == 3
+
+
+def test_a_table_created_after_the_note_was_stored_is_filled_on_the_next_run(fake_store, fake_embedder):
+    fake_store.events_table_exists = False
+    run = pipeline(fake_store, fake_embedder)
+    first = run.run([session_note()])
+    assert first.events_written == 0 and first.events_skipped == 2
+
+    fake_store.events_table_exists = True
+    second = run.run([session_note()])
+    assert second.count(Action.UNCHANGED) == 1
+    assert second.events_written == 2
+
+
+def test_an_unchanged_document_is_skipped_while_the_table_is_missing(fake_store, fake_embedder):
+    run = pipeline(fake_store, fake_embedder)
+    run.run([session_note()])
+    fake_store.events_table_exists = False
+    stats = run.run([session_note()])
+    assert stats.events_skipped == 2 and stats.events_written == 0
+
+
+def test_a_document_without_retrievals_projects_nothing(fake_store, fake_embedder):
+    run = pipeline(fake_store, fake_embedder)
+    run.run([document()])
+    run.run([document()])
+    assert fake_store.event_projections == []
+
+
+def test_a_rewritten_document_that_lost_its_retrievals_clears_its_stale_rows(fake_store, fake_embedder):
+    run = pipeline(fake_store, fake_embedder)
+    run.run([session_note()])
+    stats = run.run([document(body=BODY + "\nRewritten.\n")])
+
+    assert stats.count(Action.UPDATED) == 1
+    assert fake_store.events.get(("obsidian", "notes/a.md"), []) == []
+
+
+def test_a_dry_run_counts_the_events_it_would_write(fake_store):
+    stats = pipeline(fake_store, None, dry_run=True).run([session_note()])
+
+    assert stats.count(Action.PLANNED_NEW) == 1
+    assert stats.events_planned == 2
+    assert stats.events_written == 0
+    assert fake_store.event_projections == []
+
+
+def test_a_dry_run_over_an_unchanged_document_plans_only_what_differs(fake_store, fake_embedder):
+    pipeline(fake_store, fake_embedder).run([session_note()])
+    dry = pipeline(fake_store, None, dry_run=True)
+
+    assert dry.run([session_note()]).events_planned == 0
+    changed = dry.run([session_note(results=("obsidian:y@0.8", "obsidian:z@0.7", "obsidian:w@0.7"))])
+    assert changed.events_planned == 3
+    assert len(fake_store.event_projections) == 1, "a dry run never writes"
+
+
+def test_a_dry_run_reports_events_skipped_when_the_table_is_missing(fake_store):
+    fake_store.events_table_exists = False
+    stats = pipeline(fake_store, None, dry_run=True).run([session_note()])
+    assert stats.events_skipped == 2 and stats.events_planned == 0
+
+
+def test_the_summary_counts_events(fake_store, fake_embedder):
+    summary = pipeline(fake_store, fake_embedder).run([session_note()]).summary()
+    assert summary["events_written"] == 2
+    assert summary["events_planned"] == 0
+    assert summary["events_skipped"] == 0

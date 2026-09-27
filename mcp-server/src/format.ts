@@ -10,6 +10,16 @@
  *     as THE relevance signal.
  *   - `fused_score` is a raw RRF sum. It orders results and means nothing on
  *     its own, so it is shown as ordering only and never called a percentage.
+ *
+ * The rendered lines are ALSO a contract. Claude Code keeps only a tool
+ * result's text in the transcript (it drops `structuredContent`), so the capture
+ * hook recovers retrieval provenance by parsing this text in
+ * `hooks/lib/rag-result.mjs`: the header line, the `### N. title` headings, the
+ * `- source` / `- collection` / `- external_id` / `- similarity` / `- rrf` /
+ * `- ids: doc N, chunk M` lines, the empty-result first line, and the
+ * `get_document` field lines. `test/transcript-contract.test.ts` pins the exact
+ * output against fixtures that the hooks suite parses; changing a line here
+ * means re-rendering those fixtures and updating the parser in the same change.
  */
 
 import type { CollectionCount, DocumentRow, SearchRow } from './db/types.js';

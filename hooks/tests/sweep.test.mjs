@@ -231,6 +231,27 @@ test('the vault index counts session notes and resume notes, never worker notes 
   }
 });
 
+test('an empty file where a session note belongs is not a note: the session is still swept', () => {
+  // Following a worker's `up` link before the parent note exists makes
+  // Obsidian create the parent's file, empty. Counting it would hide the
+  // session from the sweep for good.
+  const sandbox = createSandbox();
+  try {
+    const sessionsDir = path.join(sandbox.vaultRoot, 'projects', 'bb2dash', 'sessions');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionsDir, `${MAIN}.md`), '', 'utf8');
+    assert.deepEqual([...indexNotedSessions(sandbox.vaultRoot)], []);
+
+    age(installTranscript(sandbox, 'plain-main', MAIN), 12);
+    const summary = sweep(sandbox);
+    assert.equal(summary.skippedNoted, 0);
+    assert.equal(summary.written, 1);
+    assert.equal(fields(sandbox, `projects/bb2dash/sessions/${MAIN}.md`).session_id, MAIN, 'the empty file was written over');
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
 test('a session killed with its terminal — worker notes on disk, no parent note — is still swept', () => {
   const sandbox = createSandbox();
   try {
@@ -287,10 +308,12 @@ test('a worker note already filed in another collection is merged where it is, n
     assert.deepEqual(collectionsHolding(sandbox.vaultRoot, `${MAIN}--aaa111.md`), ['projects/vault'], 'one note, at the old path');
     const worker = fields(sandbox, `projects/vault/sessions/${MAIN}--aaa111.md`);
     assert.equal(worker.collection, 'vault', 'the note still describes the folder it sits in');
-    assert.equal(worker.up, `[[${MAIN}]]`);
     assert.ok(summary.touchedPaths.includes(earlier));
 
+    // The sweep captures the parent first, so the worker's link carries the
+    // parent's path and title, not the folder the worker sits in.
     const parent = fields(sandbox, `projects/bb2dash/sessions/${MAIN}.md`);
+    assert.equal(worker.up, `[[projects/bb2dash/sessions/${MAIN}|${parent.title}]]`);
     assert.deepEqual(parent.child_sessions, [`session-${MAIN}--aaa111`, `session-${MAIN}--bbb222`]);
   } finally {
     sandbox.cleanup();
@@ -356,17 +379,26 @@ test('a missing projects or vault root is refused, never reported as nothing to 
   }
 });
 
-test('the transcript head yields cwd and entrypoint, or empty strings, without reading the whole file', () => {
+test('the transcript head yields cwd, entrypoint and first timestamp, or empty strings, without reading the whole file', () => {
   const sandbox = createSandbox();
   try {
     const sdk = installTranscript(sandbox, 'sdk-review', SDK);
-    assert.deepEqual(readTranscriptHead(sdk), { cwd: `${sandbox.root}/repos/bb2dash`, entrypoint: 'sdk-py' });
+    assert.deepEqual(readTranscriptHead(sdk), {
+      cwd: `${sandbox.root}/repos/bb2dash`,
+      entrypoint: 'sdk-py',
+      timestamp: '2026-09-14T03:10:00.000Z',
+    });
 
     const plain = installTranscript(sandbox, 'plain-main', MAIN);
     assert.equal(readTranscriptHead(plain).entrypoint, '');
+    assert.equal(readTranscriptHead(plain).timestamp, '2026-09-11T14:02:10.000Z', 'the first record that carries one');
+
+    const bare = path.join(sandbox.transcriptsDir, 'bare.jsonl');
+    fs.writeFileSync(bare, '{"type":"summary","timestamp":42}\n{"type":"user","cwd":"/x"}\n', 'utf8');
+    assert.equal(readTranscriptHead(bare).timestamp, '', 'a timestamp that is not a string is not one');
 
     const missing = path.join(sandbox.transcriptsDir, 'missing.jsonl');
-    assert.deepEqual(readTranscriptHead(missing), { cwd: '', entrypoint: '' });
+    assert.deepEqual(readTranscriptHead(missing), { cwd: '', entrypoint: '', timestamp: '' });
   } finally {
     sandbox.cleanup();
   }
@@ -431,4 +463,30 @@ test('the CLI process: a dry run exits 0 and reports, bad usage exits 2', () => 
   } finally {
     sandbox.cleanup();
   }
+});
+
+test('the sweep reads session-start records from the state folder it is given', () => {
+  const sandbox = createSandbox();
+  try {
+    age(installTranscript(sandbox, 'plain-main', MAIN), 12);
+    const stateDir = path.join(sandbox.root, 'state', 'session-start');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, `${MAIN}.json`),
+      JSON.stringify({ at: '2026-09-11T14:00:00.000Z', session_id: MAIN, source: 'status', external_ids: ['projects/bb2dash/status.md'] }),
+      'utf8',
+    );
+
+    sweep(sandbox, { stateDir });
+
+    const parent = fields(sandbox, `projects/bb2dash/sessions/${MAIN}.md`);
+    assert.deepEqual(parent.retrievals.map((r) => r.tool), ['session-start']);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('the CLI takes the state folder from the merged environment, machine.env included', () => {
+  const parsed = parseArgs([], { HARNESS_STATE_DIR: 'C:/vm/state' }, 'C:/home');
+  assert.equal(parsed.options.stateDir, path.join('C:/vm/state', 'session-start'));
 });
