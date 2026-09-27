@@ -3,9 +3,10 @@
 Split from inventory.py so each stays readable. Nothing here decides order or
 nesting; it reads files, classifies them, and says why anything was left out.
 
-The session note's list fields that R-C6's scores read (``commits``, ``prs``,
-``files_modified``, ``retrieved``; see hooks/lib/frontmatter.mjs) are parsed
-defensively: a scalar becomes a one-tuple, a number in a text list becomes its
+The session note's list fields (``commits``, ``prs``, ``files_modified``,
+``retrieved``; see hooks/lib/frontmatter.mjs) are parsed for R-C6's scores,
+which read only ``commits`` and ``prs`` so far (``files_modified`` and
+``retrieved`` are parsed but not yet read). They are parsed defensively: a scalar becomes a one-tuple, a number in a text list becomes its
 text, a PR given as digits becomes its number, and anything else (a map, a
 nested list, a boolean, null, blank text) is dropped rather than refused.
 """

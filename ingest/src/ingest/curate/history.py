@@ -113,9 +113,20 @@ class CollectionHistory:
 # -- weeks ----------------------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class Timeline:
+    weeks: tuple[WeekInput, ...]
+    undated: tuple[str, ...]  # note paths, sorted
+
+
 def week_inputs(inventory: Inventory, lookup: Lookup, git: Any, *, version: str) -> tuple[WeekInput, ...]:
     """Every week holding a dated record, ascending; ``lookup`` is ``store.get_extractions``."""
-    units, _ = _units(inventory)
+    return timeline(inventory, lookup, git, version=version).weeks
+
+
+def timeline(inventory: Inventory, lookup: Lookup, git: Any, *, version: str) -> Timeline:
+    """:func:`week_inputs` and the undated note paths, from one walk of the inventory."""
+    units, undated = _units(inventory)
     records = [row for unit in units for row in unit]
     cached = lookup([(r.record.note_id, r.record.content_hash, version) for r in records])
     by_week: dict[str, list[WeekRecord]] = {}
@@ -127,10 +138,11 @@ def week_inputs(inventory: Inventory, lookup: Lookup, git: Any, *, version: str)
             by_week.setdefault(week, []).append(WeekRecord(row.record, row.effective_at, items))
     commits = _by_week(_field(git, "commits"), lambda c: c.date)
     prs = _by_week((p for p in _field(git, "prs") if p.state == MERGED and p.merged_at), lambda p: p.merged_at)
-    return tuple(
+    weeks = tuple(
         _week(start, tuple(rows), tuple(commits.get(start, ())), tuple(prs.get(start, ())), version)
         for start, rows in sorted(by_week.items())
     )
+    return Timeline(weeks=weeks, undated=tuple(undated))
 
 
 def week_of(instant: str) -> str:
@@ -223,7 +235,8 @@ def build_history(inventory: Inventory, store: CurateStore, judge: JudgeSource |
                   nonce: Callable[[Iterable[str]], str] = prompts.new_nonce) -> CollectionHistory:
     """Every week's narrative, from the cache or from one judge call; ``judge`` None is a dry run."""
     collection = inventory.profile.collection
-    weeks = week_inputs(inventory, store.get_extractions, inventory.git, version=extractor_version)
+    found_weeks = timeline(inventory, store.get_extractions, inventory.git, version=extractor_version)
+    weeks = found_weeks.weeks
     tally = _Tally()
     for week in weeks:
         found = store.get_history_week(collection, week.week_start, week.input_hash, version)
@@ -238,13 +251,12 @@ def build_history(inventory: Inventory, store: CurateStore, judge: JudgeSource |
             tally.estimated += estimate_tokens(prompt) + OUTPUT_ALLOWANCE_TOKENS
         else:
             _ask(inventory, store, judge, spend, week, version, nonce, tally)
-    _, undated = _units(inventory)
     return CollectionHistory(
         folder=inventory.folder, realm_folder=inventory.folder.split("/", 1)[0], collection=collection,
         weeks=weeks, narratives=tally.narratives, cached=tally.cached, judge_calls=tally.calls,
         would_ask=tally.would_ask, estimated_tokens=tally.estimated, dropped_citations=tally.dropped_citations,
         dropped_paragraphs=tally.dropped_paragraphs, dropped_titles=tally.dropped_titles, failed=tuple(tally.failed),
-        left=tally.left, undated=tuple(undated), note_index=_note_index(weeks),
+        left=tally.left, undated=found_weeks.undated, note_index=_note_index(weeks),
     )
 
 

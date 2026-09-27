@@ -360,3 +360,18 @@ def test_the_note_index_covers_every_dated_record(vault: Path) -> None:
     result, _ = run(inventory(vault), InMemoryCurateStore(), None, dry_run=True)
     assert set(result.note_index) == {r.record.note_id for w in result.weeks for r in w.records}
     assert result.note_index["session-sun"] == ("projects/demo/sessions/sun.md", "2026-09-20T00:00:00+00:00")
+
+
+def test_build_history_walks_the_inventory_once(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    walks = []
+    real = history._units
+
+    def counting(inv):
+        walks.append(inv.folder)
+        return real(inv)
+
+    monkeypatch.setattr(history, "_units", counting)
+    result, _ = run(inventory(vault), InMemoryCurateStore(), None, dry_run=True)
+    assert walks == ["projects/demo"]
+    assert result.undated == ("projects/demo/sessions/nodate.md",)
+    assert [w.week_start for w in result.weeks] == ["2026-09-14", "2026-09-21"]
