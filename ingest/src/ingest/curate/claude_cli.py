@@ -158,9 +158,14 @@ class ClaudeCliJudge:
         argv = build_argv(self._executable(), schema, self.model)
         with _empty_workdir() as workdir:
             outcome = self._run(argv, prompt, workdir)
-        payload = _parse_result(outcome)
-        output = validate_output(payload.get("structured_output"), schema)
-        return JudgeResult(output=output, usage=_usage(payload), model=self.model)
+        try:
+            payload = _parse_result(outcome)
+            output = validate_output(payload.get("structured_output"), schema)
+            usage = _usage(payload)
+        except JudgeError as exc:
+            exc.usage = _reported_usage(outcome.stdout)
+            raise
+        return JudgeResult(output=output, usage=usage, model=self.model)
 
     def _executable(self) -> str:
         found = self._which(EXECUTABLE_NAME)
@@ -251,6 +256,17 @@ def _usage(payload: dict) -> JudgeUsage:
         output_tokens=_token_count(usage, "output_tokens", required=True),
         cost_usd=_cost(payload.get("total_cost_usd")),
     )
+
+
+def _reported_usage(stdout: str) -> JudgeUsage | None:
+    """What a failed call reported it consumed, or None when it reported nothing usable."""
+    payload = _json_object(stdout)
+    if payload is None:
+        return None
+    try:
+        return _usage(payload)
+    except JudgeError:
+        return None
 
 
 def _token_count(usage: dict, field: str, *, required: bool) -> int:

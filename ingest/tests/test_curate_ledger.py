@@ -421,6 +421,22 @@ def test_a_judge_failure_leaves_the_item_and_two_in_a_row_stop_the_run(tmp_path:
     assert reasons == ["judge failed: down", "judge failed: down", ledger.LEFT_BY_FAILURES]
 
 
+def test_a_failed_confirmation_is_charged_what_it_reported_else_its_estimate(vault: Path) -> None:
+    from ingest.curate.judge import JudgeUsage
+
+    billed = JudgeError("schema mismatch")
+    billed.usage = JudgeUsage(900, 100, None)
+    store = InMemoryCurateStore()
+    seed(store, vault, {"s1": [issue("A")], "s2": [issue("B")]})
+    _, spend = build(vault, store, MapEmbedder({"A": [1, 0], "B": angle(0.9)}), FakeJudge([billed]))
+    assert spend.tokens == 1000
+
+    other = InMemoryCurateStore()
+    seed(other, vault, {"s1": [issue("A")], "s2": [issue("B")]})
+    _, spend = build(vault, other, MapEmbedder({"A": [1, 0], "B": angle(0.9)}), FakeJudge([JudgeError("down")]))
+    assert spend.tokens > 0
+
+
 def test_a_dry_run_asks_nothing_writes_nothing_and_counts_would_ask(vault: Path) -> None:
     class RefusingStore(InMemoryCurateStore):
         def _refuse(self, *args, **kwargs):

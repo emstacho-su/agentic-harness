@@ -273,6 +273,9 @@ def _confirm(placing: _Placing, item: LedgerItem, pending: Sequence[Issue]) -> o
     try:
         result = placing.judge().judge(prompt, confirm_schema(labels))
     except JudgeError as exc:
+        # a failed call may still have billed; charge what it reported, else the input estimate
+        spent = exc.usage
+        placing.spend.tokens += (spent.input_tokens + spent.output_tokens) if spent else estimate_tokens(prompt)
         placing.spend.consecutive_failures += 1
         if placing.spend.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
             placing.spend.stopped = STOP_FAILURES

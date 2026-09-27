@@ -249,6 +249,26 @@ def test_non_zero_exit_reports_code_and_a_short_stderr_excerpt():
     assert SECRET not in message
 
 
+@pytest.mark.parametrize("stdout", [
+    result_json(structured_output={"summary": "ok", "count": "not a number"}),
+    result_json(is_error=True, subtype="error_max_structured_output_retries"),
+])
+def test_a_failed_call_that_reported_usage_carries_it_for_the_budget(stdout):
+    judge, _ = make_judge(Completed(0, stdout))
+    with pytest.raises(JudgeError) as excinfo:
+        judge.judge("p", SCHEMA)
+    usage = excinfo.value.usage
+    assert (usage.input_tokens, usage.output_tokens, usage.cost_usd) == (1230, 50, 0.0123)
+
+
+@pytest.mark.parametrize("stdout", ["not json", result_json(usage=None, is_error=True)])
+def test_a_failed_call_with_no_usable_usage_carries_none(stdout):
+    judge, _ = make_judge(Completed(1, stdout))
+    with pytest.raises(JudgeError) as excinfo:
+        judge.judge("p", SCHEMA)
+    assert excinfo.value.usage is None
+
+
 def test_timeout_is_a_judge_error():
     judge, _ = make_judge(subprocess.TimeoutExpired(cmd=["claude"], timeout=300, output=SECRET))
     with pytest.raises(JudgeError, match="timed out") as excinfo:

@@ -32,7 +32,7 @@ from ingest.curate.extract_schema import (
     check_note_answer,
 )
 from ingest.curate.inventory import build_inventory
-from ingest.curate.judge import FakeJudge, JudgeError, JudgeOutputInvalid, validate_output
+from ingest.curate.judge import FakeJudge, JudgeError, JudgeOutputInvalid, JudgeUsage, validate_output
 from ingest.curate.prompts import PromptNote, build_prompt
 from ingest.curate.store import InMemoryCurateStore
 
@@ -442,6 +442,40 @@ def test_the_budget_stops_the_run_and_a_rerun_finishes_the_rest(tmp_path, monkey
     finished = run_once(root, again, store)
     assert finished.extracted == 3 - done and len(again.calls) == 3 - done
     assert finished.exit_code == EXIT_DONE
+
+
+def _billed_failure(input_tokens: int, output_tokens: int) -> JudgeOutputInvalid:
+    failure = JudgeOutputInvalid(("$: fails 'type'",))
+    failure.usage = JudgeUsage(input_tokens, output_tokens, 0.5)
+    return failure
+
+
+def test_a_failed_call_is_charged_what_it_reported(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(extract_plan_module(), "MAX_NOTES_PER_BATCH", 1)
+    judge = FakeJudge([_billed_failure(12_000, 4_000), {"notes": [_note("N1")]}])
+    report = run_once(two_notes(tmp_path), judge, InMemoryCurateStore())
+    assert report.input_tokens >= 12_000 and report.output_tokens >= 4_000
+    assert report.cost_usd == 0.5
+
+
+def test_a_failed_call_with_no_usage_is_charged_its_input_estimate(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(extract_plan_module(), "MAX_NOTES_PER_BATCH", 1)
+    root, store = two_notes(tmp_path), InMemoryCurateStore()
+    plan = plan_extraction(inventories(root), store.get_extractions, extractor_version())
+    first = plan.collections[0].batches[0].input_tokens
+    report = run_once(root, FakeJudge([JudgeError("claude timed out"), JudgeError("again")]), store)
+    assert report.input_tokens >= first > 0
+
+
+def test_failures_between_successes_cannot_outrun_the_token_budget(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(extract_plan_module(), "MAX_NOTES_PER_BATCH", 1)
+    root = make_vault(tmp_path, {f"s{i}": f"Body number {i} of the notes." for i in range(6)})
+    answers = [_billed_failure(40_000, 0), {"notes": [_note("N1")]}] * 3
+    judge = FakeJudge(answers)
+    report = run_once(root, judge, InMemoryCurateStore(), Budget(max_calls=100, max_tokens=50_000))
+    # fail (40K), succeed, fail (80K+): the fourth call no longer fits; uncounted, all six would run
+    assert report.stopped == "budget" and len(judge.calls) == 3
+    assert report.tokens >= 80_000
 
 
 def test_cost_is_summed_only_when_the_backend_gives_it(tmp_path) -> None:

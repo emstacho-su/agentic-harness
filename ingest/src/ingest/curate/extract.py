@@ -26,8 +26,10 @@ backend should not burn the budget.
 **Budget.** Before each call: if one more call would pass ``max_calls``, or the
 tokens used so far plus the batch's estimate (input plus the output allowance)
 would pass ``max_tokens``, the run stops and says how far it got. After each
-call the real usage is added. A failed call counts as a call; it adds no tokens,
-because a failed backend reports none.
+call the real usage is added. A failed call counts as a call and is charged
+what the backend reports it used (a schema mismatch or an error result still
+bills), or the batch's input estimate when it reports nothing, so failures that
+alternate with successes cannot run past ``max_tokens`` uncounted.
 
 **Stored usage.** A call's input and output tokens are divided across its notes
 in proportion to their estimated size (:func:`~.extract_plan.apportion`), so the
@@ -58,7 +60,7 @@ from .extract_plan import (
     prompt_note,
 )
 from .extract_schema import ISSUE_KINDS, ITEM_TYPES, REJECT_REASONS, build_schema, check_note_answer, is_ref
-from .judge import Judge, JudgeError
+from .judge import Judge, JudgeError, JudgeUsage
 from .store_models import CurateStore, Extraction
 
 __all__ = [
@@ -200,12 +202,10 @@ def _run_batch(collection: CollectionPlan, batch: Batch, judge: Judge, store: Cu
     except JudgeError as exc:
         tally.consecutive_failures += 1
         tally.failed.extend(NoteProblem(record.path, f"batch failed: {exc}") for record in batch.notes)
+        _charge(tally, exc.usage or JudgeUsage(batch.input_tokens, 0, None))
         return
     tally.consecutive_failures = 0
-    tally.input_tokens += result.usage.input_tokens
-    tally.output_tokens += result.usage.output_tokens
-    if result.usage.cost_usd is not None:
-        tally.cost_usd = (tally.cost_usd or 0.0) + result.usage.cost_usd
+    _charge(tally, result.usage)
 
     answers = _route(result.output["notes"], refs, tally)
     shares_in = apportion(result.usage.input_tokens, batch.note_tokens)
@@ -225,6 +225,13 @@ def _run_batch(collection: CollectionPlan, batch: Batch, judge: Judge, store: Cu
         tally.extracted += 1
         tally.accepted.update(item["type"] for item in checked.accepted)
         tally.rejected.update(item["reason"] for item in checked.rejected)
+
+
+def _charge(tally: _Tally, usage: JudgeUsage) -> None:
+    tally.input_tokens += usage.input_tokens
+    tally.output_tokens += usage.output_tokens
+    if usage.cost_usd is not None:
+        tally.cost_usd = (tally.cost_usd or 0.0) + usage.cost_usd
 
 
 def _route(note_answers: list[dict], refs: tuple[str, ...], tally: _Tally) -> dict[str, dict]:

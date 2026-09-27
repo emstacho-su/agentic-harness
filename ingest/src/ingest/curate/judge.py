@@ -36,7 +36,13 @@ CHARS_PER_TOKEN_ESTIMATE = 4
 
 
 class JudgeError(IngestError):
-    """The judge could not produce an answer: process failed, timed out, not JSON."""
+    """The judge could not produce an answer: process failed, timed out, not JSON.
+
+    ``usage`` is set when the backend reported what the failed call consumed, so the
+    run budget can still count it.
+    """
+
+    usage: JudgeUsage | None = None
 
 
 class JudgeOutputInvalid(JudgeError):
