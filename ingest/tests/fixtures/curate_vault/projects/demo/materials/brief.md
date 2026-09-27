@@ -1,0 +1,4 @@
+---
+type: material
+---
+Exported material.
