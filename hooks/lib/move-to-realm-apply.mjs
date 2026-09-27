@@ -11,13 +11,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { SOURCE_AREA, SOURCE_COLLECTIONS, TOUCHED_REALMS } from './move-to-realm.mjs';
+import { AREAS } from './constants.mjs';
+import { hubFilename } from './links.mjs';
+import { describeError, SOURCE_AREA, SOURCE_COLLECTIONS, TOUCHED_REALMS } from './move-to-realm.mjs';
+import { ensureIndex } from './notes-io.mjs';
 import { acquireRealmLock, describeHolder, lockPathFor, releaseRealmLock } from './realm-lock.mjs';
 import { realmRootFor } from './realm-sync.mjs';
 
 const LOCK_OWNER = 'move-to-realm';
-
-const describeError = (err) => err?.code || err?.message || 'unknown';
+const CHANGED = 'changed since the plan; run --dry-run again';
 
 /** The production locks: `acquire(realm)` -> `{ok, lock}` or `{ok: false, error}`; `release(lock)` -> `{ok, error?}`. */
 export function realmLocks(vault) {
@@ -80,17 +82,57 @@ function eachStep(items, pathOf, step, errors) {
   return done;
 }
 
-/** Moves (target written before the source goes), links, archives, then empty folders. */
+/** Throws when `file` no longer holds what the plan read: a hook wrote it since, and its text must not be lost. */
+function assertUnchanged(file, planned) {
+  if (planned !== null && planned !== undefined && fs.readFileSync(file, 'utf8') !== planned) throw new Error(CHANGED);
+}
+
+/** Every file left in a collection folder besides its hub. */
+function othersIn(dir, hub) {
+  const walk = (current) =>
+    fs.readdirSync(current, { withFileTypes: true }).flatMap((entry) => {
+      const full = path.join(current, entry.name);
+      return entry.isDirectory() ? walk(full) : [full];
+    });
+  try {
+    return walk(dir).filter((file) => path.resolve(file) !== path.resolve(hub));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Moves (target written before the source goes), links, new hubs, archives,
+ * then empty folders. A hub whose collection still holds a file (a move that
+ * failed, a note changed since the plan) is kept, not archived.
+ */
 function carryOut(plan, errors) {
   const { vault } = plan;
   const moved = eachStep(plan.moves, (m) => m.from, (move) => {
+    assertUnchanged(path.join(vault, move.from), move.sourceText);
     if (!move.alreadyThere) writeTarget(vault, move);
     fs.unlinkSync(path.join(vault, move.from));
   }, errors);
-  const rewritten = eachStep(plan.rewrites, (r) => r.path, (rewrite) => fs.writeFileSync(rewrite.file, rewrite.text, 'utf8'), errors);
-  const archived = eachStep(plan.archives, (a) => a.from, (archive) => archiveFile(path.join(vault, archive.from), archive.to), errors);
+  const rewritten = eachStep(plan.rewrites, (r) => r.path, (rewrite) => {
+    assertUnchanged(rewrite.file, rewrite.original);
+    fs.writeFileSync(rewrite.file, rewrite.text, 'utf8');
+  }, errors);
+  const hubs = eachStep(plan.hubsToCreate ?? [], (place) => place, (place) => {
+    const [area, collection] = place.split('/');
+    if (!AREAS.includes(area)) throw new Error(`not an area: ${area}`);
+    const made = ensureIndex(vault, area, collection);
+    if (!made.ok) throw new Error(made.error);
+  }, errors);
+  const kept = [];
+  const archivable = plan.archives.filter((archive) => {
+    const hub = path.join(vault, archive.from);
+    const left = othersIn(path.dirname(hub), hub).length;
+    if (left) kept.push({ path: archive.from, reason: `${left} file(s) still in its collection` });
+    return !left;
+  });
+  const archived = eachStep(archivable, (a) => a.from, (archive) => archiveFile(path.join(vault, archive.from), archive.to), errors);
   for (const collection of SOURCE_COLLECTIONS) removeEmptyDirs(path.join(vault, SOURCE_AREA, collection));
-  return { moved, rewritten, archived };
+  return { moved, rewritten, hubs, archived, kept };
 }
 
 /**
@@ -99,7 +141,7 @@ function carryOut(plan, errors) {
  *
  * @param {object} plan  from planMoveToRealm
  * @param {object} [io]  `locks`: see realmLocks; injectable for tests
- * @returns {{moved: number, rewritten: number, archived: number, errors: Array<{path: string, error: string}>}}
+ * @returns {{moved: number, rewritten: number, hubs: number, archived: number, kept: object[], errors: Array<{path: string, error: string}>}}
  */
 export function applyMoveToRealm(plan, { locks = realmLocks(plan.vault) } = {}) {
   const errors = [];
@@ -114,7 +156,7 @@ export function applyMoveToRealm(plan, { locks = realmLocks(plan.vault) } = {}) 
     const got = locks.acquire(realm);
     if (!got.ok) {
       releaseAll();
-      return { moved: 0, rewritten: 0, archived: 0, errors: [...errors, { path: realm, error: got.error }] };
+      return { moved: 0, rewritten: 0, hubs: 0, archived: 0, kept: [], errors: [...errors, { path: realm, error: got.error }] };
     }
     held.push(got.lock);
   }

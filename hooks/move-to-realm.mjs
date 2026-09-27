@@ -71,6 +71,7 @@ function report(plan, out) {
     out(`move ${move.from} -> ${move.to} (${move.reason})${note}`);
   }
   for (const archive of plan.archives) out(`archive ${archive.from} -> ${archive.to}`);
+  for (const place of plan.hubsToCreate) out(`hub ${place}/${place.split('/')[1]}.md (created: moved notes link up to it)`);
   for (const rewrite of plan.rewrites) for (const change of rewrite.changes) out(`link ${rewrite.path}: up: ${change.old} -> ${change.new}`);
   for (const stay of plan.stays) out(`stays ${stay.path} (${stay.reason})`);
   for (const conflict of plan.conflicts) out(`conflict ${conflict.path}: ${conflict.error}`);
@@ -81,7 +82,7 @@ function report(plan, out) {
     byDestination.set(destination, (byDestination.get(destination) ?? 0) + 1);
   }
   for (const [destination, count] of [...byDestination].sort()) out(`  -> ${destination}: ${count}`);
-  out(`moves: ${plan.moves.length}, archives: ${plan.archives.length}, links: ${plan.rewrites.length}, stays: ${plan.stays.length}, conflicts: ${plan.conflicts.length}, unreadable: ${plan.unreadable.length}`);
+  out(`moves: ${plan.moves.length}, archives: ${plan.archives.length}, links: ${plan.rewrites.length}, new hubs: ${plan.hubsToCreate.length}, stays: ${plan.stays.length}, conflicts: ${plan.conflicts.length}, unreadable: ${plan.unreadable.length}`);
 }
 
 /**
@@ -124,7 +125,8 @@ export function run(argv, { env = process.env, out = console.log, err = console.
   }
   const result = applyMoveToRealm(plan);
   for (const problem of result.errors) out(`failed ${problem.path}: ${problem.error}`);
-  out(`applied: moved ${result.moved}, links ${result.rewritten}, archived ${result.archived}, failed ${result.errors.length}`);
+  for (const hub of result.kept) out(`kept ${hub.path}: ${hub.reason}`);
+  out(`applied: moved ${result.moved}, links ${result.rewritten}, new hubs ${result.hubs}, archived ${result.archived}, failed ${result.errors.length}`);
   out('next: node hooks/sync-realms.mjs --push, then uv run ingest');
   return result.errors.length ? EXIT_ATTENTION : EXIT_OK;
 }

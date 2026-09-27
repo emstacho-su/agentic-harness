@@ -50,12 +50,26 @@ function listDirNames(dir) {
 const joinPosix = (dir, name) => (dir.endsWith('/') ? `${dir}${name}` : `${dir}/${name}`);
 const trimSlash = (dir) => dir.replace(/\/+$/, '');
 
+/** Windows paths are case-insensitive, and a cwd keeps whatever case it was typed in. */
+const CASE_INSENSITIVE = process.platform === 'win32';
+
 /** Entries of `dir` whose encoded name is `rest` or a whole-segment prefix of it, longest first. */
-function candidates(dir, rest, listDir) {
+function candidates(dir, rest, listDir, caseInsensitive) {
+  const fold = caseInsensitive ? (text) => text.toLowerCase() : (text) => text;
+  const folded = fold(rest);
   return listDir(dir)
     .map((name) => ({ name, encoded: encodeClaudeProjectName(name) }))
-    .filter(({ encoded }) => encoded === rest || rest.startsWith(`${encoded}-`))
+    .filter(({ encoded }) => fold(encoded) === folded || folded.startsWith(`${fold(encoded)}-`))
     .sort((a, b) => b.encoded.length - a.encoded.length);
+}
+
+/** `path` with 8.3 short names (`ESTAC~1`) expanded, as the directory listings spell it; itself when it cannot be read. */
+function expandPath(value) {
+  try {
+    return toPosix(fs.realpathSync.native(value));
+  } catch {
+    return toPosix(value);
+  }
 }
 
 /**
@@ -66,16 +80,17 @@ function candidates(dir, rest, listDir) {
  * One ambiguity no directory listing can settle: a deleted `foo-web` beside a
  * live `foo` encodes exactly like a deleted `foo/web`, and decodes as the
  * latter. Deleted worktrees (`<project>-wt-<x>`) decode inside `<project>`,
- * which files them under that project either way. And a cwd spelled with an
- * 8.3 short name (`RUNNER~1`) matches no directory listing, which holds long
- * names only; its unmatched rest becomes one segment, as for a deleted folder.
+ * which files them under that project either way. A cwd spelled with an 8.3
+ * short name (`RUNNER~1`) inside the encoded part matches no directory listing,
+ * which holds long names only; its unmatched rest becomes one segment, as for
+ * a deleted folder. Home and the temp dir themselves are expanded first.
  */
-function decodeBelow(dir, rest, listDir, depth) {
+function decodeBelow(dir, rest, options, depth) {
   if (!rest) return { path: dir, complete: true };
   let fallback = null;
   if (depth < MAX_DECODE_DEPTH) {
-    for (const { name, encoded } of candidates(dir, rest, listDir)) {
-      const below = decodeBelow(joinPosix(dir, name), rest.slice(encoded.length + 1), listDir, depth + 1);
+    for (const { name, encoded } of candidates(dir, rest, options.listDir, options.caseInsensitive)) {
+      const below = decodeBelow(joinPosix(dir, name), rest.slice(encoded.length + 1), options, depth + 1);
       if (below.complete) return below;
       fallback ??= below;
     }
@@ -84,10 +99,11 @@ function decodeBelow(dir, rest, listDir, depth) {
 }
 
 /** `C--Users-estac-agentic-harness` -> `C:/Users/estac/agentic-harness`, guided by `listDir`; '' when it names no root. */
-export function decodeClaudeProjectName(encoded, listDir = listDirNames) {
+export function decodeClaudeProjectName(encoded, { listDir = listDirNames, caseInsensitive = CASE_INSENSITIVE } = {}) {
+  const options = { listDir, caseInsensitive };
   const drive = WINDOWS_DRIVE.exec(encoded);
-  if (drive) return decodeBelow(`${drive[1].toUpperCase()}:/`, drive[2], listDir, 0).path;
-  if (encoded.startsWith('-')) return decodeBelow('/', encoded.slice(1), listDir, 0).path;
+  if (drive) return decodeBelow(`${drive[1].toUpperCase()}:/`, drive[2], options, 0).path;
+  if (encoded.startsWith('-')) return decodeBelow('/', encoded.slice(1), options, 0).path;
   return '';
 }
 
@@ -96,17 +112,22 @@ export function decodeClaudeProjectName(encoded, listDir = listDirNames) {
  * `cwd` is not inside one. The prefix is compared without case: Windows
  * spells the same temp dir both ways.
  */
-export function decodeClaudeStateCwd(cwd, { home = os.homedir(), tmp = os.tmpdir(), listDir = listDirNames } = {}) {
+export function decodeClaudeStateCwd(
+  cwd,
+  { home = os.homedir(), tmp = os.tmpdir(), listDir = listDirNames, caseInsensitive = CASE_INSENSITIVE, realpath = expandPath } = {},
+) {
   const posix = toPosix(cwd);
   if (!posix) return '';
-  const roots = [
-    [trimSlash(toPosix(home)), ...HOME_STATE_SEGMENTS].join('/'),
-    [trimSlash(toPosix(tmp)), ...TMP_STATE_SEGMENTS].join('/'),
+  // Each base as given and expanded: os.tmpdir() can be an 8.3 short path
+  // while the cwd Claude Code reports is the long one, or the other way round.
+  const bases = [
+    ...[home, realpath(home)].map((base) => [trimSlash(toPosix(base)), ...HOME_STATE_SEGMENTS].join('/')),
+    ...[tmp, realpath(tmp)].map((base) => [trimSlash(toPosix(base)), ...TMP_STATE_SEGMENTS].join('/')),
   ];
-  for (const root of roots) {
+  for (const root of new Set(bases)) {
     if (!posix.toLowerCase().startsWith(`${root.toLowerCase()}/`)) continue;
     const encoded = posix.slice(root.length + 1).split('/')[0];
-    if (encoded) return decodeClaudeProjectName(encoded, listDir);
+    if (encoded) return decodeClaudeProjectName(encoded, { listDir, caseInsensitive });
   }
   return '';
 }

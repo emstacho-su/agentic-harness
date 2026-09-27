@@ -336,7 +336,7 @@ test('CLI --apply carries the move out and exits 0; usage errors exit 1', () => 
   try {
     const r = cli(w, ['--apply']);
     assert.equal(r.code, 0, r.text);
-    assert.match(r.text, /^applied: moved 12, links 1, archived 4, failed 0$/m);
+    assert.match(r.text, /^applied: moved 12, links 1, new hubs 2, archived 4, failed 0$/m);
     assert.equal(w.exists('projects/agentic-harness'), false);
     assert.equal(cli(w, []).code, 1);
     assert.equal(cli(w, ['--dry-run', '--apply']).code, 1);
@@ -491,6 +491,89 @@ test('a stale realm lock does not refuse the move: the apply takes it over, as t
   try {
     const peek = () => ({ held: true, holder: null, stale: true });
     assert.deepEqual(checkPreconditions({ vault: w.vault, realmsListed: ['projects', 'classes', 'harness'], peek }), []);
+  } finally {
+    w.cleanup();
+  }
+});
+
+// ------------------------------------------------------------------ third review
+
+test('a staying note that links to a moved note but cannot be edited is a conflict', () => {
+  const w = world();
+  try {
+    const bs = String.fromCharCode(92);
+    write(`${w.vault}/projects/bb2dash/notes/odd.md`, `---\nid: 'odd'\nup: "[[projects/agentic-harness/sessions/${ids.harness}|say ${bs}"hi${bs}"]]"\n---\n`);
+    const plan = planMoveToRealm(w.options);
+    assert.deepEqual(plan.conflicts.map((c) => c.path), ['projects/bb2dash/notes/odd.md']);
+    assert.match(plan.conflicts[0].error, /links to a moved note but its up: cannot be edited in place/);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('an escaped value the move would not change is no conflict', () => {
+  const w = world();
+  try {
+    const bs = String.fromCharCode(92);
+    const file = `${w.vault}/projects/memory/sessions/${ids.memoryWorker}.md`;
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^title: .*$/m, `title: "Say ${bs}"hi${bs}""`), 'utf8');
+    assert.deepEqual(planMoveToRealm(w.options).conflicts, []);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('an up link elsewhere to the moving collection hub is repointed', () => {
+  const w = world();
+  try {
+    write(`${w.vault}/projects/bb2dash/notes/hubref.md`, noteText({ id: 'hubref', up: '[[projects/agentic-harness/agentic-harness|agentic-harness]]' }));
+    const plan = planMoveToRealm(w.options);
+    const rewrite = plan.rewrites.find((r) => r.path === 'projects/bb2dash/notes/hubref.md');
+    assert.match(rewrite.text, /^up: '\[\[harness\/agentic-harness\/agentic-harness\|agentic-harness\]\]'$/m);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('a target collection without a hub gets one, so every moved up: link resolves', () => {
+  const w = world();
+  try {
+    const plan = planMoveToRealm(w.options);
+    assert.deepEqual(plan.hubsToCreate, ['projects/home', 'projects/misc']);
+    applyMoveToRealm(plan);
+    assert.equal(w.exists('projects/home/home.md'), true);
+    assert.equal(w.exists('projects/misc/misc.md'), true);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('a note changed between plan and apply is left alone and reported, not overwritten', () => {
+  const w = world();
+  try {
+    const plan = planMoveToRealm(w.options);
+    const source = `${w.vault}/projects/claude/sessions/${ids.scratch}.md`;
+    fs.appendFileSync(source, 'written by a hook after the plan\n');
+    const linking = `${w.vault}/projects/bb2dash/sessions/${ids.strayWorker}.md`;
+    fs.appendFileSync(linking, 'also changed\n');
+    const result = applyMoveToRealm(plan);
+    const failed = result.errors.map((e) => e.path).sort();
+    assert.deepEqual(failed, [`projects/bb2dash/sessions/${ids.strayWorker}.md`, `projects/claude/sessions/${ids.scratch}.md`]);
+    assert.match(result.errors[0].error, /changed since the plan/);
+    assert.match(fs.readFileSync(source, 'utf8'), /written by a hook after the plan/);
+    assert.equal(w.exists(`harness/agentic-harness/sessions/${ids.scratch}.md`), false);
+    assert.equal(w.exists('projects/claude/claude.md'), true, 'a collection that still holds a note keeps its hub');
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('a hub held back by a later file in its collection is reported as staying', () => {
+  const w = world();
+  try {
+    write(`${w.vault}/projects/remote/zz-notes.txt`, 'kept\n');
+    const plan = planMoveToRealm(w.options);
+    assert.ok(plan.stays.some((s) => s.path === 'projects/remote/remote.md'), JSON.stringify(plan.stays));
   } finally {
     w.cleanup();
   }

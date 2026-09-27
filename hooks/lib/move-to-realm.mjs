@@ -58,7 +58,7 @@ const QUALIFIED_NOTE_LINK = /^\[\[([a-z]+)\/([^/|\]]+)\/sessions\/([^/|\]]+)(?:\
 const posixJoin = (...parts) => parts.filter(Boolean).join('/');
 const short = (id) => String(id).slice(0, SHORT_ID);
 const placeOf = (area, collection) => `${area}/${collection}`;
-const describeError = (err) => err?.code || err?.message || 'unknown';
+export const describeError = (err) => err?.code || err?.message || 'unknown';
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
 export function defaultArchiveRoot(now = new Date(), home = os.homedir()) {
@@ -159,7 +159,7 @@ function placeSession(entry, ctx) {
     }
     return { area: SOURCE_AREA, collection: entry.collection, collectionSource: null, reason: 'no cwd: left where it is' };
   }
-  const routed = routeSession({ cwd, vaultRoot: ctx.vault, repo: ctx.resolveRepoFor(cwd), home: ctx.home, tmp: ctx.tmp, resolveRepoFor: ctx.resolveRepoFor, holdsHarness: ctx.holdsHarness });
+  const routed = routeSession({ cwd, vaultRoot: ctx.vault, home: ctx.home, tmp: ctx.tmp, resolveRepoFor: ctx.resolveRepoFor, holdsHarness: ctx.holdsHarness });
   const decoded = toPosix(cwd) !== routed.routedCwd;
   return { area: routed.area, collection: routed.collection, collectionSource: routed.collectionSource, reason: `${routed.rule}: ${routed.routedCwd}`, decoded };
 }
@@ -196,10 +196,14 @@ function retitle(title, from, to) {
   return from !== to && title.endsWith(`${TITLE_SUFFIX}${from}`) ? `${title.slice(0, -from.length)}${to}` : title;
 }
 
-/** An `up:` value pointed at where things now are: the moved collection's new hub, or a moved note's new path. */
-function relink(up, { fromCollection, to, movedNotes }) {
+/**
+ * An `up:` value pointed at where things now are: a moved collection's new hub
+ * (`hubMoves`, keyed `projects/<collection>`), or a moved note's new path.
+ */
+function relink(up, { hubMoves, movedNotes }) {
   const hub = up.match(HUB_LINK);
-  if (to && hub && hub[1] === SOURCE_AREA && hub[2] === fromCollection && hub[3] === fromCollection) return hubLink(to.area, to.collection);
+  const hubTo = hub && hub[2] === hub[3] && hubMoves.get(`${hub[1]}/${hub[2]}`);
+  if (hubTo) return hubLink(hubTo.area, hubTo.collection);
   const qualified = up.match(QUALIFIED_NOTE_LINK);
   const moved = qualified && movedNotes.get(`${qualified[1]}/${qualified[2]}/${SESSIONS_DIR}/${qualified[3]}`);
   if (!moved) return up;
@@ -209,7 +213,7 @@ function relink(up, { fromCollection, to, movedNotes }) {
 
 /** The line edits a moved note needs. */
 function editsFor(entry, target, movedNotes) {
-  const up = (value) => relink(value, { fromCollection: entry.collection, to: target, movedNotes });
+  const up = (value) => relink(value, { hubMoves: new Map([[`${SOURCE_AREA}/${entry.collection}`, target]]), movedNotes });
   if (entry.kind !== 'session') return { up };
   return {
     collection: (value) => (value === entry.collection ? target.collection : value),
@@ -230,7 +234,11 @@ function movedText(entry, target, movedNotes) {
   const edited = editFrontmatterLines(entry.text, edits);
   const { text } = edited;
   if (!edited.found && Object.keys(entry.fields).length) return { text, error: 'could not edit the frontmatter in place (line endings)' };
-  if (edited.skipped.length) return { text, error: `could not edit ${edited.skipped.join(', ')} in place (escaped double-quoted value)` };
+  // A refused line matters only when the move needs it changed. The hook's own
+  // reader keeps escapes raw, so `collection` (the one line every move rewrites)
+  // is taken as needed whatever it reads.
+  const needed = edited.skipped.filter((key) => key === 'collection' || edits[key](String(entry.fields[key] ?? '')) !== String(entry.fields[key] ?? ''));
+  if (needed.length) return { text, error: `could not edit ${needed.join(', ')} in place (escaped double-quoted value)` };
   const after = parseFrontmatter(text);
   for (const [key, edit] of Object.entries(edits)) {
     const before = entry.fields[key];
@@ -314,7 +322,7 @@ export function planMoveToRealm({ vault, home = os.homedir(), tmp = os.tmpdir(),
     const { text, error } = movedText(entry, target, movedNotes);
     if (error) return holdBack(entry, error);
     if (planned.has(to)) return holdBack(entry, `${to} is also planned from ${planned.get(to)}`);
-    const move = { from: entry.rel, to, reason, text };
+    const move = { from: entry.rel, to, reason, text, sourceText: entry.text };
     const state = targetState(path.join(vault, to), move, entry);
     if (state === 'different') return holdBack(entry, `${to} already exists with different text`);
     planned.set(to, entry.rel);
@@ -349,29 +357,69 @@ export function planMoveToRealm({ vault, home = os.homedir(), tmp = os.tmpdir(),
       keeps.add(entry.collection);
     }
   }
-  // A hub archived before a later `keeps` (an "other" file found after it) would orphan that file.
-  plan.archives = plan.archives.filter((archive) => !keeps.has(archive.from.split('/')[1]));
+  // A hub queued for the archive before a later file made its collection stay would orphan that file.
+  const heldHubs = plan.archives.filter((archive) => keeps.has(archive.from.split('/')[1]));
+  plan.archives = plan.archives.filter((archive) => !heldHubs.includes(archive));
+  for (const hub of heldHubs) plan.stays.push({ path: hub.from, reason: `${hub.from.split('/')[1]} keeps notes` });
 
   const movedRels = new Set(plan.moves.map((move) => move.from));
-  const rewrites = planLinkRewrites(vault, movedRels, movedNotes, unreadable);
-  return { vault, archiveRoot: toPosix(archiveRoot), ...plan, rewrites, unreadable };
+  const hubMoves = new Map(
+    plan.moves.filter((move) => path.posix.basename(move.from) === hubFilename(move.from.split('/')[1]) && move.from.split('/').length === 3)
+      .map((move) => [path.posix.dirname(move.from), { area: move.to.split('/')[0], collection: move.to.split('/')[1] }]),
+  );
+  const links = planLinkRewrites(vault, movedRels, { hubMoves, movedNotes }, unreadable);
+  return {
+    vault,
+    archiveRoot: toPosix(archiveRoot),
+    ...plan,
+    conflicts: [...plan.conflicts, ...links.conflicts],
+    rewrites: links.rewrites,
+    hubsToCreate: hubsToCreate(vault, plan.moves),
+    unreadable,
+  };
 }
 
-/** `up:` links in notes that stay, anywhere in the vault, that name a moved note. */
-function planLinkRewrites(vault, movedRels, movedNotes, unreadable) {
-  if (movedNotes.size === 0) return [];
-  return listRealmNotes(vault, unreadable)
-    .filter((note) => !movedRels.has(note.rel))
-    .flatMap((note) => {
-      let text;
-      try {
-        text = readText(note.file);
-      } catch (err) {
-        unreadable.push({ path: note.rel, error: describeError(err) });
-        return [];
-      }
-      if (text === null) return [];
-      const edited = editFrontmatterLines(text, { up: (value) => relink(value, { fromCollection: '', to: null, movedNotes }) });
-      return edited.changes.length ? [{ path: note.rel, file: note.file, text: edited.text, changes: edited.changes }] : [];
-    });
+/** Collections a moved session lands in that have no hub on disk and get none from the move. */
+function hubsToCreate(vault, moves) {
+  const arriving = new Set(moves.map((move) => move.to));
+  const places = new Set(moves.filter((move) => move.to.split('/')[2] === SESSIONS_DIR).map((move) => move.to.split('/').slice(0, 2).join('/')));
+  return [...places]
+    .filter((place) => {
+      const hub = `${place}/${hubFilename(place.split('/')[1])}`;
+      return !arriving.has(hub) && !fs.existsSync(path.join(vault, hub));
+    })
+    .sort();
+}
+
+/**
+ * `up:` links in notes that stay, anywhere in the vault, that name a moved note
+ * or a moved hub. A note that links to one but cannot be edited in place is a
+ * conflict: its link would dangle after the move.
+ */
+function planLinkRewrites(vault, movedRels, moved, unreadable) {
+  const rewrites = [];
+  const conflicts = [];
+  if (moved.movedNotes.size === 0 && moved.hubMoves.size === 0) return { rewrites, conflicts };
+  const relinkUp = (value) => relink(value, moved);
+  const cannot = (note, why) => conflicts.push({ path: note.rel, error: `links to a moved note but ${why}` });
+  for (const note of listRealmNotes(vault, unreadable).filter((each) => !movedRels.has(each.rel))) {
+    let bytes;
+    try {
+      bytes = fs.readFileSync(note.file);
+    } catch (err) {
+      unreadable.push({ path: note.rel, error: describeError(err) });
+      continue;
+    }
+    const text = bytes.toString('utf8');
+    const up = parseFrontmatter(text).fields?.up;
+    const needsEdit = typeof up === 'string' && relinkUp(up) !== up;
+    if (!Buffer.from(text, 'utf8').equals(bytes)) {
+      if (needsEdit) cannot(note, 'it is not UTF-8 round-trip safe');
+      continue;
+    }
+    const edited = editFrontmatterLines(text, { up: relinkUp });
+    if (edited.changes.length) rewrites.push({ path: note.rel, file: note.file, text: edited.text, original: text, changes: edited.changes });
+    else if (needsEdit) cannot(note, 'its up: cannot be edited in place');
+  }
+  return { rewrites, conflicts };
 }

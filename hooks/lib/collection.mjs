@@ -112,7 +112,7 @@ export const ROUTING_RULES = Object.freeze([
  * @param {object} args
  * @param {string} args.cwd        the session's working directory
  * @param {string} args.vaultRoot  vault root; folders in it steer the rules
- * @param {object} args.repo       the result of `resolveRepo(cwd)`
+ * @param {object} [args.repo]     the result of `resolveRepo(cwd)`, when the caller has it
  * @param {string} [args.home]     home directory (tests pass a scratch one)
  * @param {string} [args.tmp]      temp directory, parent of Claude Code's scratchpads
  * @param {function} [args.resolveRepoFor]  cwd -> repo, for a decoded cwd
@@ -132,9 +132,11 @@ export function routeSession({
 }) {
   const decoded = decodeClaudeStateCwd(cwd, { home, tmp });
   const shared = { vaultRoot, home, holdsHarness };
+  // The repository of the cwd the rules read: resolved here only when the caller
+  // did not already, or when decoding moved to another folder.
   const context = decoded
     ? { ...shared, cwd: decoded, repo: resolveRepoFor(decoded) }
-    : { ...shared, cwd: toPosix(cwd), repo };
+    : { ...shared, cwd: toPosix(cwd), repo: repo ?? resolveRepoFor(cwd) };
   for (const rule of ROUTING_RULES) {
     const placed = rule.place(context);
     if (placed) return { ...placed, rule: rule.name, routedCwd: context.cwd, repo: context.repo };
@@ -149,7 +151,7 @@ export function routeSession({
  * commits.
  */
 export function placeSession({ cwd, vaultRoot, home, tmp, resolveRepoFor = resolveRepo, holdsHarness }) {
-  const placement = routeSession({ cwd, vaultRoot, repo: resolveRepoFor(cwd), home, tmp, resolveRepoFor, holdsHarness });
+  const placement = routeSession({ cwd, vaultRoot, home, tmp, resolveRepoFor, holdsHarness });
   return { placement, repo: placement.repo };
 }
 

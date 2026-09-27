@@ -156,6 +156,14 @@ export function resolveChainHead(sessionsDir, sessionId) {
 }
 
 /**
+ * The body `ensureIndex` gives a hub it creates. move-to-realm compares a hub
+ * against it to tell a stub nobody has written in from a hub worth keeping.
+ */
+export function hubStubBody(collection) {
+  return ['', `# ${collection}`, '', `Collection \`${collection}\`. Session notes under \`sessions/\` link up to this note.`, ''].join('\n');
+}
+
+/**
  * Make sure the collection's hub note, `<area>/<collection>/<collection>.md`,
  * exists. Never throws, never overwrites.
  *
@@ -167,14 +175,6 @@ export function resolveChainHead(sessionsDir, sessionId) {
  *
  * @returns {{ok: boolean, created: boolean, path: string, error: string}}
  */
-/**
- * The body `ensureIndex` gives a hub it creates. move-to-realm compares a hub
- * against it to tell a stub nobody has written in from a hub worth keeping.
- */
-export function hubStubBody(collection) {
-  return ['', `# ${collection}`, '', `Collection \`${collection}\`. Session notes under \`sessions/\` link up to this note.`, ''].join('\n');
-}
-
 export function ensureIndex(vaultRoot, area, collection) {
   if (!vaultRoot || !AREAS.includes(area) || !isSafeFilenameSegment(collection)) {
     return { ok: false, created: false, path: '', error: 'not a collection folder' };

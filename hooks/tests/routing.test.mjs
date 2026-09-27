@@ -242,3 +242,17 @@ test('decoding backtracks: a longer sibling that leads nowhere does not swallow 
   // The ambiguity documented in claude-paths.mjs: a deleted foo-web beside foo reads as foo/web.
   assert.equal(at(`${HOME}/.claude/projects/C--Users-estac-foo-web/m`), 'C:/Users/estac/foo/web');
 });
+
+test('on Windows a cwd typed in another case still decodes: folder names compare without case', () => {
+  const tree = fakeTree({ 'C:/': ['Users'], 'C:/Users': ['estac'], 'C:/Users/estac': ['bb2dash'] });
+  const at = (cwd, caseInsensitive) => decodeClaudeStateCwd(cwd, { home: HOME, tmp: TMP, listDir: tree, caseInsensitive });
+  assert.equal(at(`${HOME}/.claude/projects/c--users-estac-bb2dash/m`, true), 'C:/Users/estac/bb2dash');
+  assert.equal(at(`${HOME}/.claude/projects/c--users-estac-bb2dash/m`, false), 'C:/users-estac-bb2dash', 'POSIX keeps case');
+});
+
+test('home and tmp given in 8.3 short form are expanded before the prefix test', () => {
+  const tree = fakeTree({ 'C:/': ['Users'], 'C:/Users': ['estac'], 'C:/Users/estac': ['bb2dash'] });
+  const expand = (p) => p.replace('ESTAC~1', 'estac');
+  const cwd = `${HOME}/AppData/Local/Temp/claude/C--Users-estac-bb2dash/${SESSION}/scratchpad`;
+  assert.equal(decodeClaudeStateCwd(cwd, { home: 'C:/Users/ESTAC~1', tmp: 'C:/Users/ESTAC~1/AppData/Local/Temp', listDir: tree, realpath: expand }), 'C:/Users/estac/bb2dash');
+});
