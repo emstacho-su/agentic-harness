@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 
 from .config import EMBEDDING
 from .embed_check import COSINE_THRESHOLD, cosine
@@ -167,15 +168,23 @@ def check_vault(
 
     A note's scope is its ``_ingest.realm``; in an unmarked vault every note is
     ``None`` and so is the one scope (the legacy rows), so the same comparison
-    covers both layouts.
+    covers both layouts. A row written after the walk began is counted, not
+    compared: its note may have been captured after the walk passed it.
     """
     skipped = {record.external_id: record.reason for record in snapshot.loaded.skipped}
     findings: list[Finding] = []
     notes: list[str] = []
     for scope, rows in scoped_rows.items():
         documents = [doc for doc in snapshot.loaded.documents if _realm_of(doc) == scope]
-        findings.extend(_compare_scope(_scope_name(scope), documents, rows, skipped))
+        settled = [row for row in rows if not _written_since(row, snapshot.walked_at)]
+        fresh = {row.external_id for row in rows} - {row.external_id for row in settled}
+        findings.extend(_compare_scope(_scope_name(scope), documents, settled, skipped, fresh))
         notes.append(f"{_scope_name(scope)}: {len(documents)} notes, {len(rows)} rows")
+        if fresh:
+            notes.append(
+                f"{_scope_name(scope)}: {len(fresh)} row(s) written after the walk began, "
+                "not compared (notes captured during the audit)"
+            )
     if legacy_rows:
         notes.append(f"{len(legacy_rows)} legacy row(s) carry no _ingest.realm and are not compared")
     return CheckResult(CHECK_VAULT, tuple(findings), tuple(notes))
@@ -186,11 +195,15 @@ def _compare_scope(
     documents: Sequence[SourceDocument],
     rows: Sequence[VaultRow],
     skipped: Mapping[str, str],
+    fresh: frozenset[str] | set[str] = frozenset(),
 ) -> list[Finding]:
+    """Notes against settled rows; ``fresh`` rows were written after the walk began."""
     by_id = {doc.external_id: doc for doc in documents}
     stored = {row.external_id: row for row in rows}
     findings: list[Finding] = []
     for external_id, doc in sorted(by_id.items()):
+        if external_id in fresh:
+            continue
         row = stored.get(external_id)
         if row is None:
             findings.append(Finding(external_id, f"{where}: ingestable note{_path_of(doc)} has no row"))
@@ -208,6 +221,10 @@ def _orphan_detail(row: VaultRow, skipped: Mapping[str, str]) -> str:
     if reason:
         return f"row's note is skipped by the walk ({reason}){was}"
     return f"row has no note{was}"
+
+
+def _written_since(row: VaultRow, cutoff: datetime | None) -> bool:
+    return cutoff is not None and row.written_at is not None and row.written_at >= cutoff
 
 
 def _scope_name(scope: str | None) -> str:

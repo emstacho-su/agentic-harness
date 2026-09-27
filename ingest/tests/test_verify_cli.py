@@ -285,3 +285,30 @@ def test_untruncated_refuses_a_tokenizer_it_cannot_copy() -> None:
 
 def test_the_module_exports_its_exit_codes() -> None:
     assert (verify_cli.EXIT_CLEAN, verify_cli.EXIT_FINDINGS, verify_cli.EXIT_UNAVAILABLE) == (0, 1, 2)
+
+
+def test_the_walk_records_its_cutoff_before_it_reads_the_vault(monkeypatch, clean_vault: Path) -> None:
+    # Rows written after this moment belong to notes captured during the audit.
+    from datetime import datetime, timezone
+
+    from ingest.prune import walk_cutoff
+
+    started = datetime(2026, 9, 28, 3, 0, tzinfo=timezone.utc)
+    events: list[str] = []
+    real_load = verify_cli.load_vault
+
+    def clock():
+        events.append("clock")
+        return started
+
+    def load(*args, **kwargs):
+        events.append("walk")
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(verify_cli, "_utcnow", clock)
+    monkeypatch.setattr(verify_cli, "load_vault", load)
+
+    snapshot = verify_cli._walk(str(clean_vault))
+
+    assert events == ["clock", "walk"]
+    assert snapshot.walked_at == walk_cutoff(started)

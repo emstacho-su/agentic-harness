@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ENV_DATABASE_URL, ENV_REALMS, load_db_settings, parse_realm_policies
@@ -28,6 +29,7 @@ from .embedding import Embedder, FastEmbedEmbedder
 from .envfile import load_env_file
 from .errors import EmbeddingError, IngestError
 from .loaders import load_vault
+from .prune import walk_cutoff
 from .loaders.obsidian import discover_realms, vault_root
 from .tokenizer import SupportsEncode, TokenCounter, model_token_counter, tokenizer_from_embedder
 from .verify import DEFAULT_SAMPLE_SIZE, SEVERITY_ERROR, CheckResult, StoreReader, VaultSnapshot, VerifyReport
@@ -123,8 +125,16 @@ def _walk(path: str) -> VaultSnapshot:
     policies = parse_realm_policies(os.environ.get(ENV_REALMS))
     allowed = list(policies) if policies else None
     root = vault_root(path)
+    # Before the walk, as the ingest's sweep takes it, so the two agree on what is an orphan.
+    walked_at = walk_cutoff(_utcnow())
     realms = tuple(sorted(set(discover_realms(root).values())))
-    return VaultSnapshot(path=root.as_posix(), realms=realms, loaded=load_vault(root, allowed_realms=allowed))
+    return VaultSnapshot(
+        path=root.as_posix(), realms=realms, loaded=load_vault(root, allowed_realms=allowed), walked_at=walked_at
+    )
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 # -- the real tokenizer ----------------------------------------------------------------

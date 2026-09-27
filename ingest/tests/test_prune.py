@@ -176,3 +176,76 @@ def test_realm_none_means_legacy_rows_only(fake_store, fake_embedder):
     assert result.orphans == ("old.md",)
     assert fake_store.list_external_ids("obsidian", realm=None) == set()
     assert fake_store.list_external_ids("obsidian", realm="projects") == {"projects/a.md"}
+
+
+# --------------------------------------------------------------------------
+# a note captured while the run is going (the walk-to-sweep race)
+# --------------------------------------------------------------------------
+
+
+def test_a_row_written_after_the_walk_began_is_not_an_orphan(fake_store, fake_embedder):
+    # The nightly walks the vault, then spends minutes embedding. A SessionEnd hook
+    # that captures a note in between writes a row the walk never saw.
+    ingest(fake_store, fake_embedder, [document("a.md"), document("gone.md")])
+    walk_began = fake_store.advance(minutes=5)
+    fake_store.advance(minutes=2)
+    ingest(fake_store, fake_embedder, [document("captured-mid-run.md")])
+
+    result = prune_orphans(
+        fake_store, "obsidian", ["a.md"], document_count=1, written_before=walk_began
+    )
+
+    assert result.orphans == ("gone.md",)
+    assert result.deleted == 1
+    assert result.spared == ("captured-mid-run.md",)
+    assert fake_store.list_external_ids("obsidian") == {"a.md", "captured-mid-run.md"}
+
+
+def test_a_dry_run_reports_the_spared_rows_too(fake_store, fake_embedder):
+    ingest(fake_store, fake_embedder, [document("a.md")])
+    walk_began = fake_store.advance(minutes=1)
+    fake_store.advance(seconds=30)
+    ingest(fake_store, fake_embedder, [document("new.md")])
+
+    result = prune_orphans(
+        fake_store, "obsidian", ["a.md"], document_count=1, dry_run=True, written_before=walk_began
+    )
+
+    assert result.orphans == ()
+    assert result.spared == ("new.md",)
+    assert fake_store.list_external_ids("obsidian") == {"a.md", "new.md"}
+
+
+def test_the_delete_itself_keeps_a_row_rewritten_after_the_cutoff(fake_store, fake_embedder):
+    # Listing and deleting are two statements; a hook can rewrite the row between them.
+    ingest(fake_store, fake_embedder, [document("a.md"), document("old.md")])
+    cutoff = fake_store.advance(minutes=1)
+    fake_store.advance(minutes=1)
+    rewritten = SourceDocument(
+        source="obsidian", external_id="a.md", title="a.md", agent="claude-code",
+        body="The hook appended a new section to this note, so its row is rewritten.",
+    )
+    ingest(fake_store, fake_embedder, [rewritten, document("b.md")])
+
+    assert fake_store.delete_documents("obsidian", ["a.md", "b.md", "old.md"], written_before=cutoff) == 1
+    assert fake_store.list_external_ids("obsidian") == {"a.md", "b.md"}
+
+
+def test_without_a_cutoff_every_unseen_row_is_an_orphan(fake_store, fake_embedder):
+    ingest(fake_store, fake_embedder, [document("a.md"), document("b.md")])
+    fake_store.advance(minutes=10)
+
+    result = prune_orphans(fake_store, "obsidian", ["a.md"], document_count=1)
+
+    assert result.orphans == ("b.md",)
+    assert result.spared == ()
+
+
+def test_walk_cutoff_leaves_a_margin_for_clock_drift():
+    from datetime import datetime, timezone
+
+    from ingest.prune import CLOCK_MARGIN, walk_cutoff
+
+    started = datetime(2026, 9, 28, 3, 0, tzinfo=timezone.utc)
+    assert walk_cutoff(started) == started - CLOCK_MARGIN
+    assert CLOCK_MARGIN.total_seconds() >= 60

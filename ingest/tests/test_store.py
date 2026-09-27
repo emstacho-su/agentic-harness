@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -460,3 +461,47 @@ def test_tls_can_be_disabled_explicitly_for_a_local_postgres(monkeypatch, tmp_pa
     _, kwargs = calls[0]
     assert kwargs["sslmode"] == "disable"
     assert "sslrootcert" not in kwargs
+
+
+# --------------------------------------------------------------------------
+# the orphan sweep's cutoff: rows written after the walk began are left alone
+# --------------------------------------------------------------------------
+
+CUTOFF = datetime(2026, 9, 28, 2, 50, tzinfo=timezone.utc)
+
+
+def test_listing_with_a_cutoff_keeps_only_rows_written_before_it() -> None:
+    conn = FakeConnection()
+    conn.next_rows = [("projects/a.md",)]
+
+    ids = PostgresStore(conn).list_external_ids("obsidian", realm="projects", written_before=CUTOFF)
+
+    assert ids == {"projects/a.md"}
+    _, sql, params = conn.log[-1]
+    assert sql.endswith("AND updated_at < %s")
+    assert params[0] == "obsidian" and params[-1] == CUTOFF
+
+
+def test_deleting_with_a_cutoff_rechecks_it_in_the_same_statement() -> None:
+    conn = FakeConnection()
+    conn.rowcount = 1
+
+    deleted = PostgresStore(conn).delete_documents(
+        "obsidian", ["projects/a.md"], realm="projects", written_before=CUTOFF
+    )
+
+    assert deleted == 1
+    _, sql, params = conn.log[-1]
+    assert sql.startswith("DELETE FROM rag.documents")
+    assert sql.endswith("AND updated_at < %s")
+    assert params[1] == ["projects/a.md"] and params[-1] == CUTOFF
+
+
+def test_without_a_cutoff_the_sweep_sql_is_unchanged() -> None:
+    conn = FakeConnection()
+    store = PostgresStore(conn)
+
+    store.list_external_ids("obsidian", realm="projects")
+    store.delete_documents("obsidian", ["projects/a.md"], realm="projects")
+
+    assert all("updated_at" not in sql for sql in conn.statements())

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime
 from typing import Any, Protocol, Sequence
 
 from .config import CHUNKS_TABLE, DOCUMENTS_TABLE, RAG_SCHEMA, VECTOR_TYPE, DbSettings
@@ -194,6 +195,14 @@ _EVENTS_MISSING_WARNING = (
 )
 
 
+def _sweep_clause(realm: str | None, written_before: datetime | None) -> tuple[str, tuple[Any, ...]]:
+    """:func:`realm_clause`, plus the orphan sweep's cutoff when there is one."""
+    clause, params = realm_clause(realm)
+    if written_before is None:
+        return clause, params
+    return f"{clause} AND updated_at < %s", (*params, written_before)
+
+
 def _event_row(
     event: RetrievalEvent, document_id: int, search_version: str | None
 ) -> tuple[Any, ...]:
@@ -245,18 +254,25 @@ class ChunkStore(Protocol):
         self, document_id: int, document: SourceDocument
     ) -> None: ...
 
-    def list_external_ids(self, source: str, realm: str | None = None) -> set[str]:
+    def list_external_ids(
+        self, source: str, realm: str | None = None, written_before: datetime | None = None
+    ) -> set[str]:
         """Ids of ``source`` inside ``realm``.
 
         ``realm=None`` is not "every realm": it means the rows that carry no
         ``_ingest.realm`` at all — rows ingested before realms existed. A realm
         this machine never walked is never listed, which is what keeps two vaults
-        sharing one store from pruning each other.
+        sharing one store from pruning each other. ``written_before`` keeps only
+        rows whose ``updated_at`` is earlier.
         """
         ...
 
     def delete_documents(
-        self, source: str, external_ids: Sequence[str], realm: str | None = None
+        self,
+        source: str,
+        external_ids: Sequence[str],
+        realm: str | None = None,
+        written_before: datetime | None = None,
     ) -> int: ...
 
     def replace_retrieval_events(self, document_id: int, document: SourceDocument) -> int:
@@ -526,8 +542,10 @@ class PostgresStore:
 
     # -- orphan sweep ------------------------------------------------------
 
-    def list_external_ids(self, source: str, realm: str | None = None) -> set[str]:
-        clause, params = realm_clause(realm)
+    def list_external_ids(
+        self, source: str, realm: str | None = None, written_before: datetime | None = None
+    ) -> set[str]:
+        clause, params = _sweep_clause(realm, written_before)
         try:
             with self._conn.cursor() as cur:
                 cur.execute(_SELECT_EXTERNAL_IDS + clause, (source, *params))
@@ -539,12 +557,16 @@ class PostgresStore:
         return {str(row[0]) for row in rows}
 
     def delete_documents(
-        self, source: str, external_ids: Sequence[str], realm: str | None = None
+        self,
+        source: str,
+        external_ids: Sequence[str],
+        realm: str | None = None,
+        written_before: datetime | None = None,
     ) -> int:
         ids = list(external_ids)
         if not ids:
             return 0
-        clause, params = realm_clause(realm)
+        clause, params = _sweep_clause(realm, written_before)
         try:
             with self._conn.cursor() as cur:
                 cur.execute(_DELETE_DOCUMENTS + clause, (source, ids, *params))
@@ -670,10 +692,14 @@ class NullStore:
     def update_document_metadata(self, *args, **kwargs) -> None:
         raise StoreError("NullStore cannot write. This is a --dry-run store.")
 
-    def list_external_ids(self, source: str, realm: str | None = None) -> set[str]:
+    def list_external_ids(
+        self, source: str, realm: str | None = None, written_before: datetime | None = None
+    ) -> set[str]:
         return set()
 
-    def delete_documents(self, source: str, external_ids, realm: str | None = None) -> int:
+    def delete_documents(
+        self, source: str, external_ids, realm: str | None = None, written_before: datetime | None = None
+    ) -> int:
         raise StoreError("NullStore cannot delete. This is a --dry-run store.")
 
     def replace_retrieval_events(self, document_id: int, document: SourceDocument) -> int:

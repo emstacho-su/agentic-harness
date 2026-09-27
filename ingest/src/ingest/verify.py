@@ -11,6 +11,7 @@ from __future__ import annotations
 import random
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from .loaders import LoadedSource
@@ -142,21 +143,29 @@ class VaultRow:
     """An obsidian row, as far as the vault comparison needs it.
 
     ``path`` is the note path stored in ``_ingest.path`` when the row was written:
-    it names the note behind a row keyed by a frontmatter id.
+    it names the note behind a row keyed by a frontmatter id. ``written_at`` is the
+    row's ``updated_at``, which tells a note captured during the audit from a stale row.
     """
 
     external_id: str
     content_hash: str
     path: str | None = None
+    written_at: datetime | None = None
 
 
 @dataclass(frozen=True)
 class VaultSnapshot:
-    """One walk of the vault: its realm names (empty when unmarked) and what it loaded."""
+    """One walk of the vault: its realm names (empty when unmarked) and what it loaded.
+
+    ``walked_at`` is the cutoff taken before the walk (``prune.walk_cutoff``): a row
+    written at or after it may belong to a note the walk could not see, so the vault
+    check leaves it alone, exactly as the orphan sweep does.
+    """
 
     path: str
     realms: tuple[str, ...]
     loaded: LoadedSource
+    walked_at: datetime | None = None
 
 
 class StoreReader(Protocol):

@@ -27,6 +27,7 @@ import argparse
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .chunking import MarkdownChunker
@@ -47,7 +48,7 @@ from .errors import IngestError
 from .eval_cli import SUBCOMMAND as EVAL_SUBCOMMAND, run_eval_command
 from .loaders import LoadedSource, load_claude_mem, load_vault, load_vault_notes
 from .pipeline import Action, IngestPipeline, IngestStats
-from .prune import PruneResult, prune_orphans
+from .prune import PruneResult, prune_orphans, walk_cutoff
 from .report_cli import SUBCOMMAND as REPORT_SUBCOMMAND, run_report
 from .runstate import DEFAULT_MAX_AGE_HOURS, health, state_file
 from .store import ChunkStore, NullStore, PostgresStore
@@ -219,6 +220,8 @@ def _refuse_bad_combination(args: argparse.Namespace) -> str | None:
 
 def _run(args: argparse.Namespace) -> int:
     path = Path(args.path).expanduser()
+    # Before the walk: a row written after this is a note captured mid-run, not an orphan.
+    written_before = walk_cutoff(_utcnow())
     loaded = _load(args, path)
     _report_load(loaded)
 
@@ -242,7 +245,7 @@ def _run(args: argparse.Namespace) -> int:
         stats = pipeline.run(documents)
 
         if args.prune or args.prune_legacy:
-            prune_results = _sweep(args, store, documents, stats)
+            prune_results = _sweep(args, store, documents, stats, written_before)
     finally:
         store.close()
 
@@ -255,7 +258,7 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _sweep(
-    args: argparse.Namespace, store: ChunkStore, documents, stats: IngestStats
+    args: argparse.Namespace, store: ChunkStore, documents, stats: IngestStats, written_before: datetime
 ) -> list[PruneResult]:
     """One orphan sweep per realm the run walked, plus the legacy rows on request.
 
@@ -280,6 +283,7 @@ def _sweep(
         dry_run=args.dry_run,
         failure_count=len(stats.failures),
         limited=args.limit is not None,
+        written_before=written_before,
     )
     results = []
     if args.prune:
@@ -293,6 +297,10 @@ def _sweep(
             document_count=len(documents), realm=None, **common,
         ))
     return results
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _realm_of(document) -> str | None:
@@ -463,6 +471,11 @@ def _report_prune(result: PruneResult, *, dry_run: bool) -> None:
     if result.declined:
         print(f"\nOrphan sweep skipped for {scope}: {result.declined_reason}")
         return
+    if result.spared:
+        print(
+            f"\nOrphan sweep kept {len(result.spared)} row(s) in {scope} written after this run's "
+            "walk began (notes captured during the run); the next run sees them."
+        )
     if not result.orphans:
         print(f"\nOrphan sweep: nothing stale in source '{result.source}', {scope}.")
         return

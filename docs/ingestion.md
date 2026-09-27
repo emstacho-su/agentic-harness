@@ -395,6 +395,14 @@ An orphan sweep — deleting `source='obsidian'` documents whose `external_id` w
 not seen in the walk — exists behind an explicit `--prune` flag, **off by
 default**. Otherwise a partial or interrupted run would silently mass-delete.
 
+A row written after the walk began is never an orphan. A session that ends while
+the nightly embeds captures and ingests its own note, which the walk could not have
+seen. The run records a cutoff before it walks (the time minus a ten-minute
+margin, because `updated_at` comes from the database's clock). Both the listing
+and the delete skip rows written at or after the cutoff, and the report says how
+many rows it kept. `ingest verify` uses the same cutoff, so the audit and the
+sweep agree on what an orphan is.
+
 ---
 
 ## Session capture: the hook that feeds the vault

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -75,6 +76,15 @@ class FakeStore:
         self.event_projections: list[tuple[int, str, int]] = []
         #: Flip to False to stand for a store that has not run the migration.
         self.events_table_exists = True
+        #: The database clock: every write stamps a row with it, as the
+        #: updated_at trigger does. Tests move it with :meth:`advance`.
+        self.now = datetime(2026, 9, 27, 3, 0, tzinfo=timezone.utc)
+        self.written_at: dict[tuple[str, str], datetime] = {}
+
+    def advance(self, **delta: float) -> datetime:
+        """Move the database clock forward; returns the new time."""
+        self.now = self.now + timedelta(**delta)
+        return self.now
 
     def get_document_state(self, source: str, external_id: str) -> DocumentState | None:
         self.lookup_calls += 1
@@ -100,6 +110,7 @@ class FakeStore:
             document_id = existing.document_id
             inserted = False
         self.documents[key] = _state(document_id, content_hash, document)
+        self.written_at[key] = self.now
         self.chunks[document_id] = list(chunks)
         self.embeddings[document_id] = [list(e) for e in embeddings]
         return document_id, inserted
@@ -111,27 +122,39 @@ class FakeStore:
                 continue
             self.metadata_writes += 1
             self.documents[key] = _state(document_id, state.content_hash, document)
+            self.written_at[key] = self.now
             return
         raise StoreError(f"no document with id {document_id}")
 
-    def list_external_ids(self, source: str, realm: str | None = None) -> set[str]:
+    def list_external_ids(
+        self, source: str, realm: str | None = None, written_before: datetime | None = None
+    ) -> set[str]:
         return {
             external_id
             for (src, external_id), state in self.documents.items()
             if src == source and _realm_of(state) == realm
+            and self._written_before((src, external_id), written_before)
         }
 
-    def delete_documents(self, source: str, external_ids, realm: str | None = None) -> int:
+    def delete_documents(
+        self, source: str, external_ids, realm: str | None = None, written_before: datetime | None = None
+    ) -> int:
         deleted = 0
         for external_id in external_ids:
             state = self.documents.get((source, external_id))
             if state is None or _realm_of(state) != realm:
                 continue
+            if not self._written_before((source, external_id), written_before):
+                continue
             self.documents.pop((source, external_id))
+            self.written_at.pop((source, external_id), None)
             self.chunks.pop(state.document_id, None)
             self.embeddings.pop(state.document_id, None)
             deleted += 1
         return deleted
+
+    def _written_before(self, key: tuple[str, str], cutoff: datetime | None) -> bool:
+        return cutoff is None or self.written_at[key] < cutoff
 
     def replace_retrieval_events(self, document_id: int, document: SourceDocument) -> int:
         """Delete the note's rows and insert all of them, as the real store does."""

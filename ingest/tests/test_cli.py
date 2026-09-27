@@ -496,3 +496,50 @@ def test_the_summary_is_silent_about_events_when_there_are_none(capsys):
     stats.record(DocumentOutcome("a.md", Action.UNCHANGED))
     _report_stats(stats, dry_run=False)
     assert "retrieval events" not in capsys.readouterr().out
+
+
+def test_the_sweep_cutoff_is_taken_before_the_walk(monkeypatch, clean_env, tmp_path, capsys):
+    # A note captured while the run embeds must not look like an orphan, so the
+    # cutoff has to predate the walk, not the sweep.
+    from datetime import datetime, timezone
+
+    import ingest.cli as cli
+    from ingest.prune import CLOCK_MARGIN, prune_orphans
+
+    events: list[str] = []
+    started = datetime(2026, 9, 28, 3, 0, tzinfo=timezone.utc)
+    cutoffs = []
+    real_load = cli._load
+
+    def clock():
+        events.append("clock")
+        return started
+
+    def load(args, path):
+        events.append("walk")
+        return real_load(args, path)
+
+    def sweep(*args, **kwargs):
+        cutoffs.append(kwargs.get("written_before"))
+        return prune_orphans(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_utcnow", clock)
+    monkeypatch.setattr(cli, "_load", load)
+    monkeypatch.setattr(cli, "prune_orphans", sweep)
+
+    main(["--source", "obsidian", "--path", str(realm_vault(tmp_path)), "--dry-run",
+          "--prune", "--env-file", str(clean_env)])
+
+    assert events[:2] == ["clock", "walk"]
+    assert cutoffs == [started - CLOCK_MARGIN] * 2
+
+
+def test_the_report_names_rows_the_sweep_kept(capsys):
+    from ingest.cli import _report_prune
+    from ingest.prune import PruneResult
+
+    _report_prune(PruneResult(source="obsidian", realm="projects", spared=("a", "b")), dry_run=True)
+    out = capsys.readouterr().out
+
+    assert "kept 2 row(s) in realm 'projects'" in out
+    assert "nothing stale" in out

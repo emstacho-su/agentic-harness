@@ -53,7 +53,7 @@ ORDER BY c.id
 # Scoped by appending store.py's own realm predicate, so the audit and the orphan
 # sweep can never disagree about which rows belong to a realm.
 _SELECT_VAULT_ROWS = (
-    f"SELECT external_id, content_hash, metadata -> '_ingest' ->> 'path' "
+    f"SELECT external_id, content_hash, metadata -> '_ingest' ->> 'path', updated_at "
     f"FROM {DOCUMENTS_TABLE} WHERE source = %s"
 )
 
@@ -148,7 +148,7 @@ class PostgresReader:
 
 
 def _vault_row(row: tuple) -> VaultRow:
-    return VaultRow(str(row[0]), str(row[1]), None if row[2] is None else str(row[2]))
+    return VaultRow(str(row[0]), str(row[1]), None if row[2] is None else str(row[2]), row[3])
 
 
 def parse_vector(text: str) -> tuple[float, ...]:
