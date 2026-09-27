@@ -22,8 +22,7 @@ import path from 'node:path';
 import { capture } from './capture.mjs';
 import { defaultStateDir } from './session-start.mjs';
 import {
-  AREA_CLASSES,
-  AREA_PROJECTS,
+  AREAS,
   CAPTURED_BY_SWEEP,
   SESSION_END_EVENT,
   SESSIONS_DIR,
@@ -76,7 +75,7 @@ const AGENT_PREFIX = 'agent-';
  */
 export function indexNotedSessions(vaultRoot) {
   const noted = new Set();
-  for (const area of [AREA_PROJECTS, AREA_CLASSES]) {
+  for (const area of AREAS) {
     for (const collection of readDirNames(path.join(vaultRoot, area))) {
       const sessionsDir = path.join(vaultRoot, area, collection, SESSIONS_DIR);
       for (const name of readDirNames(sessionsDir)) {

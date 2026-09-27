@@ -27,7 +27,7 @@ hub    = wherever the realm remotes live: private GitHub repos today, a homelab 
   ```
   HARNESS_MACHINE=home-pc                          # written into every note as machine:
   HARNESS_VAULT=C:/Users/you/vault                 # the folder holding the realms
-  HARNESS_REALMS=projects:push,classes:push        # realms this machine may hold, and whether each may leave it
+  HARNESS_REALMS=projects:push,classes:push,harness:push   # realms this machine may hold, and whether each may leave it
   HARNESS_INGEST_PROJECT=C:/Users/you/agentic-harness/ingest
   DATABASE_URL=postgresql://harness:harness@localhost:5433/harness   # this machine's store
   DATABASE_SSL=disable                             # local Postgres only
@@ -577,6 +577,63 @@ copies go, so the vault exists only in `C:\Users\estac\vault` and the realm remo
 nothing stale (1 new session note inserted). Now 0 obsidian rows without a realm, 472
 documents (`projects` 464, `classes` 8), 1,838 obsidian chunks, claude-mem 1,037 untouched; eval
 hit@3 0.95, MRR 0.775, 5/5 before and after, `returned` identical. Details in R-D1.
+
+## Runbook: adding the `harness` realm (R-H1 to R-H3, live step L3)
+
+The harness's own history gets a third realm, `harness/<collection>/`, beside `projects` and
+`classes` (spec `docs/memory-sprint-requirements.md`, R-H1). It needs no new mechanism: the hook,
+sweep, ingest and doctor treat it as they treat the other two. Run it only after the three
+`committed -> pulled -> pushed` nights and Stack's "go L3", never between 02:45 and 04:30.
+
+1. Stack edits `~/.harness/machine.env` **first**:
+   `HARNESS_REALMS=projects:push,classes:push,harness:push`. A realm listed but not yet on
+   disk is harmless (sync skips it, doctor lists it under `realms missing`). The reverse order is
+   not: a `harness/.realm` on disk that the list does not name makes ingest refuse the whole
+   vault, `projects` and `classes` included, until the list is fixed.
+2. Remote and baseline. `gh repo view emstacho-su/vault-harness` fails (absent) first. The
+   realm starts empty: its baseline is the three policy files. No hub is seeded, because
+   `projects/agentic-harness/agentic-harness.md` is still the collection's hub until R-H3 moves
+   the history, and two hubs with one name make `[[agentic-harness]]` ambiguous.
+
+   ```
+   gh repo create emstacho-su/vault-harness --private
+   mkdir C:/Users/estac/vault/harness
+   node hooks/init-realm.mjs --vault C:/Users/estac/vault --realm harness --remote https://github.com/emstacho-su/vault-harness.git --dry-run
+   node hooks/init-realm.mjs --vault C:/Users/estac/vault --realm harness --remote https://github.com/emstacho-su/vault-harness.git
+   git -C C:/Users/estac/vault/harness push -u origin main
+   ```
+
+   The push by hand is the one the sync asks for on a realm's first push ("no upstream"); it
+   may prompt Git Credential Manager once, which the job never may.
+3. Check: `node hooks/sync-realms.mjs --push --vault C:/Users/estac/vault --dry-run` has a
+   `harness:` line; `node hooks/doctor.mjs` has a `realm harness` row with its origin.
+4. Eval before: `uv run ingest eval` (from `ingest/`), scores into the spec's R-H3 record.
+5. Move the history (R-H3). Stack reads every line of the dry run:
+
+   ```
+   node hooks/move-to-realm.mjs --dry-run --vault C:/Users/estac/vault
+   node hooks/move-to-realm.mjs --apply --vault C:/Users/estac/vault
+   ```
+
+   One line per note: `move <from> -> <to> (<reason>)`, where the reason is the routing rule
+   and the cwd it read, or `parent <id> -> <collection>` for a worker. The preview of
+   2026-09-27 (`--plan-only`, before the realm existed): 322 moves (250 to
+   `harness/agentic-harness`, 71 bb2dash workers and memory sessions to `projects/bb2dash`,
+   1 to `projects/misc`), 4 hubs to `~/.claude-archive/<date>-vault-hubs/`, 0 conflicts.
+   It refuses without `harness/.realm`, with `harness` unlisted, or with a realm lock held,
+   and exits 2 on any conflict. A second `--dry-run` must print `moves: 0`.
+6. **Reinstall the hook straight after**, so new harness sessions go to the realm and do not
+   recreate `projects/agentic-harness`: `node hooks/install.mjs --dry-run`, then
+   `node hooks/install.mjs`. The routing takes effect only where `harness/.realm` exists, so the
+   order of 5 and 6 matters only for the minutes between them.
+7. `node hooks/sync-realms.mjs --push --vault C:/Users/estac/vault` commits the deletions in
+   `projects` and the additions in `harness` (one sync, both realms), then
+   `uv run ingest --source obsidian --path C:/Users/estac/vault --prune`: the moved notes are
+   `metadata-updated` only, 0 deleted.
+8. Eval after, unchanged; `node hooks/rename-hubs.mjs --check` reports 0 broken hub links.
+
+Done when `projects/{agentic-harness,claude,memory,projects,remote}` are gone, doctor shows the
+`realm harness` row, and the next nightly log has `harness: … -> pushed`.
 
 ## Rollback
 

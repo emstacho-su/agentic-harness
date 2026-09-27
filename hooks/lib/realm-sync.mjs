@@ -34,13 +34,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { REALM_MARKER } from './constants.mjs';
 import { runGitSync } from './git-log.mjs';
 import { acquireRealmLock, describeHolder, gitDirKind, holderAgeMinutes, peekRealmLock, releaseRealmLock } from './realm-lock.mjs';
 import { runRealmSteps } from './realm-steps.mjs';
 
 export { SYNC_FETCH_TIMEOUT_MS, SYNC_GIT_TIMEOUT_MS } from './realm-steps.mjs';
 
-export const REALM_MARKER = '.realm';
+export { REALM_MARKER };
 export const REALM_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 export const POLICIES = Object.freeze(['push', 'local']);
 export const SYNC_MODES = Object.freeze(['pull', 'push']);
