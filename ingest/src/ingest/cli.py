@@ -9,6 +9,7 @@
     uv run ingest eval                [--json] [--min-hit-rate 0.8]
     uv run ingest db migrate          [--dry-run]
     uv run ingest embed-check         [--json] [--threshold 0.999] [--record [--force]]
+    uv run ingest report retrievals   [--json] [--since 14d] [--limit 20]
     uv run ingest --health
 
 A session note's ``retrievals:`` frontmatter is projected into
@@ -46,6 +47,7 @@ from .eval_cli import SUBCOMMAND as EVAL_SUBCOMMAND, run_eval_command
 from .loaders import LoadedSource, load_claude_mem, load_vault, load_vault_notes
 from .pipeline import Action, IngestPipeline, IngestStats
 from .prune import PruneResult, prune_orphans
+from .report_cli import SUBCOMMAND as REPORT_SUBCOMMAND, run_report
 from .runstate import DEFAULT_MAX_AGE_HOURS, health, state_file
 from .store import ChunkStore, NullStore, PostgresStore
 from .sweep_cli import SUBCOMMAND as SWEEP_SUBCOMMAND, run_sweep
@@ -62,6 +64,7 @@ SUBCOMMANDS = {
     EVAL_SUBCOMMAND: run_eval_command,
     DB_SUBCOMMAND: run_db,
     EMBED_CHECK_SUBCOMMAND: run_embed_check,
+    REPORT_SUBCOMMAND: run_report,
 }
 
 
