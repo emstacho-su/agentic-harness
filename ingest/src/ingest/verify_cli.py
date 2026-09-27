@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from .config import ENV_DATABASE_URL, ENV_REALMS, load_db_settings, parse_realm_policies
@@ -88,10 +89,13 @@ def run_verify(
     try:
         # Before the embedder exists: its cache dir and the realm policy come from these files.
         load_env_file(Path(args.env_file) if args.env_file else None)
-        snapshot = _walk(args.path)
         if reader is None:
             owned = PostgresReader.from_settings(load_db_settings())
             reader = owned
+        # Read before the walk, on the clock that stamps updated_at: the nightly
+        # ingest's rows predate it and are compared; a note captured during the
+        # audit postdates it and is left alone, as the orphan sweep leaves it.
+        snapshot = _walk(args.path, reader.database_now())
         model = embedder or FastEmbedEmbedder()
         counter = count_tokens or build_token_counter(model)
         report = run_audit(reader, snapshot, model, counter, sample_size=args.sample, seed=args.seed)
@@ -118,13 +122,15 @@ def _redacted(message: str) -> str:
     return message.replace(url, f"<{ENV_DATABASE_URL}>") if url else message
 
 
-def _walk(path: str) -> VaultSnapshot:
+def _walk(path: str, walked_at: datetime | None) -> VaultSnapshot:
     """Load the vault the way the nightly ingest does, under this machine's realm policy."""
     policies = parse_realm_policies(os.environ.get(ENV_REALMS))
     allowed = list(policies) if policies else None
     root = vault_root(path)
     realms = tuple(sorted(set(discover_realms(root).values())))
-    return VaultSnapshot(path=root.as_posix(), realms=realms, loaded=load_vault(root, allowed_realms=allowed))
+    return VaultSnapshot(
+        path=root.as_posix(), realms=realms, loaded=load_vault(root, allowed_realms=allowed), walked_at=walked_at
+    )
 
 
 # -- the real tokenizer ----------------------------------------------------------------
