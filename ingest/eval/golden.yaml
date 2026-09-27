@@ -135,16 +135,13 @@ cases:
   # The harness realm does not exist yet (unit H-a). agentic-harness, projects and
   # memory cases are labelled `realm: projects`, where they live today; unit Q-b
   # relabels them after live step L3.
-  # Outcome: the bb2dash-retrieval folder's old index note left an orphan row, removable with the guarded --prune sweep.
-  - id: ah-orphan-index-row
-    query: the old bb2dash-retrieval index note left a stale row in the store, how do I clean it up
-    expect: ["session-422db168-8894-4b80-ac32-384e765cad3c"]
-    collection: agentic-harness
-    realm: projects
   # Outcome table: AgenticHarness-CheckpointCollect runs at 12:00 and 18:00 (the nightly ingest at 03:00).
+  # Reviewed 2026-09-27: the cp-7d2c52ab checkpoint note ("register-checkpoint-collect.ps1 (12:00
+  # and 18:00)") and the 20c43c73 portable-harness session ("The collector (12:00, 18:00)") state
+  # the same times, so they are expected too.
   - id: ah-checkpoint-collect-times
     query: what times of day does the scheduled job that collects cloud checkpoint notes run
-    expect: ["session-5b32b609-c718-44e4-b797-598e4ed9fe30"]
+    expect: ["session-5b32b609-c718-44e4-b797-598e4ed9fe30", "session-cp-7d2c52ab-be91-47aa-a148-5325de5849b9", "session-20c43c73-577a-4d20-bc8b-9a8a84767177"]
     collection: agentic-harness
     realm: projects
   # Prompts 8-15: the infosec internship laptop blocks node by group policy; move to a VM and make the harness portable.
@@ -177,8 +174,10 @@ cases:
     realm: projects
   # Prompt 2, answer 1: launch at login is out of the Phase 12 Electron shell.
   # misses today (rank 5): the answer is a bare "1)launch at login out" reply to numbered
-  # questions the note does not carry; the later 17eb4995 session and its Electron security
-  # review share the vocabulary and outrank it. Neither says anything about launch at login.
+  # questions the note does not carry. Outranked by the later 17eb4995 session, its Electron
+  # security review (--a305843...), a sprint-2 shell-audit subagent (979397c7--ae38c1ea...) and an
+  # unrelated two-minute bb2dash session (62f29a2f); none of the four says anything about launch
+  # at login (all read 2026-09-27).
   - id: memory-launch-at-login
     query: did we decide to have the bb2dash desktop app start automatically when Windows logs in
     expect: ["session-e5240482-ac40-4b5b-85f1-f87c565104f2"]
@@ -222,11 +221,14 @@ cases:
     collection: projects
     realm: projects
   # Outcome: the deployed calendar-push code matches main, so nothing needs deploying.
-  # misses today (rank 8): the session's own comparison worker (--a8861630cbbd046d0) answers
-  # more directly (all four deployed files identical to origin/main) and outranks it, but it
-  # is filed under bb2dash because it ran from that repo. It is not listed here: a second id
-  # from another collection would make the label check report this case every night, and the
-  # label check is the signal that a note moved. Revisit once unit H-a re-routes harness work.
+  # misses today (rank 8): three sprint-2 workflow analysts in this same collection
+  # (979397c7--a500d..., --a3f6f..., --acff4...) outrank it on calendar-push words but do not
+  # answer. Two bb2dash notes do answer and also outrank it: the session's own comparison worker
+  # (b453d876--a8861630cbbd046d0: all four deployed files identical to origin/main) and the 11b
+  # round-2 worker (240d0141--ac3f1fe69e7200b51, 2026-09-16: v5 live, files match the repo byte
+  # for byte). Neither is listed: a second id from another collection would make the label check
+  # report this case every night, and the label check is the signal that a note moved. Revisit
+  # once unit H-a re-routes harness work.
   - id: projects-calendar-push-deployed
     query: does the deployed calendar push function need redeploying
     expect: ["session-b453d876-aaef-424b-8ade-aba7f88c689a"]
@@ -248,7 +250,8 @@ cases:
     realm: projects
 
   # -- coverage, 2026-09-24 (R-Q3): wa2-revision -------------------------------------
-  # The collection is one single-prompt session and an empty hub: it supports two cases, not three.
+  # The collection is one single-prompt session and an empty hub. More WRT 205 history sits in
+  # the claude-mem collections unit2, unit 3 and estac, outside this collection's label.
   # Prompt 1: revise wa2 to the filled-out reverse skeleton outline, add quotations, keep my writing style.
   - id: wa2-reverse-outline
     query: revising my second writing assignment from the reverse outline while keeping my voice
@@ -258,6 +261,15 @@ cases:
   # Working directory: .../spring2026/school/wrt205/wa2 revision.
   - id: wa2-course
     query: which class was the WA2 essay revision for
+    expect: ["session-e23aa6b4-1248-4fb9-a77b-4fe865ecc280"]
+    collection: wa2-revision
+    realm: projects
+  # Added 2026-09-27. Header: "1 prompt, 1 shell command, 0 files touched"; the one command
+  # listed the folder. Two earlier drafts missed and were not kept: "did I want Claude to cut
+  # much of my original draft" (prompt's "removing only what is necessary"; not in the top 10)
+  # and "what day did I do the WRT 205 essay revision" (rank 10).
+  - id: wa2-no-files-changed
+    query: did claude actually change any files when I asked it to revise wa2
     expect: ["session-e23aa6b4-1248-4fb9-a77b-4fe865ecc280"]
     collection: wa2-revision
     realm: projects
