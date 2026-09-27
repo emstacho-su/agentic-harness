@@ -19,24 +19,35 @@ import { isSafeFilenameSegment, yamlStr } from './text.mjs';
 /** A resume chain longer than this is a bug, not a work pattern. */
 export const MAX_RESUME_INDEX = 50;
 
+/** A hub's name before SC-3; see the transitional branch in `ensureIndex`. */
+const LEGACY_HUB_FILENAME = 'index.md';
+
 /**
  * Read a note.
  *
- * @returns {{fields: object|null, body: string, error: string}} — `fields: null`
- *          with an empty `error` means the note is simply not there, which is
- *          the ordinary case for a first capture.
+ * A stub reads as absent, with `stub: true`: a file that is empty, holds only
+ * whitespace, has no frontmatter block at all, or has an empty one. Obsidian
+ * makes exactly that when a link to a note that does not exist yet is
+ * followed — a worker's `up` link, clicked while the parent session is still
+ * running — and it lands where the capture will write. Refusing to write over
+ * it would lose the session's note to a click. A block that is there but
+ * malformed is different: somebody typed it, so it is still an `error`.
+ *
+ * @returns {{fields: object|null, body: string, error: string, stub: boolean}}
+ *          `fields: null` with an empty `error` means there is no note to
+ *          merge into, which is the ordinary case for a first capture.
  */
 export function readNote(notePath) {
   let raw;
   try {
     raw = fs.readFileSync(notePath, 'utf8');
   } catch {
-    return { fields: null, body: '', error: '' }; // absent is not an error
+    return { fields: null, body: '', error: '', stub: false }; // absent is not an error
   }
   const parsed = parseFrontmatter(raw);
-  if (!parsed.ok) return { fields: null, body: '', error: parsed.error };
-  if (Object.keys(parsed.fields).length === 0) return { fields: null, body: '', error: 'no frontmatter' };
-  return { fields: parsed.fields, body: parsed.body.replace(/^\n+/, ''), error: '' };
+  if (!parsed.ok) return { fields: null, body: '', error: parsed.error, stub: false };
+  if (Object.keys(parsed.fields).length === 0) return { fields: null, body: '', error: '', stub: true };
+  return { fields: parsed.fields, body: parsed.body.replace(/^\n+/, ''), error: '', stub: false };
 }
 
 /**
@@ -166,6 +177,12 @@ export function ensureIndex(vaultRoot, area, collection) {
   const hubPath = path.join(vaultRoot, area, collection, hubFilename(collection));
   // The ordinary case, answered with one stat. `wx` below is for the race.
   if (fs.existsSync(hubPath)) return { ok: true, created: false, path: hubPath, error: '' };
+  // Transitional, and retires once `rename-hubs.mjs --apply` has run on the
+  // live vault: until then a collection's hub is still `index.md`, and writing
+  // `<collection>.md` beside it would make two `type: index` notes. The new
+  // notes' `up` links already name `<collection>`, and resolve after the rename.
+  const legacyPath = path.join(vaultRoot, area, collection, LEGACY_HUB_FILENAME);
+  if (fs.existsSync(legacyPath)) return { ok: true, created: false, path: legacyPath, error: '' };
   const text = [
     '---',
     `id: ${yamlStr(randomUUID())}`,

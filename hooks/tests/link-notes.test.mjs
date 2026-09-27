@@ -61,9 +61,10 @@ test('a session gains its links and nothing else changes', () => {
   assert.ok(result.text.endsWith(BODY), 'the body, handwritten tail and trailing whitespace included, is byte-identical');
 });
 
-test('a worker links up to its parent session', () => {
+test('a worker links up to its parent session, by the path of the folder it is in', () => {
+  // The backfill knows no parent title, so the link carries no alias.
   const result = relink(note({ parent: UUID }));
-  assert.ok(result.added.includes(`up: '[[${UUID}]]'`));
+  assert.ok(result.added.includes(`up: '[[projects/agentic-harness/sessions/${UUID}]]'`));
 });
 
 test('the hub linked is the folder the note is in, whatever its collection field says', () => {

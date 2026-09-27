@@ -226,7 +226,8 @@ function writeNote({ context, sessionsDir, area, collection, vaultRoot }) {
     detail:
       `${area}/${collection}/${SESSIONS_DIR}/${path.basename(targetPath)}` +
       (result.changed ? '' : ' (identical on disk)') +
-      (index.ok ? '' : ` (index not written: ${index.error})`),
+      (index.ok ? '' : ` (index not written: ${index.error})`) +
+      (current.stub ? ' (replaced stub)' : ''),
   };
 }
 

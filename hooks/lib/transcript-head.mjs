@@ -14,20 +14,23 @@ import path from 'node:path';
 import { SUBAGENTS_DIR } from './constants.mjs';
 import { toPosix } from './text.mjs';
 
-/** How much of a transcript is read to learn its `cwd` and `entrypoint`. */
+/** How much of a transcript is read to learn its `cwd`, `entrypoint` and start. */
 export const TRANSCRIPT_HEAD_BYTES = 64 * 1024;
 
 const TRANSCRIPT_SUFFIX = '.jsonl';
 
 /**
- * The `cwd` and `entrypoint` a transcript declares, from its first records.
+ * The `cwd` and `entrypoint` a transcript declares, from its first records,
+ * and the `timestamp` of the first record that carries one: when the session
+ * started, which is what dates a worker's parent before the parent has a note.
  *
- * A transcript whose head holds neither yields empty strings, and so does one
- * that cannot be read: the caller decides what to fall back to.
+ * A transcript whose head holds none of them yields empty strings, and so does
+ * one that cannot be read: the caller decides what to fall back to.
  */
 export function readTranscriptHead(transcriptPath) {
   let cwd = '';
   let entrypoint = '';
+  let timestamp = '';
   for (const line of readHeadLines(transcriptPath)) {
     let entry;
     try {
@@ -37,9 +40,10 @@ export function readTranscriptHead(transcriptPath) {
     }
     if (!cwd && typeof entry?.cwd === 'string') cwd = toPosix(entry.cwd);
     if (!entrypoint && typeof entry?.entrypoint === 'string') entrypoint = entry.entrypoint;
-    if (cwd && entrypoint) break;
+    if (!timestamp && typeof entry?.timestamp === 'string') timestamp = entry.timestamp;
+    if (cwd && entrypoint && timestamp) break;
   }
-  return { cwd, entrypoint };
+  return { cwd, entrypoint, timestamp };
 }
 
 /**

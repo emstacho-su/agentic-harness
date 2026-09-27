@@ -47,7 +47,7 @@ generator: 'session-capture.mjs 2.2.0'
 tools_used:
   Bash: 1
   Write: 1
-up: '[[a1b2c3d4-0000-4000-8000-000000000001]]'
+up: '[[projects/agentic-harness/sessions/a1b2c3d4-0000-4000-8000-000000000001]]'
 related: []
 machine: ''
 ---

@@ -47,7 +47,7 @@ generator: 'session-capture.mjs 2.2.0'
 tools_used:
   Edit: 1
   Read: 1
-up: '[[88888888-8888-4888-8888-888888888888]]'
+up: '[[projects/bb2dash/sessions/88888888-8888-4888-8888-888888888888|2026-09-16 · bb2dash]]'
 related: []
 machine: ''
 ---

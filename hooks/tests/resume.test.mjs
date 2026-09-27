@@ -228,3 +228,63 @@ test('a note whose frontmatter cannot be parsed is never overwritten', () => {
     sandbox.cleanup();
   }
 });
+
+test('a frontmatter block with no closing --- is still unreadable, and still refused', () => {
+  const sandbox = createSandbox();
+  try {
+    const notePath = path.join(sandbox.vaultRoot, FIRST_NOTE);
+    fs.mkdirSync(path.dirname(notePath), { recursive: true });
+    const open = '---\ntitle: "half a note"\n\n# typed by hand\n';
+    fs.writeFileSync(notePath, open, 'utf8');
+
+    const outcome = runScenario(sandbox, scenario('resume-first', 'clear'));
+    assert.equal(outcome.written, false);
+    assert.match(outcome.skip, /unreadable/);
+    assert.equal(fs.readFileSync(notePath, 'utf8'), open);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+// A worker's `up` link followed before its parent is captured makes Obsidian
+// create the parent's file where the hook will write it: empty, or holding a
+// line typed into it. That stub is not a note, and must not block the note.
+const STUBS = [
+  ['a 0-byte file', ''],
+  ['a whitespace-only file', '  \n\n\t\n'],
+  ['one line of text with no frontmatter', 'thoughts before the session ended\n'],
+  ['an empty frontmatter block', '---\n---\n'],
+];
+
+for (const [label, stub] of STUBS) {
+  test(`capture over ${label} at the target path writes a full note`, () => {
+    const sandbox = createSandbox();
+    try {
+      const notePath = path.join(sandbox.vaultRoot, FIRST_NOTE);
+      fs.mkdirSync(path.dirname(notePath), { recursive: true });
+      fs.writeFileSync(notePath, stub, 'utf8');
+
+      const outcome = runScenario(sandbox, scenario('resume-first', 'clear'));
+      assert.equal(outcome.written, true, `${outcome.action}: ${outcome.skip}`);
+      assert.equal(outcome.action, 'create');
+      assert.match(outcome.detail, /\(replaced stub\)$/);
+      assert.deepEqual(outcome.touchedPaths, [notePath]);
+
+      const fields = readFields(sandbox, FIRST_NOTE);
+      assert.equal(fields.session_id, SESSION_ID);
+      assert.equal(fields.status, 'concluded');
+    } finally {
+      sandbox.cleanup();
+    }
+  });
+}
+
+test('a capture over a real note never says it replaced a stub', () => {
+  const sandbox = createSandbox();
+  try {
+    assert.doesNotMatch(runScenario(sandbox, scenario('resume-first', 'clear')).detail, /stub/);
+    assert.doesNotMatch(runScenario(sandbox, scenario('resume-first', 'clear')).detail, /stub/);
+  } finally {
+    sandbox.cleanup();
+  }
+});

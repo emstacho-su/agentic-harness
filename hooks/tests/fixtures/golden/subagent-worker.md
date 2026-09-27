@@ -51,7 +51,7 @@ tools_used:
   Bash: 1
   Edit: 1
   Write: 1
-up: '[[88888888-8888-4888-8888-888888888888]]'
+up: '[[projects/bb2dash/sessions/88888888-8888-4888-8888-888888888888|2026-09-16 · bb2dash]]'
 related: []
 machine: ''
 ---

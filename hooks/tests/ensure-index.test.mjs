@@ -49,6 +49,32 @@ test('an existing index is left byte for byte alone', (t) => {
   assert.equal(fs.readFileSync(indexPath, 'utf8'), 'handwritten\n');
 });
 
+test('a legacy index.md is the hub until rename-hubs has run: no second hub is written', (t) => {
+  const vault = scratchVault(t);
+  const legacy = path.join(vault, 'projects', 'bb2dash', 'index.md');
+  fs.mkdirSync(path.dirname(legacy), { recursive: true });
+  fs.writeFileSync(legacy, '---\nid: "x"\ntype: index\n---\n', 'utf8');
+
+  const result = ensureIndex(vault, 'projects', 'bb2dash');
+
+  assert.deepEqual(result, { ok: true, created: false, path: legacy, error: '' });
+  assert.ok(!fs.existsSync(path.join(vault, 'projects', 'bb2dash', 'bb2dash.md')));
+  assert.equal(fs.readFileSync(legacy, 'utf8'), '---\nid: "x"\ntype: index\n---\n');
+});
+
+test('once the hub is renamed, a leftover index.md beside it changes nothing', (t) => {
+  const vault = scratchVault(t);
+  const dir = path.join(vault, 'classes', 'ist323');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'ist323.md'), 'hub\n', 'utf8');
+  fs.writeFileSync(path.join(dir, 'index.md'), 'legacy\n', 'utf8');
+
+  const result = ensureIndex(vault, 'classes', 'ist323');
+
+  assert.equal(result.path, path.join(dir, 'ist323.md'));
+  assert.equal(result.created, false);
+});
+
 test('an unknown area or an unsafe collection writes nothing', (t) => {
   const vault = scratchVault(t);
   for (const [area, collection] of [['elsewhere', 'x'], ['projects', '../x'], ['projects', ''], ['projects', 'a|b']]) {

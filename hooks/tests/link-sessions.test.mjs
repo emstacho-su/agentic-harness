@@ -64,7 +64,7 @@ test('a real run links, backs up the originals, and leaves the broken note alone
 
   assert.equal(report.linked.length, 2);
   assert.match(fs.readFileSync(path.join(sessions, `${PARENT}.md`), 'utf8'), /^up: '\[\[projects\/bb2dash\/bb2dash\|bb2dash\]\]'$/m);
-  assert.ok(fs.readFileSync(path.join(sessions, `${WORKER}.md`), 'utf8').includes(`\nup: '[[${PARENT}]]'\n`));
+  assert.ok(fs.readFileSync(path.join(sessions, `${WORKER}.md`), 'utf8').includes(`\nup: '[[projects/bb2dash/sessions/${PARENT}]]'\n`));
   assert.equal(fs.readFileSync(path.join(backup, 'projects', 'bb2dash', 'sessions', `${WORKER}.md`), 'utf8'), original);
   assert.equal(fs.readFileSync(path.join(sessions, 'broken.md'), 'utf8'), broken);
   assert.ok(fs.existsSync(path.join(vault, 'projects', 'bb2dash', 'bb2dash.md')));

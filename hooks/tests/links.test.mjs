@@ -74,9 +74,42 @@ test('withLinks: a top-level session links up to its collection hub', () => {
   assert.deepEqual(linked.related, []);
 });
 
-test('withLinks: a worker links up to its parent session, not the hub', () => {
+test('withLinks: a worker links up to its parent session by full path, not the hub', () => {
+  // A bare `[[<uuid>]]` followed before the parent note exists makes Obsidian
+  // create the note at the vault root (2026-09-24). The full path creates it
+  // where the hook will write it.
   const linked = withLinks({ ...BASE, parent_session: UUID }, 'projects');
-  assert.equal(linked.up, `[[${UUID}]]`);
+  assert.equal(linked.up, `[[projects/agentic-harness/sessions/${UUID}]]`);
+});
+
+test("withLinks: the parent's own folder and title, when the caller knows them", () => {
+  const parent = { area: 'classes', collection: 'ist323', title: '2026-09-24 · ist323' };
+  const linked = withLinks({ ...BASE, parent_session: UUID }, 'projects', 'agentic-harness', parent);
+  assert.equal(linked.up, `[[classes/ist323/sessions/${UUID}|2026-09-24 · ist323]]`);
+});
+
+test("withLinks: the parent folder defaults to the note's own placement, collection override included", () => {
+  const linked = withLinks({ ...BASE, collection: 'misc', parent_session: UUID }, 'projects', 'bb2dash', { title: 'Parent' });
+  assert.equal(linked.up, `[[projects/bb2dash/sessions/${UUID}|Parent]]`);
+});
+
+test('withLinks: a parent title cannot break out of the link, and is capped', () => {
+  const link = (title) => withLinks({ ...BASE, parent_session: UUID }, 'projects', undefined, { title }).up;
+  const stem = `projects/agentic-harness/sessions/${UUID}`;
+  assert.equal(link('a [[b]] | c\n\td\u0000'), `[[${stem}|a b c d]]`);
+  assert.equal(link('   '), `[[${stem}]]`, 'an empty alias is no alias');
+  assert.equal(link('[]|'), `[[${stem}]]`);
+  assert.equal(link(undefined), `[[${stem}]]`);
+  // 80 code points, not 80 UTF-16 units: an emoji is never cut in half.
+  assert.equal(link('\u{1F600}'.repeat(100)), `[[${stem}|${'\u{1F600}'.repeat(80)}]]`);
+  assert.equal(link(`${'x'.repeat(79)} tail`), `[[${stem}|${'x'.repeat(79)}]]`, 'no trailing space after the cut');
+});
+
+test('withLinks: a parent folder that is not a collection falls back to the hub', () => {
+  for (const parent of [{ area: 'elsewhere' }, { collection: 'a|b' }, { collection: '../x' }]) {
+    const linked = withLinks({ ...BASE, parent_session: UUID }, 'projects', undefined, parent);
+    assert.equal(linked.up, '[[projects/agentic-harness/agentic-harness|agentic-harness]]', JSON.stringify(parent));
+  }
 });
 
 test('withLinks: a hostile parent id falls back to the hub', () => {
