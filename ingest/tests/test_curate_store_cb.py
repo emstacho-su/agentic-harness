@@ -419,6 +419,40 @@ def test_a_dry_run_over_an_empty_base_writes_nothing_to_it() -> None:
     assert base.decisions("projects") == () and base.proposals("projects") == ()
 
 
+class CountingStore(InMemoryCurateStore):
+    """Counts the base reads a dry run's score and proposal writes make."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.score_reads: list[tuple[str, str]] = []
+        self.proposal_reads: list[str] = []
+
+    def note_scores(self, collection, run_day):
+        self.score_reads.append((collection, str(run_day)))
+        return super().note_scores(collection, run_day)
+
+    def proposals(self, realm_folder):
+        self.proposal_reads.append(realm_folder)
+        return super().proposals(realm_folder)
+
+
+def test_dry_run_score_and_proposal_writes_read_the_base_once_per_key() -> None:
+    base = CountingStore(clock=clock)
+    base.put_note_score(score("s1"))
+    base.put_proposal(proposal("s1"))
+    overlay = DryRunStore(base)
+
+    results = [overlay.put_note_score(score(f"s{n}")) for n in range(1, 6)]
+    assert results == [False, True, True, True, True]
+    assert overlay.put_note_score(score("s1", run_day="2026-09-28")) is True
+    assert base.score_reads == [("agentic-harness", "2026-09-27"), ("agentic-harness", "2026-09-28")]
+
+    results = [overlay.put_proposal(proposal(f"s{n}")) for n in range(1, 6)]
+    assert results == [False, True, True, True, True]
+    assert overlay.put_proposal(proposal("s1", realm_folder="classes")) is True
+    assert base.proposal_reads == ["projects", "classes"]
+
+
 # -- Postgres, against a fake connection ------------------------------------------
 
 WEEK_ROW = ("agentic-harness", date(2026, 9, 21), "ih1", "hv1",

@@ -59,6 +59,8 @@ class DryRunStore:
         self._owner: dict[str, str] = {}  # issue id -> collection, learned from list_issues
         self._weeks: dict[HistoryWeekKey, HistoryWeek] = {}
         self._scores: dict[NoteScoreKey, NoteScore] = {}
+        self._base_score_keys: dict[tuple[str, str], set[NoteScoreKey]] = {}  # (collection, day) -> keys
+        self._base_proposal_keys: dict[str, set[ProposalKey]] = {}  # realm folder -> keys
         self._importance: dict[ImportanceKey, ImportanceJudgement] = {}
         self._proposals: dict[ProposalKey, Proposal] = {}
         self._decisions: list[Decision] = []
@@ -133,8 +135,11 @@ class DryRunStore:
     def put_note_score(self, score: NoteScore) -> bool:
         # The base has no lookup by key; its scores of that collection and day stand in,
         # which is exact while a note belongs to one collection on a given run day.
-        stored = {s.key for s in self._base.note_scores(score.collection, score.run_day)}
-        if score.key in self._scores or score.key in stored:
+        # Read once per (collection, day): the base never changes under a dry run.
+        where = (score.collection, to_iso_day(score.run_day))
+        if where not in self._base_score_keys:
+            self._base_score_keys[where] = {s.key for s in self._base.note_scores(*where)}
+        if score.key in self._scores or score.key in self._base_score_keys[where]:
             return False
         self._scores[score.key] = score
         return True
@@ -153,8 +158,10 @@ class DryRunStore:
             self._importance[judgement.key] = judgement
 
     def put_proposal(self, proposal: Proposal) -> bool:
-        if proposal.key in self._proposals or \
-                any(p.key == proposal.key for p in self._base.proposals(proposal.realm_folder)):
+        realm = proposal.realm_folder
+        if realm not in self._base_proposal_keys:
+            self._base_proposal_keys[realm] = {p.key for p in self._base.proposals(realm)}
+        if proposal.key in self._proposals or proposal.key in self._base_proposal_keys[realm]:
             return False
         self._proposals[proposal.key] = proposal
         return True
