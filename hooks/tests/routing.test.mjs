@@ -87,6 +87,7 @@ test('R-H2: every cwd the spec lists lands where the table says', () => {
       ['the harness repo', `${home}/agentic-harness`, 'harness/agentic-harness'],
       ['a subfolder of it', `${home}/agentic-harness/ingest`, 'harness/agentic-harness'],
       ['a -wt- worktree of it', `${home}/agentic-harness-wt-ha`, 'harness/agentic-harness'],
+      ['a deleted -wt- worktree of it (no .git left)', `${home}/agentic-harness-wt-h1`, 'harness/agentic-harness'],
       ['~/.claude', `${home}/.claude`, 'harness/agentic-harness'],
       ['~/.claude/hooks', `${home}/.claude/hooks`, 'harness/agentic-harness'],
       ['~/.harness', `${home}/.harness`, 'harness/agentic-harness'],

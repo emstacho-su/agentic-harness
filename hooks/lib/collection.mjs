@@ -13,10 +13,10 @@
  * (claude-paths.mjs). Then the first rule of ROUTING_RULES that places it wins:
  *   1. class-folder — cwd passes through a directory that exists under
  *      `vault/classes/`, so `…/.fall2026/ist352` is `classes/ist352`;
- *   2. harness — the harness repo (worktrees included), `~/.claude` or
- *      `~/.harness` go to `harness/agentic-harness`, when this vault holds the
- *      `harness` realm; without it they fall through to the rules below, as
- *      before the realm existed;
+ *   2. harness — the harness repo (worktrees included, deleted ones by their
+ *      folder name), `~/.claude` or `~/.harness` go to `harness/agentic-harness`,
+ *      when this vault holds the `harness` realm; without it they fall through
+ *      to the rules below, as before the realm existed;
  *   3. container — `~/projects` itself, the folder of projects, is `misc`;
  *   4. git — `https://github.com/emstacho-su/bb2dash.git` is
  *      `projects/bb2dash`, flagged `collection_source: git`;
@@ -60,7 +60,7 @@ const isUnder = (cwd, dir) => {
 const homeDir = (home, name) => `${toPosix(home).replace(/\/+$/, '')}/${name}`;
 
 /**
- * The rules, in order. Each takes `{cwd, repo, vaultRoot, home}` and returns
+ * The rules, in order. Each takes `{cwd, repo, vaultRoot, home, holdsHarness}` and returns
  * `{area, collection, collectionSource}` or null to pass.
  */
 export const ROUTING_RULES = Object.freeze([
@@ -73,13 +73,16 @@ export const ROUTING_RULES = Object.freeze([
   }),
   Object.freeze({
     name: 'harness',
-    place: ({ cwd, repo, vaultRoot, home }) => {
-      if (!holdsHarnessRealm(vaultRoot)) return null;
+    place: ({ cwd, repo, vaultRoot, home, holdsHarness }) => {
+      if (!holdsHarness) return null;
       if (repo?.repoFullName?.toLowerCase() === HARNESS_REPO_FULL_NAME) {
         return { area: AREA_HARNESS, collection: HARNESS_COLLECTION, collectionSource: COLLECTION_FROM_GIT };
       }
+      // A worktree deleted before its session was captured has no .git to read;
+      // the folder walk-up still names the harness (`agentic-harness-wt-h1`).
       const inHarnessHome = HARNESS_HOME_DIRS.some((name) => isUnder(cwd, homeDir(home, name)));
-      return inHarnessHome ? { area: AREA_HARNESS, collection: HARNESS_COLLECTION, collectionSource: COLLECTION_FROM_FOLDER } : null;
+      const namesHarness = inHarnessHome || fromFolder(cwd, vaultRoot).collection === HARNESS_COLLECTION;
+      return namesHarness ? { area: AREA_HARNESS, collection: HARNESS_COLLECTION, collectionSource: COLLECTION_FROM_FOLDER } : null;
     },
   }),
   Object.freeze({
@@ -113,13 +116,25 @@ export const ROUTING_RULES = Object.freeze([
  * @param {string} [args.home]     home directory (tests pass a scratch one)
  * @param {string} [args.tmp]      temp directory, parent of Claude Code's scratchpads
  * @param {function} [args.resolveRepoFor]  cwd -> repo, for a decoded cwd
+ * @param {boolean} [args.holdsHarness]  whether the harness rule applies; by
+ *   default, whether `vaultRoot` holds `harness/.realm`. move-to-realm's
+ *   `--plan-only` passes true to preview the move before the realm exists.
  * @returns {{area: string, collection: string, collectionSource: string, rule: string, routedCwd: string}}
  */
-export function routeSession({ cwd, vaultRoot, repo, home = os.homedir(), tmp = os.tmpdir(), resolveRepoFor = resolveRepo }) {
+export function routeSession({
+  cwd,
+  vaultRoot,
+  repo,
+  home = os.homedir(),
+  tmp = os.tmpdir(),
+  resolveRepoFor = resolveRepo,
+  holdsHarness = holdsHarnessRealm(vaultRoot),
+}) {
   const decoded = decodeClaudeStateCwd(cwd, { home, tmp });
+  const shared = { vaultRoot, home, holdsHarness };
   const context = decoded
-    ? { cwd: decoded, repo: resolveRepoFor(decoded), vaultRoot, home }
-    : { cwd: toPosix(cwd), repo, vaultRoot, home };
+    ? { ...shared, cwd: decoded, repo: resolveRepoFor(decoded) }
+    : { ...shared, cwd: toPosix(cwd), repo };
   for (const rule of ROUTING_RULES) {
     const placed = rule.place(context);
     if (placed) return { ...placed, rule: rule.name, routedCwd: context.cwd };
