@@ -286,6 +286,12 @@ UUID `id` stay, so ingest sees a metadata update. A second run changes nothing.
 link whose parent session is not captured yet is only reported as pending,
 because that is the ordinary state of a worker note.
 
+Without `--vault` the vault is `HARNESS_VAULT`, from the shell or from
+`~/.harness/machine.env`, and every run prints the one it used on its first
+line: the old OneDrive folder still exists and holds no hubs, so a run against
+it would look exactly like a clean one. Ran live on home-pc 2026-09-27:
+19 moves, 348 rewrites, `--check` 0 broken.
+
 ## Tests
 
 `npm test` runs the suite with no dependencies and no network:

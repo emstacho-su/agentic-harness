@@ -4,6 +4,9 @@
  *
  *   node hooks/rename-hubs.mjs (--dry-run | --apply | --check) [--vault <dir>]
  *
+ * Without `--vault` the vault is HARNESS_VAULT, from the shell or from
+ * `~/.harness/machine.env`, the same one the hook writes to.
+ *
  * `--dry-run` prints every move and `up:` rewrite it would make and writes
  * nothing. `--apply` makes them: `git mv` in a realm that is a git work tree,
  * a plain rename elsewhere, then a one-line textual edit per linking note (see
@@ -28,6 +31,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { DEFAULT_VAULT_SEGMENTS, VAULT_ENV_VAR } from './lib/constants.mjs';
+import { loadMachineEnv } from './lib/machine-env.mjs';
 import { checkUpLinks, renameHubs } from './lib/rename-hubs.mjs';
 
 const USAGE = 'usage: node hooks/rename-hubs.mjs (--dry-run | --apply | --check) [--vault <dir>]';
@@ -42,9 +46,20 @@ const PENDING_PARENTS_SHOWN = 10;
 
 class UsageError extends Error {}
 
+/**
+ * The vault when no `--vault` is given: HARNESS_VAULT from the shell, else
+ * from `~/.harness/machine.env`, as the hook finds it. The OneDrive default is
+ * last; on a migrated machine it still exists and holds no hubs, so a run
+ * against it reports a clean nothing.
+ */
+function defaultVault() {
+  const env = loadMachineEnv(process.env, os.homedir(), (problem) => console.error(`rename-hubs: ${problem}`));
+  return env[VAULT_ENV_VAR] || path.join(os.homedir(), ...DEFAULT_VAULT_SEGMENTS);
+}
+
 function parseArgs(argv) {
   const modes = [];
-  let vault = process.env[VAULT_ENV_VAR] || path.join(os.homedir(), ...DEFAULT_VAULT_SEGMENTS);
+  let vault = '';
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (MODES.has(arg)) modes.push(MODES.get(arg));
@@ -55,7 +70,7 @@ function parseArgs(argv) {
     } else throw new UsageError(`unknown argument: ${arg}`);
   }
   if (modes.length !== 1) throw new UsageError('exactly one of --dry-run, --apply, --check is required');
-  return { mode: modes[0], vault };
+  return { mode: modes[0], vault: vault || defaultVault() };
 }
 
 function printProblems(label, problems) {
@@ -95,6 +110,8 @@ function main() {
     return 1;
   }
   if (!fs.existsSync(args.vault)) throw new Error(`vault not found: ${args.vault}`);
+  // Printed first: a run against the wrong vault looks exactly like a clean one.
+  console.log(`vault: ${args.vault}`);
   return args.mode === 'check' ? runCheck(args.vault) : runRename(args.vault, args.mode === 'apply');
 }
 

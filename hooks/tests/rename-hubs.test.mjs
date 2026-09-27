@@ -372,3 +372,18 @@ test('a realm that is simply absent is not an error', (t) => {
   fs.rmSync(path.join(vault, 'classes'), { recursive: true, force: true });
   assert.ok(!renameHubs({ vault, apply: false }).unreadable.some((entry) => entry.path === 'classes'));
 });
+
+test('cli: with no --vault and no HARNESS_VAULT, the vault comes from machine.env and is printed', (t) => {
+  const { vault } = scratchVault(t);
+  const machineEnv = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'machine-env-')), 'machine.env');
+  t.after(() => fs.rmSync(path.dirname(machineEnv), { recursive: true, force: true }));
+  fs.writeFileSync(machineEnv, `HARNESS_VAULT=${vault.split(path.sep).join('/')}\n`, 'utf8');
+  const env = { ...process.env, HARNESS_MACHINE_ENV: machineEnv };
+  delete env.HARNESS_VAULT;
+
+  const result = spawnSync(process.execPath, [SCRIPT, '--dry-run'], { encoding: 'utf8', env });
+
+  assert.match(result.stdout, /^vault: .*$/m);
+  assert.equal(path.resolve(result.stdout.match(/^vault: (.*)$/m)[1]), path.resolve(vault));
+  assert.match(result.stdout, /^projects\/bb2dash\/index\.md -> projects\/bb2dash\/bb2dash\.md \(rename\)$/m);
+});
