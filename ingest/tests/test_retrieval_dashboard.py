@@ -242,6 +242,15 @@ def test_html_alone_keeps_the_text_report_on_stdout(tmp_path: Path, capsys):
     assert Page(html_path.read_text(encoding="utf-8")).stats["events"] == "15"
 
 
+def test_quiet_writes_the_files_and_prints_nothing(tmp_path: Path, capsys):
+    html_path = tmp_path / "dash.html"
+    json_path = tmp_path / "r.json"
+    assert run(["retrievals", "--quiet", "--html", str(html_path), "--json-out", str(json_path)]) == 0
+    assert capsys.readouterr().out == ""
+    assert Page(html_path.read_text(encoding="utf-8")).stats["events"] == "15"
+    assert json.loads(json_path.read_text(encoding="utf-8"))["totals"]["events"] == 15
+
+
 def test_a_rerun_replaces_the_file(tmp_path: Path, capsys):
     html_path = tmp_path / "dash.html"
     html_path.write_text("old", encoding="utf-8")

@@ -9,7 +9,8 @@ Read-only, in one read-only transaction. Sections: totals, most retrieved,
 never retrieved (whole store), empty-result queries, the similarity
 distribution, retrievals per collection, and cross-collection searches.
 ``--json-out`` and ``--html`` also write the JSON and the dashboard page
-(retrieval_dashboard.py) to files, each replaced whole or not at all.
+(retrieval_dashboard.py) to files, each replaced whole or not at all;
+``--quiet`` keeps stdout empty, so a scheduled job's log never carries a query.
 Stdout is written as UTF-8 on every platform.
 """
 
@@ -68,6 +69,8 @@ def build_report_parser() -> argparse.ArgumentParser:
     )
     retrievals.add_argument("--json-out", default=None, help="also write the JSON to this file")
     retrievals.add_argument("--html", default=None, help="also write the dashboard page to this file")
+    retrievals.add_argument("--quiet", action="store_true",
+                            help="print nothing on stdout (queries and titles stay out of a job log)")
     retrievals.add_argument("--env-file", default=None, help="explicit .env path")
     retrievals.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     return parser
@@ -119,6 +122,8 @@ def run_report(
             return EXIT_FAILED
         logging.getLogger(__name__).info("wrote %s", path)
 
+    if args.quiet:
+        return EXIT_OK
     _utf8_stdout()
     print(_as_json(report) if args.json else _as_text(report, args.limit))
     return EXIT_OK
