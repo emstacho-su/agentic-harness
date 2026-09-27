@@ -9,8 +9,8 @@
 # (0 by default). The fake git clone makes the target folder with a .git that
 # remembers its URL, which the fake `git -C <dir> remote get-url origin` prints
 # back. The fake uv exits FAKE_EXIT_EMBED on embed-check; the fake node prints
-# FAKE_DOCTOR_OUTPUT when it runs doctor.mjs. Nothing real runs: no clone, no
-# store, no ~/.claude.
+# FAKE_DOCTOR_OUTPUT when it runs doctor.mjs, and exits FAKE_EXIT_DOCTOR only
+# when it was given --strict. Nothing real runs: no clone, no store, no ~/.claude.
 #
 # The cases: the step list (and that bootstrap.ps1 holds the same one), step
 # order, --dry-run runs nothing, stop at the first failure with the step named,
@@ -74,6 +74,8 @@ echo "node [$(basename "$PWD")] $*" >> "$FAKE_CALLS"
 if [ "$1" = "hooks/doctor.mjs" ]; then
   echo "machine file  fake"
   [ -n "${FAKE_DOCTOR_OUTPUT:-}" ] && echo "$FAKE_DOCTOR_OUTPUT"
+  [ "${2:-}" = "--strict" ] || exit 0
+  exit "${FAKE_EXIT_DOCTOR:-0}"
 fi
 exit "${FAKE_EXIT_NODE:-0}"
 FAKE
@@ -112,7 +114,7 @@ run_bootstrap() {
   (
     unset HARNESS_MACHINE_ENV HARNESS_VAULT HARNESS_REALMS HARNESS_REALM_REMOTE_BASE HARNESS_REALM_REMOTE_WORK_VM \
       HARNESS_STORE_CONTAINER HARNESS_STORE_DB FAKE_EXIT_GIT FAKE_EXIT_UV FAKE_EXIT_EMBED FAKE_EXIT_NODE \
-      FAKE_EXIT_NPM FAKE_EXIT_DOCKER FAKE_DOCTOR_OUTPUT
+      FAKE_EXIT_NPM FAKE_EXIT_DOCKER FAKE_EXIT_DOCTOR FAKE_DOCTOR_OUTPUT
     export HOME="$FAKE_HOME" PATH="$FAKE_BIN:$PATH" FAKE_CALLS="$CALLS"
     while [ $# -gt 0 ] && [ "$1" != "--" ]; do export "${1?}"; shift; done
     [ "${1:-}" = "--" ] && shift
@@ -153,10 +155,6 @@ sh_list_is_expected() { [ "$(sh_steps)" = "$EXPECTED_STEPS" ]; }
 same_lists() { [ -n "$(sh_steps)" ] && [ "$(sh_steps)" = "$(ps_steps)" ]; }
 check "bootstrap.sh's step list is the runbook order" sh_list_is_expected
 check "bootstrap.sh and bootstrap.ps1 hold the same step list" same_lists
-sh_markers() { sed -n "s/^DOCTOR_PROBLEM_MARKERS=(\(.*\))[[:space:]]*$/\1/p" "$SCRIPT"; }
-ps_markers() { sed -n "s/^\$DoctorProblemMarkers = @(\(.*\))[[:space:]]*\r\{0,1\}$/\1/p" "$PS_SCRIPT" | sed "s/', '/' '/g"; }
-same_markers() { [ -n "$(sh_markers)" ] && [ "$(sh_markers)" = "$(ps_markers)" ]; }
-check "both scripts read doctor's report for the same problem markers" same_markers
 
 # (2) --dry-run on a fresh machine: every step and command printed, nothing run or made.
 new_home dry "HARNESS_REALMS=work-vm:push" "HARNESS_REALM_REMOTE_BASE=$REALM_BASE"
@@ -180,7 +178,7 @@ check "a dry run shows embed-check, then migrate --dry-run" in_order "$OUT_FILE"
 check "a dry run shows the real migrate after its dry run" plain_migrate_last
 check "a dry run shows the realm clone from the base remote" out_has "git clone -- $REALM_BASE/vault-work-vm.git"
 check "a dry run shows the config clone and install --config" in_order "$OUT_FILE" "git clone -- $CONFIG_URL" "node hooks/install.mjs --config --apply --config-repo"
-check "a dry run shows install --register-mcp, then doctor" in_order "$OUT_FILE" "node hooks/install.mjs --register-mcp" "node hooks/doctor.mjs"
+check "a dry run shows install --register-mcp, then doctor --strict" in_order "$OUT_FILE" "node hooks/install.mjs --register-mcp" "node hooks/doctor.mjs --strict"
 check "a dry run creates no repo, vault or config folder" [ ! -e "$FAKE_HOME/agentic-harness" ] && [ ! -e "$FAKE_HOME/vault" ] && [ ! -e "$FAKE_HOME/claude-config" ]
 check "a dry run says nothing was run" out_has "bootstrap: dry run, nothing was run"
 check "a dry run prints the MANUAL reminders" reminders_printed
@@ -195,7 +193,7 @@ check "the calls run in the runbook order" in_order "$CALLS" \
   "uv [ingest] run ingest embed-check" "uv [ingest] run ingest db migrate --dry-run" \
   "clone -- $REALM_BASE/vault-work-vm.git" "clone -- $CONFIG_URL" \
   "node [agentic-harness] hooks/install.mjs --config --apply --config-repo" \
-  "node [agentic-harness] hooks/install.mjs --register-mcp" "node [agentic-harness] hooks/doctor.mjs"
+  "node [agentic-harness] hooks/install.mjs --register-mcp" "node [agentic-harness] hooks/doctor.mjs --strict"
 real_migrate() { grep -qxF -- "uv [ingest] run ingest db migrate" "$CALLS"; }
 check "the migrate runs for real after its dry run" real_migrate
 check "the realm is cloned into the vault" [ -d "$FAKE_HOME/vault/work-vm/.git" ]
@@ -244,15 +242,18 @@ run_bootstrap store-fails FAKE_EXIT_DOCKER=1
 check "a store that never comes up names step 4 (exit $run_code)" out_has "bootstrap: step 4 store failed (exit 1)"
 check "embed-check never runs without a store" calls_lack "embed-check"
 
-# (9) doctor decides: a problem in its report fails step 9, a clean one passes.
+# (9) doctor decides, by its --strict exit code: 1 fails step 9, 0 passes whatever the report says.
 new_home doctor-problem "HARNESS_REALMS="
-run_bootstrap doctor-problem "FAKE_DOCTOR_OUTPUT=mcp-server build  /x/dist/index.js (not built: npm run build)"
-check "a doctor report with a problem fails step 9 (exit $run_code)" out_has "bootstrap: step 9 doctor failed (exit 1)"
-check "the problem row is named" out_has "doctor reports: mcp-server build"
-run_bootstrap doctor-exit FAKE_EXIT_NODE=0 "FAKE_DOCTOR_OUTPUT=realms missing  none"
-check "a clean doctor report with 'realms missing none' passes (exit $run_code)" exit_is 0
-run_bootstrap doctor-missing "FAKE_DOCTOR_OUTPUT=realms missing  work-vm"
-check "a doctor report with a missing realm fails step 9" out_has "bootstrap: step 9 doctor failed (exit 1)"
+run_bootstrap doctor-problem FAKE_EXIT_DOCTOR=1 "FAKE_DOCTOR_OUTPUT=  problem: mcp-server build"
+check "doctor --strict exiting 1 fails step 9 (exit $run_code)" out_has "bootstrap: step 9 doctor failed (exit 1)"
+check "the problem row doctor names is shown" out_has "problem: mcp-server build"
+check "doctor is run with --strict" calls_has "node [agentic-harness] hooks/doctor.mjs --strict"
+check "a failed doctor prints no \"all steps done\"" out_lacks "all steps done"
+run_bootstrap doctor-clean FAKE_EXIT_DOCTOR=0 "FAKE_DOCTOR_OUTPUT=mcp-server build  /x/dist/index.js (not built: npm run build)"
+check "doctor --strict exiting 0 passes, whatever its text says (exit $run_code)" exit_is 0
+check "the report is printed as doctor wrote it" out_has "(not built: npm run build)"
+run_bootstrap doctor-usage FAKE_EXIT_DOCTOR=2
+check "any other doctor exit fails step 9 with that code" out_has "bootstrap: step 9 doctor failed (exit 2)"
 
 # (10) preflight: no machine file stops everything before a single call.
 new_home no-machine-file

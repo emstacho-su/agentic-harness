@@ -16,7 +16,7 @@
 #   6 realms         clone each realm HARNESS_REALMS names into HARNESS_VAULT (skipped when there)
 #   7 config         clone claude-config to ~/claude-config, then install.mjs --config --apply
 #   8 install        node hooks/install.mjs --register-mcp
-#   9 doctor         node hooks/doctor.mjs; a problem in its report fails the run
+#   9 doctor         node hooks/doctor.mjs --strict; its exit 1 (a problem row) fails the run
 #
 # Reads ~/.harness/machine.env (or HARNESS_MACHINE_ENV) through lib/machine-env.sh,
 # the environment winning: HARNESS_VAULT (default ~/vault), HARNESS_REALMS
@@ -47,8 +47,6 @@ REALM_NAME_RE='^[a-z0-9][a-z0-9-]{0,31}$'
 REALM_POLICY_RE='^(push|local)$'
 # How long compose waits for the container's healthcheck (db/docker-compose.yml).
 STORE_WAIT_SECONDS=120
-# doctor.mjs exits 0 whatever it finds, so its rows are read for these. The tests compare this line with bootstrap.ps1's.
-DOCTOR_PROBLEM_MARKERS=('(MISSING' 'ABSENT' '(absent' '(not built' '(not found' 'ingest will refuse')
 
 usage() { echo "usage: bootstrap.sh [--dry-run]" >&2; }
 
@@ -222,25 +220,8 @@ step_config() {
 
 step_install() { run_cmd "$REPO_DIR" node hooks/install.mjs --register-mcp; }
 
-doctor_problems() {
-  # doctor_problems <report>: the rows that name a problem, one per line.
-  local marker
-  printf '%s\n' "$1" | grep -E '^realms missing[[:space:]]' | grep -vE '[[:space:]]none[[:space:]]*$'
-  for marker in "${DOCTOR_PROBLEM_MARKERS[@]}"; do printf '%s\n' "$1" | grep -F -- "$marker"; done
-}
-
-step_doctor() {
-  local report code problems
-  if [ "$DRY_RUN" -eq 1 ]; then run_cmd "$REPO_DIR" node hooks/doctor.mjs; return; fi
-  echo "  run: $(show_command "$REPO_DIR" node hooks/doctor.mjs)"
-  report="$(cd "$REPO_DIR" && node hooks/doctor.mjs)"; code=$?
-  printf '%s\n' "$report"
-  [ "$code" -eq 0 ] || return "$code"
-  problems="$(doctor_problems "$report" | sort -u)"
-  [ -z "$problems" ] && return 0
-  printf '%s\n' "$problems" | while IFS= read -r row; do echo "  doctor reports: $row"; done
-  return 1
-}
+# doctor --strict prints its report, names each problem row, and exits 1 if there is one.
+step_doctor() { run_cmd "$REPO_DIR" node hooks/doctor.mjs --strict; }
 
 print_reminders() {
   echo "MANUAL: the push credential (runbook step 8): a fine-grained PAT of the account that owns this machine's realm, stored once with git credential approve; the nightly sync never prompts."

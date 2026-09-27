@@ -10,7 +10,9 @@ the other way round.
 ```
 hooks/
 ├── session-capture.mjs     the SessionEnd hook: stdin in, one note out
+├── session-start.mjs       the SessionStart hook: a short brief in, before the first prompt
 ├── install.mjs             deploy to ~/.claude/hooks, verified by hash
+├── doctor.mjs              what this machine resolved to; --strict exits 1 on a problem
 ├── migrate-sessions.mjs    one-time: v1 notes -> schema v2, right collection
 ├── rename-hubs.mjs         one-time: name each hub note after its folder
 ├── move-to-realm.mjs       one-time: harness history into the harness realm
@@ -233,15 +235,23 @@ node install.mjs --dry-run    # what would change in ~/.claude/hooks
 node install.mjs              # copy, then verify every file by SHA-256
 ```
 
-The installer also registers the hook for `SessionEnd` and `SubagentStop` in
-`~/.claude/settings.json`. That file is the user's — permissions, model,
-plugins, other tools' hooks — so the write is a read-merge-write that touches
-only those two events, keeps an existing entry's own `timeout` and
-`statusMessage`, and changes nothing on a second run. It writes through a
-temporary file and renames, because a half-written `settings.json` is read by
-every session.
+What it deploys is not a hand-kept list: the installer starts from the two
+entry points, `session-capture.mjs` and `session-start.mjs`, and follows their
+relative imports, so a new `lib/` module a hook imports is deployed with it and
+a repo tool no hook imports is not. `tests/install.test.mjs` walks the same
+graph on its own and imports both installed entry points from a scratch folder.
 
-It registers `~/.claude/hooks/session-capture.mjs`, never a worktree path:
+The installer also registers the hooks in `~/.claude/settings.json`:
+`session-capture.mjs` for `SessionEnd` and `SubagentStop`, `session-start.mjs`
+for `SessionStart`. That file is the user's — permissions, model, plugins,
+other tools' hooks — so the write is a read-merge-write that touches only those
+three events, keeps an existing entry's own `timeout`, `statusMessage` and
+`matcher`, leaves another tool's entry for the same event alone, and changes
+nothing on a second run. An entry is ours when it runs the same two files,
+whatever the slashes or case. It writes through a temporary file and renames,
+because a half-written `settings.json` is read by every session.
+
+It registers `~/.claude/hooks/<script>`, never a worktree path:
 a worktree gets deleted, and a hook that goes with it takes every future
 session's note along. `--target` without a matching `--settings` is refused for
 the same reason; `--skip-settings` deploys the files alone.
@@ -260,6 +270,55 @@ parent's `session_id` and never fire `SessionEnd` of their own. A worker run as
 a separate `claude` process is the only kind that gets its own note, and this is
 how it says who spawned it. When the transcript itself lives under
 `<parent>/subagents/`, `parent_session` is derived from the path instead.
+
+## The SessionStart brief
+
+`session-start.mjs` (R-H4) runs when a session starts or resumes and hands
+Claude a short brief on where the project stands, before the first prompt. It
+places the session with capture's own rules, so the brief is about the same
+realm and collection the session's note will be filed under, and returns as
+`additionalContext`, at most ~1,500 tokens (`lib/start-brief.mjs`), the first
+of these that exists:
+
+1. the collection's `status.md`, the body below its frontmatter;
+2. the `## Outcome` sections of the five newest main sessions of that
+   collection (not workers, not superseded notes), newest first;
+3. nothing.
+
+It always ends with one line naming the filter to search with:
+`mcp__rag__search_context` with `collection: "<collection>"`.
+
+It is registered with matcher `startup|resume`, so `clear`, `compact` and
+`fork` get no brief, and a 5 s timeout, which is only Claude Code's backstop:
+the hook gives up at 2 s by itself. It fails open. Bad input, any error, and
+anything slower than 2 s all give an empty `additionalContext` and exit 0, with
+the reason in the log. A session never waits on it and never sees an error
+from it.
+
+What it injected is recorded for capture at
+`<HARNESS_STATE_DIR, default ~/.harness/state>/session-start/<session_id>.json`
+(SC-2). The capture hook turns that file into one `channel: session-start` entry
+in the note's `retrievals:` list, so a brief counts like a search the agent chose
+to run.
+
+The log is `~/.claude/hooks/session-start.log`. Every run writes a
+`debug input-keys:` line (the input's key names, sorted, never a value), then
+either `start <session> <realm>/<collection> source=… ids=… tokens=… ms=…` or
+`empty: <reason> ms=…`. The text of the brief never reaches the log, because it
+quotes vault notes. `node hooks/doctor.mjs` shows how long ago the last line was
+written, and whether `SessionStart` is registered for the installed script.
+
+The input field that says why the session started is spelled differently in
+different sources (`source`, `startup_reason`), so nothing reads it: the
+matcher does the filtering. Its real name is confirmed at L2 from the
+`debug input-keys:` line of the first live run.
+
+| Variable | Effect |
+| --- | --- |
+| `HARNESS_SESSION_START` | `0`/`off`/`false`/`no` disables the hook (it answers empty) |
+| `HARNESS_SESSION_START_LOG` | log destination, default `~/.claude/hooks/session-start.log` |
+| `HARNESS_STATE_DIR` | where the start record goes, default `~/.harness/state` |
+| `HARNESS_VAULT` | vault root the brief is read from, as for capture |
 
 ## The one-time migration
 
@@ -335,9 +394,9 @@ second run finds nothing to move. The runbook is in `docs/portable.md`.
 | `hook-process.test.mjs` | the real process: exit 0, a log line, a live enqueue, the W-H2 seam |
 | `spawn.test.mjs` | `git` and `gh` never resolve against a directory a repository controls |
 | `subagent.test.mjs` | a worker's note, and the parent link in both event orders |
-| `settings.test.mjs` | the settings merge keeps every key and hook it does not own |
+| `settings.test.mjs` | the settings merge keeps every key and hook it does not own; one script per event; the SessionStart status doctor reports |
 | `unc.test.mjs` | no path that resolves onto another host is ever touched |
-| `install.test.mjs` | the deploy payload is exactly the hook's transitive imports |
+| `install.test.mjs` | the deploy payload is exactly both entry points' transitive imports; SessionStart registered once, end to end in a scratch folder |
 | `enqueue-ingest.test.mjs` | the detached `ingest --only` start: argv array, several notes in one spawn, absolute `uv`, kill switch, never throws |
 
 The golden notes are approval tests. When one changes, read the diff: it is a

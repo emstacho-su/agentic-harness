@@ -17,7 +17,7 @@
       6. realms         clone each realm HARNESS_REALMS names into HARNESS_VAULT (skipped when there)
       7. config         clone claude-config to ~/claude-config, then install.mjs --config --apply
       8. install        node hooks/install.mjs --register-mcp
-      9. doctor         node hooks/doctor.mjs; a problem in its report fails the run
+      9. doctor         node hooks/doctor.mjs --strict; its exit 1 (a problem row) fails the run
 
     Reads ~/.harness/machine.env (or HARNESS_MACHINE_ENV) through
     lib/machine-env.ps1, the environment winning: HARNESS_VAULT (default
@@ -70,8 +70,6 @@ $RealmNamePattern = '\A[a-z0-9][a-z0-9-]{0,31}\z'
 $RealmPolicies = @('push', 'local')
 # How long compose waits for the container's healthcheck (db/docker-compose.yml).
 $StoreWaitSeconds = 120
-# doctor.mjs exits 0 whatever it finds, so its rows are read for these. The tests compare this line with bootstrap.sh's.
-$DoctorProblemMarkers = @('(MISSING', 'ABSENT', '(absent', '(not built', '(not found', 'ingest will refuse')
 
 foreach ($arg in $Rest) {
     if ($arg -ceq '--dry-run') { $DryRun = [switch] $true; continue }
@@ -308,32 +306,8 @@ function Invoke-Config {
 
 function Invoke-Install { return Invoke-Step $RepoDir 'node' @('hooks/install.mjs', '--register-mcp') }
 
-# The rows of doctor's report that name a problem.
-function Get-DoctorProblems {
-    param([string[]] $Report)
-    $rows = @($Report | Where-Object { $_ -match '^realms missing\s' -and $_ -notmatch '\snone\s*$' })
-    foreach ($marker in $DoctorProblemMarkers) { $rows += @($Report | Where-Object { $_.Contains($marker) }) }
-    return @($rows | Select-Object -Unique)
-}
-
-function Invoke-Doctor {
-    if ($DryRun) { return Invoke-Step $RepoDir 'node' @('hooks/doctor.mjs') }
-    Write-Host "  run: $(Format-Command $RepoDir 'node' @('hooks/doctor.mjs'))"
-    $ErrorActionPreference = 'Continue'
-    Push-Location -LiteralPath $RepoDir
-    try {
-        $report = @(& $script:ToolPaths['node'] 'hooks/doctor.mjs' | ForEach-Object { "$_" })
-        $code = [int] $LASTEXITCODE
-    } finally {
-        Pop-Location
-    }
-    $report | Out-Host
-    if ($code -ne 0) { return $code }
-    $problems = @(Get-DoctorProblems $report)
-    if ($problems.Count -eq 0) { return 0 }
-    foreach ($row in $problems) { Write-Host "  doctor reports: $row" }
-    return 1
-}
+# doctor --strict prints its report, names each problem row, and exits 1 if there is one.
+function Invoke-Doctor { return Invoke-Step $RepoDir 'node' @('hooks/doctor.mjs', '--strict') }
 
 function Write-Reminders {
     Write-Host 'MANUAL: the push credential (runbook step 8): a fine-grained PAT of the account that owns this machine''s realm, stored once with git credential approve; the nightly sync never prompts.'

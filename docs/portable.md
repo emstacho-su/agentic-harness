@@ -253,7 +253,7 @@ exists on no remote yet, the Obsidian plugin, the scheduled jobs and the push cr
    | 6 | realms | `git clone -- <remote> ~/vault/<realm>` for each realm `HARNESS_REALMS` names that is not on disk |
    | 7 | config | `git clone -- https://github.com/emstacho-su/claude-config.git ~/claude-config` (skipped when present), then `node hooks/install.mjs --config --apply --config-repo ~/claude-config` (R-H5) |
    | 8 | install | `node hooks/install.mjs --register-mcp` |
-   | 9 | doctor | `node hooks/doctor.mjs`; a row it marks `MISSING`, `ABSENT`, `not built`, `not found`, `ingest will refuse`, or a `realms missing` other than `none`, fails the run |
+   | 9 | doctor | `node hooks/doctor.mjs --strict`; exit 1 (any row doctor marks as a problem) fails the run |
 
    The clones in steps 6 and 7 run as you, so git may open its credential prompt; the account
    signed in must be able to read the realm's remote and the private `claude-config` repo.
