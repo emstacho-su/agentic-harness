@@ -52,6 +52,7 @@ import {
 import { ensureIndex, findNotesByName, persist, readNote, resolveChainHead, vaultAvailable } from './notes-io.mjs';
 import { redact } from './redact.mjs';
 import { resolveRepo } from './repo.mjs';
+import { extractRetrievals, retrievedLinks } from './retrievals.mjs';
 import { isoDate, toPosix, uniqueCapped } from './text.mjs';
 import { extractOrigin, extractOutcome, extractPrompts, extractTools, createAccumulator, knownSecrets, readEntries } from './transcript.mjs';
 import { parentTranscriptBeside, readTranscriptHead } from './transcript-head.mjs';
@@ -130,6 +131,9 @@ export function captureSubagent({
     return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
   }
 
+  const secrets = knownSecrets(prompts, accumulator);
+  const searches = extractRetrievals(entries, { secrets });
+
   const context = {
     sessionId: input.sessionId,
     noteId: childNoteId(input.sessionId, agentId),
@@ -172,7 +176,10 @@ export function captureSubagent({
     prompts,
     // A worker's transcript is all sidechain; its closing message is its report.
     outcome: extractOutcome(entries, { includeSidechain: true }),
-    knownSecrets: knownSecrets(prompts, accumulator),
+    knownSecrets: secrets,
+    // R-P1: the worker's own searches; the parent note records only its own.
+    retrievals: searches.records,
+    retrieved: retrievedLinks(searches.hits, { vaultRoot, deadlineAt: deadlineAt - RESERVE_MS }),
     commands: accumulator.commands,
     commandCount: accumulator.commandCount,
     agents: accumulator.agents,

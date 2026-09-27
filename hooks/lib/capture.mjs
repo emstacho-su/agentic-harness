@@ -39,6 +39,8 @@ import {
 } from './merge.mjs';
 import { buildFields, childNoteId, noteFilename, noteId, renderBody, renderNote } from './note.mjs';
 import { ensureIndex, persist, readNote, resolveChainHead, vaultAvailable } from './notes-io.mjs';
+import { extractRetrievals, retrievedLinks } from './retrievals.mjs';
+import { defaultStateDir, readSessionStartRecord } from './session-start.mjs';
 import { isoDate, uniqueCapped } from './text.mjs';
 import {
   extractOrigin,
@@ -72,6 +74,7 @@ export function capture({
   deadlineAt = startedAtMs + BUDGET_MS,
   runGit = runGitSync,
   capturedBy = CAPTURED_BY_HOOK,
+  stateDir = defaultStateDir(process.env),
 }) {
   const skip = (reason) => ({ written: false, action: 'skip', skip: reason, notePath: '', touchedPaths: [], vaultRoot, detail: '' });
 
@@ -115,6 +118,13 @@ export function capture({
   });
 
   const concluded = input.endReason !== RESUME_REASON;
+
+  // R-P1: this transcript's own searches (workers record theirs on their own
+  // notes) plus what the SessionStart brief injected, when it left a record.
+  const secrets = knownSecrets(prompts, accumulator);
+  const searches = extractRetrievals(entries, { secrets });
+  const brief = readSessionStartRecord({ sessionId: input.sessionId, stateDir });
+  const retrievals = brief.record ? [brief.record, ...searches.records] : searches.records;
 
   const context = {
     sessionId: input.sessionId,
@@ -160,7 +170,9 @@ export function capture({
     files: facts.paths.files,
     prompts,
     outcome: extractOutcome(entries),
-    knownSecrets: knownSecrets(prompts, accumulator),
+    knownSecrets: secrets,
+    retrievals,
+    retrieved: retrievedLinks(searches.hits, { vaultRoot, deadlineAt: deadlineAt - RESERVE_MS }),
     commands: accumulator.commands,
     commandCount: accumulator.commandCount,
     agents: accumulator.agents,
