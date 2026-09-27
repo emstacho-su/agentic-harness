@@ -249,9 +249,11 @@ def events_migration() -> str:
 
 
 def test_the_migration_sorts_after_every_search_migration():
-    versions = [m.version for m in discover(DEFAULT_MIGRATIONS_DIR)]
-    events_version = next(m.version for m in discover(DEFAULT_MIGRATIONS_DIR) if m.name == "rag_retrieval_events")
-    assert events_version == versions[-1]
+    migrations = discover(DEFAULT_MIGRATIONS_DIR)
+    search_versions = [m.version for m in migrations if "search" in m.name]
+    events_version = next(m.version for m in migrations if m.name == "rag_retrieval_events")
+    assert search_versions, "the rag.search migrations are what search_version is stamped from"
+    assert all(version < events_version for version in search_versions)
     assert events_version > "20260921223612"
 
 
