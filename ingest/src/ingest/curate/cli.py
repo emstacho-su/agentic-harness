@@ -7,6 +7,7 @@
     uv run ingest curate extract --path C:/Users/you/vault --all --max-calls 10
     uv run ingest curate ledger --path C:/Users/you/vault --collection agentic-harness --dry-run
     uv run ingest curate status --path C:/Users/you/vault --all  (R-C4; see status_cli.py)
+    uv run ingest curate history --path C:/Users/you/vault --collection agentic-harness --dry-run
 
 Stages: ``inventory`` (R-C1), read-only whatever the flags; ``--dry-run`` is
 accepted because the spec calls this stage's report a dry run. ``extract``
@@ -43,7 +44,7 @@ from typing import Any, Callable
 from ..config import load_db_settings
 from ..envfile import load_env_file
 from ..errors import ConfigError, IngestError
-from . import extract, extract_report, ledger, status_cli
+from . import extract, extract_report, history_cli, ledger, status_cli
 from .extract import Budget, extractor_version, plan_extraction, run_extraction
 from .inventory import GitCollector, Inventory, VaultInventory, build_inventory
 from .judge import Judge
@@ -81,6 +82,7 @@ def build_curate_parser() -> argparse.ArgumentParser:
     _extract_parser(stages)
     _ledger_parser(stages)
     status_cli.add_parser(stages)
+    history_cli.add_parser(stages)
     return parser
 
 
@@ -483,6 +485,7 @@ def _ledger_json(result: CollectionLedger, write: Any) -> dict[str, Any]:
 # Stage name -> handler(args, **dependencies).
 STAGES: dict[str, Callable[..., int]] = {"inventory": _run_inventory, "extract": _run_extract, "ledger": _run_ledger}
 STAGES["status"] = status_cli.run
+STAGES["history"] = history_cli.run
 
 
 # -- the text report ---------------------------------------------------------------------
