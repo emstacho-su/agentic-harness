@@ -13,6 +13,7 @@ hooks/
 ├── install.mjs             deploy to ~/.claude/hooks, verified by hash
 ├── migrate-sessions.mjs    one-time: v1 notes -> schema v2, right collection
 ├── rename-hubs.mjs         one-time: name each hub note after its folder
+├── move-to-realm.mjs       one-time: harness history into the harness realm
 ├── untagged-sessions.mjs   the weekly `unclassified` review list
 ├── lib/                    one concern per file, no dependencies
 └── tests/                  node --test, fixtures and golden notes
@@ -86,15 +87,24 @@ links the resume chain.
 
 ## Collection: the repository, not the folder
 
-`bb2dash-wt-sl` is a worktree, not a project. The collection is resolved in
-three steps:
+`bb2dash-wt-sl` is a worktree, not a project. The collection is resolved by a
+list of rules kept as data, `ROUTING_RULES` in `lib/collection.mjs`; the first
+that places the session wins:
 
-1. a path segment that names an existing folder under `vault/classes/` →
-   `classes/<course id>`, `collection_source: folder`;
-2. the git remote of `cwd`, resolved through a worktree to its main repository →
-   `projects/<repo slug>`, `collection_source: git`;
-3. the folder name, preferring an ancestor that already owns a vault folder →
-   `collection_source: folder`.
+0. a cwd inside one of Claude Code's own folders, `~/.claude/projects/<encoded>/`
+   or a scratchpad under `<tmp>/claude/<encoded>/`, is first decoded back to the
+   cwd it was made for (`lib/claude-paths.mjs`, guided by the directories on
+   disk), and the repository is resolved again from there;
+1. `class-folder`: a path segment that names an existing folder under
+   `vault/classes/` → `classes/<course id>`, `collection_source: folder`;
+2. `harness`: the `emstacho-su/agentic-harness` repo (worktrees included, a
+   deleted one by its folder name), `~/.claude` or `~/.harness` →
+   `harness/agentic-harness`, only while the vault holds `harness/.realm`;
+3. `container`: `~/projects` itself → `projects/misc`;
+4. `git`: the git remote of `cwd`, resolved through a worktree to its main
+   repository → `projects/<repo slug>`, `collection_source: git`;
+5. `folder`: the folder name, preferring an ancestor that already owns a vault
+   folder in any area → `collection_source: folder`.
 
 The directory those steps are applied to is the one the **transcript declares**
 in its first record, not the stdin `cwd`. The stdin `cwd` is wherever the
@@ -291,6 +301,24 @@ Without `--vault` the vault is `HARNESS_VAULT`, from the shell or from
 line: the old OneDrive folder still exists and holds no hubs, so a run against
 it would look exactly like a clean one. Ran live on home-pc 2026-09-27:
 19 moves, 348 rewrites, `--check` 0 broken.
+
+## The harness realm move
+
+```bash
+node hooks/move-to-realm.mjs --plan-only [--vault <dir>]   # preview, before the realm exists
+node hooks/move-to-realm.mjs --dry-run   [--vault <dir>]   # one line per note: from -> to (reason)
+node hooks/move-to-realm.mjs --apply     [--vault <dir>]
+```
+
+Re-resolves every note in `projects/{agentic-harness,claude,memory,projects,remote}`
+with the rules above (a worker follows its parent) and moves it there: written to
+the new folder first, removed from the old one after; one sync commits both
+realms. Only `collection:`, `up:` and the ` — <collection>` end of `title:` are
+edited, line by line (`lib/frontmatter-lines.mjs`); the `id` stays, so ingest
+sees a metadata update. Hubs of the emptied collections go to
+`~/.claude-archive/<date>-vault-hubs/`. It refuses without `harness/.realm`,
+with `harness` missing from `HARNESS_REALMS`, or with a realm lock held, and a
+second run finds nothing to move. The runbook is in `docs/portable.md`.
 
 ## Tests
 
