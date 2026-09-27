@@ -13,8 +13,9 @@ https://code.claude.com/docs/en/agent-sdk/structured-outputs):
     and ``--disallowedTools`` take variadic lists that would swallow a later positional.
 ``--output-format json --json-schema <schema>``
     One JSON result object; the validated answer is in ``structured_output``. The flag
-    takes inline JSON only (no file form is documented). The schema goes compact and is
-    refused above ``MAX_SCHEMA_ARGV_CHARS`` so argv stays well under the limit.
+    takes inline JSON only (no file form is documented). The schema goes compact, with
+    cmd.exe metacharacters as ``\\u`` escapes (:func:`argv_json`), and is refused above
+    ``MAX_SCHEMA_ARGV_CHARS`` so argv stays well under the limit.
 ``--model <model>``
     ``DEFAULT_MODEL`` unless the caller injects another.
 ``--tools ""`` and ``--disallowedTools "mcp__*"``
@@ -70,6 +71,7 @@ DEFAULT_TIMEOUT_S = 300.0
 EXECUTABLE_NAME = "claude"
 STDERR_EXCERPT_CHARS = 200
 MAX_SCHEMA_ARGV_CHARS = 16_000  # Windows caps the whole command line near 32K chars
+CMD_METACHARACTERS = frozenset("<>|&^%!")
 WORKDIR_PREFIX = "curate-judge-"
 JUDGE_INSTRUCTION = (
     "The piped input is the whole task. Answer it only with JSON matching the given schema."
@@ -109,9 +111,17 @@ def subprocess_runner(argv: list[str], stdin: str, cwd: Path, timeout: float) ->
     )
 
 
+def argv_json(schema: dict) -> str:
+    """Compact JSON with cmd.exe's metacharacters as ``\\uXXXX`` escapes: the same JSON value,
+    but safe when ``claude`` resolves to an npm ``claude.cmd`` shim, which cmd.exe re-parses
+    (it does not honour ``\\"``, so a ``<`` inside a JSON string can land outside its quotes)."""
+    text = json.dumps(schema, separators=(",", ":"), sort_keys=True)
+    return "".join(f"\\u{ord(ch):04x}" if ch in CMD_METACHARACTERS else ch for ch in text)
+
+
 def build_argv(executable: str, schema: dict, model: str) -> list[str]:
     """The exact command, documented flag by flag in the module docstring."""
-    schema_json = json.dumps(schema, separators=(",", ":"), sort_keys=True)
+    schema_json = argv_json(schema)
     if len(schema_json) > MAX_SCHEMA_ARGV_CHARS:
         raise JudgeError(
             f"judge schema is {len(schema_json)} chars as JSON; the argv limit is "

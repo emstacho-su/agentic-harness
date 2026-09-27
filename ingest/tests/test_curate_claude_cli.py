@@ -129,6 +129,21 @@ def test_build_argv_matches_what_the_judge_runs():
     assert build_argv(EXE, SCHEMA, DEFAULT_MODEL) == expected_argv()
 
 
+def _real_schemas() -> list[dict]:
+    from ingest.curate.extract_schema import ISSUE_KINDS, build_schema
+    from ingest.curate.ledger import confirm_schema
+
+    return [*(build_schema(kind) for kind in sorted(ISSUE_KINDS)), confirm_schema(["C1", "C2"])]
+
+
+def test_no_argv_element_carries_a_cmd_metacharacter_for_a_claude_cmd_shim():
+    tricky = {"description": "#<PR number> a|b & c^d 50% !x", **SCHEMA}
+    for schema in (*_real_schemas(), tricky):
+        argv = build_argv("C:/npm/claude.cmd", schema, DEFAULT_MODEL)
+        assert not [arg for arg in argv[1:] if set(arg) & set("<>|&^%!")]
+        assert json.loads(argv[argv.index("--json-schema") + 1]) == schema
+
+
 def test_tools_are_disabled_with_an_empty_list_not_a_missing_value():
     argv = build_argv(EXE, SCHEMA, DEFAULT_MODEL)
     assert argv[argv.index("--tools") + 1] == ""
