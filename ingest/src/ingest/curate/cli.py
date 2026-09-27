@@ -23,7 +23,7 @@ store unreachable when not a dry run, a hub that cannot be read), 3 stopped by
 budget. Ledger: 0 done, 1 an item could not be placed (no date, a failed judge
 call, or the run stopped after consecutive failures), 2 could not run (bad
 arguments, vault, the store unreachable even for a dry run, a ledger.md the
-curator may not overwrite), 3 stopped by budget. Every stage loads the repo
+curator may not overwrite or cannot write), 3 stopped by budget. Every stage loads the repo
 ``.env`` and ``~/.harness/machine.env`` first and never prints a value from either.
 """
 
@@ -394,6 +394,8 @@ def _write_ledger(root: str, result: CollectionLedger, generated_at: str, versio
         return write_curator_note(root, result.realm_folder, result.collection, "ledger", fields, body)
     except IngestError as exc:
         return f"{result.folder}/ledger.md: {exc}"
+    except OSError as exc:  # a locked file (Obsidian, OneDrive) must not sink the other collections
+        return f"{result.folder}/ledger.md: could not write ({exc.strerror or type(exc).__name__})"
 
 
 def ledger_text(results, writes, spend: Spend, dry_run: bool, code: int) -> str:

@@ -325,6 +325,30 @@ def test_a_hand_written_ledger_is_left_alone_and_exits_two(vault: Path, capsys) 
     assert ledger_path(vault).read_text(encoding="utf-8") == "---\ntitle: mine\n---\nMy notes.\n"
 
 
+def test_a_locked_ledger_exits_two_and_the_other_collections_are_still_written(
+        vault: Path, capsys, monkeypatch) -> None:
+    from ingest.curate import writer
+
+    add_note(vault, "t1", "2026-09-01", collection="other")
+    store = InMemoryCurateStore()
+    seed(store, vault, {"s1": [issue("A")]})
+    seed(store, vault, {"t1": [issue("A")]}, collection="other")
+    real_replace = os.replace
+
+    def locked(src, dst):
+        if Path(dst) == ledger_path(vault).resolve():
+            raise PermissionError(13, "Permission denied")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(writer.os, "replace", locked)
+    code, out, err = run(vault, ["--all"], capsys, store=store, judge=NoCallJudge(), embedder=MapEmbedder())
+    assert code == 2
+    assert "projects/demo/ledger.md: could not write (Permission denied)" in err
+    assert "ledger: projects/demo/ledger.md refused" in out
+    assert (vault / "projects" / "other" / "ledger.md").is_file() and not ledger_path(vault).exists()
+    assert [p.name for p in ledger_path(vault).parent.iterdir() if p.name.endswith(".tmp")] == []
+
+
 def test_a_bad_collection_exits_two(vault: Path, capsys) -> None:
     code, _, err = run(vault, ["--collection", "missing"], capsys, store=InMemoryCurateStore())
     assert code == 2 and "no collection 'missing'" in err
