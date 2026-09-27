@@ -457,3 +457,4 @@ OneDrive sync corrupt each other. Branch `main`. Public at
 | 8 Self-evolution | deferred; repo currently unlicensed, re-check before adopting |
 | 9 Docs repo | done — public on GitHub, docs rewritten for the harness-memory relocation |
 | Memory sprint | proposed 2026-09-24 — `docs/memory-sprint-requirements.md`: phases N (hub names), H (`harness` realm, SessionStart brief, portable `~/.claude`), P (retrieval provenance), Q (store audit, location matrix), C (read-only curator); Hermes stays optional, the curator is tool-neutral |
+| Curator C-a | built 2026-09-27, not live — `uv run ingest curate` stages inventory, extract and ledger (ingest/README.md, *Curator*); the `curate` schema migration is applied at L7 |
