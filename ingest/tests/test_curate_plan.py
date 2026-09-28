@@ -131,10 +131,14 @@ def test_memory_sprint_done_when_and_tests(sprint: PlanDocument) -> None:
 
 
 def test_the_phase_p_record_checkboxes_belong_to_no_requirement(sprint: PlanDocument) -> None:
-    assert len(sprint.checkboxes) == 6
+    # N's record (L1) now precedes P's in the document, adding its own two
+    # open items ahead of P's — hence 8, not 6, and index 0 moved off P.
+    assert len(sprint.checkboxes) == 8
     assert all(box.requirement_id is None and not box.checked for box in sprint.checkboxes)
-    assert sprint.checkboxes[0].text == "MANUAL: check in Obsidian's graph that `retrieved:` draws session → note edges."
-    assert sprint.checkboxes[4].text == (
+    assert sprint.checkboxes[0].text == (
+        "Confirm Front Matter Title is installed and configured in Obsidian on home-pc."
+    )
+    assert sprint.checkboxes[6].text == (
         "Deferred from review: stale events for an unchanged note whose `retrievals:` is removed by "
         "hand; a projection error after the document commit marks it FAILED."
     )
