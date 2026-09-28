@@ -283,7 +283,8 @@ What ran, 17:02–17:20 EDT, from `main` at `35a450b`:
   memory folder) to `projects/bb2dash`.
 
 Open: the done-when's three real sessions landing in `harness/agentic-harness/sessions/` (they
-will on their next SessionEnd); the next nightly's `harness: … -> pushed` line.
+will on their next SessionEnd); ~~the next nightly's `harness: … -> pushed` line~~ — closed
+2026-09-28, see the Phase Q-a record (L5): `harness: committed -> pulled -> pushed`.
 
 ### R-H4 A harness session starts knowing where the project is
 - **Requirement.** A `SessionStart` hook (startup and resume) resolves the collection with the same
@@ -470,6 +471,43 @@ Open:
 - **Tests.** Unit: the loader validates the new fields; per-collection aggregation. Live: first run.
 - **Done when.** Every collection with sessions has three or more cases and the nightly log carries the
   scores.
+
+### Phase Q-a record — L5, 2026-09-28
+
+Code: PR #19 (merged `0f190be`): R-Q1 `ingest verify`, R-Q3 golden-set coverage; R-Q2's dogfood
+negative retired separately (PR #25).
+
+**No waiver needed.** This is the first live step in the sprint to run against a clean automated
+cycle rather than a manual substitute.
+
+What ran, 21:28–21:33 EDT (Stack, via `!`, `scripts/nightly-ingest.ps1`), from `main` at `896f8e4`:
+
+- `uv run ingest eval` before (Stack, standalone run): hit@3 0.92 (57/62), MRR 0.78, negatives
+  1.00 (5/5).
+- realms-pull: `projects: committed -> pulled`, `classes: clean -> pulled`,
+  `harness: committed -> pulled` — all clean.
+- transcripts/state/checkpoints/sweep: all exit 0 (328 transcripts scanned, 16 candidates/11
+  written; 1051 session notes scanned, all left-alone).
+- Full ingest with `--prune`: 958 unchanged, 0 chunks written — no content changed since the
+  manual runs earlier the same evening.
+- `ingest verify`: **clean.** Every check — chunks, embeddings, token-count, vault row counts
+  (`classes` 8/8, `harness` 212/212, `projects` 738/738, 4 legacy rows uncompared, `duplicate-ids`,
+  `re-embed` (50 of 6263 chunks sampled, threshold 0.999) — reported 0 findings. Nothing to fix or
+  explain.
+- `ingest eval --history`: hit@3 0.92 (57/62), MRR 0.78, negatives 5/5 — unchanged from before,
+  same label-check and failed-case lists already on record from H-a/P (seven relabel candidates
+  for Q-b, five known-failing cases). Appended to `ingest/eval/history.jsonl`.
+- realms-push: **`projects: clean -> pulled -> pushed`**, **`harness: committed -> pulled ->
+  pushed`**, `classes: clean -> pulled -> up-to-date`. The first genuine (non-dry-run) push
+  success `nightly-ingest.log` has ever recorded. It closes the "next nightly's
+  `harness: … -> pushed` line" item left open on the Phase H-a record (L3).
+
+This is one clean night toward the *Gates and order* three-night `committed -> pulled -> pushed`
+prerequisite — L1, L3 and L4 all ran earlier on an explicit Stack waiver, not because that gate had
+closed. Two more consecutive clean nights (the scheduled 03:00 runs) would close it properly for
+anything still leaning on the waiver.
+
+Open: none from this step.
 
 ### R-Q4 The location matrix
 - **Requirement.** `scripts/location-matrix.ps1` runs `claude -p` with a fixed question from each of:
