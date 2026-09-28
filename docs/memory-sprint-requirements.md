@@ -156,6 +156,36 @@ untrusted notes) and R-H5 (a repo built from a folder that holds credentials).
 - **Done when.** New notes carry the form, and on home-pc the graph labels session nodes and hub
   nodes by `title` with the plugin installed.
 
+### Phase N record — L1, 2026-09-27
+
+Code: PR #21 (merged `797c251`): R-N1 hub rename, R-N2 subagent link fix, R-N3 readable titles.
+
+**Written retroactively** (2026-09-28), from the evidence left in `hooks/README.md` and a fresh
+`--check`: the live step ran on 2026-09-27 but nobody wrote it up at the time, so it read as an
+undocumented "done" until this audit found it.
+
+What ran, 2026-09-27, from `main`:
+
+- `hooks/rename-hubs.mjs --apply`: 19 moves, 348 rewrites, `--check` 0 broken (`hooks/README.md`
+  §"The hub rename").
+- R-N2's root orphan moved to `~/.claude-archive/2026-09-24-vault-orphans/` (confirmed present).
+- Re-run of `node hooks/rename-hubs.mjs --check` during this audit (2026-09-28): 1,105 up links
+  checked, 0 unreadable, **0 broken hub links**, 169 pending worker links (all "parent session not
+  captured yet" — the ordinary state for a worker whose session is still open, including this
+  orchestrator session itself).
+- `Get-ChildItem C:\Users\estac\vault -Recurse -Filter index.md` and a root-level `*.md` listing
+  are both empty (checked live during this audit).
+
+Not found or not verified:
+- No before/after `uv run ingest eval` scores for this live step were recorded anywhere.
+- R-N3's Front Matter Title plugin install (MANUAL, per machine) — not confirmed either way.
+- R-N3's "three real sessions land with readable titles" spot-check — not specifically verified,
+  though every session since has gone through the same code path.
+
+Open:
+- [ ] Confirm Front Matter Title is installed and configured in Obsidian on home-pc.
+- [ ] No eval baseline exists for this step; treat the next eval run as the first data point.
+
 ---
 
 ## Phase H — the harness's own realm
@@ -253,7 +283,8 @@ What ran, 17:02–17:20 EDT, from `main` at `35a450b`:
   memory folder) to `projects/bb2dash`.
 
 Open: the done-when's three real sessions landing in `harness/agentic-harness/sessions/` (they
-will on their next SessionEnd); the next nightly's `harness: … -> pushed` line.
+will on their next SessionEnd); ~~the next nightly's `harness: … -> pushed` line~~ — closed
+2026-09-28, see the Phase Q-a record (L5): `harness: committed -> pulled -> pushed`.
 
 ### R-H4 A harness session starts knowing where the project is
 - **Requirement.** A `SessionStart` hook (startup and resume) resolves the collection with the same
@@ -501,6 +532,43 @@ Open:
 - **Tests.** Unit: the loader validates the new fields; per-collection aggregation. Live: first run.
 - **Done when.** Every collection with sessions has three or more cases and the nightly log carries the
   scores.
+
+### Phase Q-a record — L5, 2026-09-28
+
+Code: PR #19 (merged `0f190be`): R-Q1 `ingest verify`, R-Q3 golden-set coverage; R-Q2's dogfood
+negative retired separately (PR #25).
+
+**No waiver needed.** This is the first live step in the sprint to run against a clean automated
+cycle rather than a manual substitute.
+
+What ran, 21:28–21:33 EDT (Stack, via `!`, `scripts/nightly-ingest.ps1`), from `main` at `896f8e4`:
+
+- `uv run ingest eval` before (Stack, standalone run): hit@3 0.92 (57/62), MRR 0.78, negatives
+  1.00 (5/5).
+- realms-pull: `projects: committed -> pulled`, `classes: clean -> pulled`,
+  `harness: committed -> pulled` — all clean.
+- transcripts/state/checkpoints/sweep: all exit 0 (328 transcripts scanned, 16 candidates/11
+  written; 1051 session notes scanned, all left-alone).
+- Full ingest with `--prune`: 958 unchanged, 0 chunks written — no content changed since the
+  manual runs earlier the same evening.
+- `ingest verify`: **clean.** Every check — chunks, embeddings, token-count, vault row counts
+  (`classes` 8/8, `harness` 212/212, `projects` 738/738, 4 legacy rows uncompared, `duplicate-ids`,
+  `re-embed` (50 of 6263 chunks sampled, threshold 0.999) — reported 0 findings. Nothing to fix or
+  explain.
+- `ingest eval --history`: hit@3 0.92 (57/62), MRR 0.78, negatives 5/5 — unchanged from before,
+  same label-check and failed-case lists already on record from H-a/P (seven relabel candidates
+  for Q-b, five known-failing cases). Appended to `ingest/eval/history.jsonl`.
+- realms-push: **`projects: clean -> pulled -> pushed`**, **`harness: committed -> pulled ->
+  pushed`**, `classes: clean -> pulled -> up-to-date`. The first genuine (non-dry-run) push
+  success `nightly-ingest.log` has ever recorded. It closes the "next nightly's
+  `harness: … -> pushed` line" item left open on the Phase H-a record (L3).
+
+This is one clean night toward the *Gates and order* three-night `committed -> pulled -> pushed`
+prerequisite — L1, L3 and L4 all ran earlier on an explicit Stack waiver, not because that gate had
+closed. Two more consecutive clean nights (the scheduled 03:00 runs) would close it properly for
+anything still leaning on the waiver.
+
+Open: none from this step.
 
 ### R-Q4 The location matrix
 - **Requirement.** `scripts/location-matrix.ps1` runs `claude -p` with a fixed question from each of:
