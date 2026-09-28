@@ -24,6 +24,7 @@ import {
   planMirror,
   repoPathRule,
 } from '../lib/claude-config.mjs';
+import { hookCommands, withHookRegistered } from '../lib/settings.mjs';
 
 const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
 const HASH_A = sha('a');
@@ -325,4 +326,44 @@ test('an empty template changes nothing', () => {
   const result = mergeSettingsTemplate(current, {}, { nodePath: NODE_HERE });
   assert.equal(result.changed, false);
   assert.deepEqual(result.settings, current);
+});
+
+// ------------------------------------------------- one hook-recognition rule (settings.mjs hookIdentity)
+
+const commandsOf = (settings, event) => (settings.hooks?.[event] ?? []).flatMap((group) => group.hooks.map((h) => h.command));
+
+test('merge: two different non-node commands are two hooks; an existing one blocks only itself', () => {
+  const t = (...commands) => ({ hooks: { Stop: [{ hooks: commands.map((command) => ({ type: 'command', command })) }] } });
+  const both = mergeSettingsTemplate({}, t('bash -c "a"', 'bash -c "b"'), { nodePath: NODE_HERE });
+  assert.deepEqual(commandsOf(both.settings, 'Stop'), ['bash -c "a"', 'bash -c "b"']);
+
+  const current = t('bash -c "x"');
+  const added = mergeSettingsTemplate(current, t('bash -c "y"'), { nodePath: NODE_HERE });
+  assert.deepEqual(commandsOf(added.settings, 'Stop'), ['bash -c "x"', 'bash -c "y"']);
+  assert.equal(added.hooksAdded.length, 1);
+
+  const again = mergeSettingsTemplate(added.settings, t('bash -c "y"', '  bash   -c "x" '), { nodePath: NODE_HERE });
+  assert.equal(again.changed, false, 'the same command, spacing aside, is already there');
+});
+
+test('bootstrap step 7 (config merge) then step 8 (hook install) under another node leaves one entry per event', () => {
+  const hooksDir = `${HOME}/.claude/hooks`;
+  // Step 7: the template carries the exporting machine's node, which exists here too.
+  const step7 = mergeSettingsTemplate({}, template(), { nodePath: NODE_HERE, exists: () => true });
+  // Step 8: install.mjs registers with this process's node, a different path.
+  const step8 = withHookRegistered(step7.settings, hookCommands(NODE_HERE, hooksDir));
+  assert.deepEqual(step8.unchanged, ['SessionEnd', 'SessionStart']);
+  assert.deepEqual(step8.added, ['SubagentStop'], 'the template had no SubagentStop, so only it is added');
+  for (const event of ['SessionEnd', 'SubagentStop', 'SessionStart']) {
+    assert.equal(commandsOf(step8.settings, event).length, 1, event);
+  }
+
+  // And in the other order: the hook install first, then the merge.
+  const installed = withHookRegistered({}, hookCommands(NODE_HERE, hooksDir)).settings;
+  const merged = mergeSettingsTemplate(installed, template(), { nodePath: NODE_HERE, exists: () => true });
+  assert.equal(merged.changed, true, 'the template permissions are still new');
+  assert.deepEqual(merged.hooksAdded, []);
+  for (const event of ['SessionEnd', 'SubagentStop', 'SessionStart']) {
+    assert.equal(commandsOf(merged.settings, event).length, 1, event);
+  }
 });

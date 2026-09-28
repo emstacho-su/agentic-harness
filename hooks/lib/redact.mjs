@@ -169,22 +169,34 @@ export function findSecretValues(text) {
  * costs a note nothing — but a commit gate that fires on every `*_path = …` in
  * a skill's scripts (165 of 180 hits on the real `~/.claude`) can never pass.
  *
+ * A rule that throws is where this parts company with `redact()`. There a
+ * skipped rule costs a little redaction; here it would be a scan that reports
+ * clean without having looked. So the throw is itself a finding,
+ * `<rule>:error` at the start of the text, and a commit gate built on this
+ * fails closed. The rules that did run keep their own findings.
+ *
+ * @param {string} text
+ * @param {readonly object[]} [rules]  SECRET_RULES; a parameter so a test can inject a broken one
  * @returns {{rule: string, index: number}[]} in rule order, then text order
  */
-export function findSecretMatches(text) {
+export function findSecretMatches(text, rules = SECRET_RULES) {
   if (typeof text !== 'string' || text === '') return [];
-  const matches = [];
-  for (const rule of SECRET_RULES) {
+  return rules.flatMap((rule) => {
     try {
-      for (const match of text.matchAll(rule.re)) {
-        const value = String(rule.secret ? rule.secret(match) : match[0]).trim();
-        if (!isLiteralSecret(value)) continue;
-        if (rule.name === 'named-secret-assignment' && !namesASecret(match[2])) continue;
-        matches.push({ rule: rule.name, index: match.index });
-      }
+      return ruleMatches(text, rule);
     } catch {
-      /* as in findSecretValues(): one bad rule must not cost the rest */
+      return [{ rule: `${rule?.name ?? 'unnamed-rule'}:error`, index: 0 }];
     }
+  });
+}
+
+function ruleMatches(text, rule) {
+  const matches = [];
+  for (const match of text.matchAll(rule.re)) {
+    const value = String(rule.secret ? rule.secret(match) : match[0]).trim();
+    if (!isLiteralSecret(value)) continue;
+    if (rule.name === 'named-secret-assignment' && !namesASecret(match[2])) continue;
+    matches.push({ rule: rule.name, index: match.index });
   }
   return matches;
 }

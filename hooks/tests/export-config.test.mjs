@@ -17,12 +17,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { PRE_COMMIT_MARKER, parseArgs, preCommitHookScript } from '../export-config.mjs';
+import { PRE_COMMIT_MARKER, harnessCheckout, parseArgs, preCommitHookScript } from '../export-config.mjs';
 import { HOME_PLACEHOLDER, SCAN_EXCEPTIONS_FILE, SETTINGS_TEMPLATE_FILE } from '../lib/claude-config.mjs';
 import { FIXTURES_DIR } from './helpers/sandbox.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXPORTER = path.resolve(HERE, '..', 'export-config.mjs');
+/** This checkout. The hook the exporter installs calls back into HARNESS_REPO when it is set. */
+const HARNESS_ROOT = path.resolve(HERE, '..', '..');
 const FIXTURE_HOME = path.join(FIXTURES_DIR, 'claude-home');
 const FAKE_GITHUB_TOKEN = ['gh', 'p_', 'FakeTestKeyNotReal', '0'.repeat(20)].join('');
 const FIXTURE_FILES = Object.freeze([
@@ -56,6 +58,9 @@ function gitEnv(root) {
     USERPROFILE: path.join(root, 'home'),
     GIT_CONFIG_GLOBAL: globalConfig,
     GIT_CONFIG_NOSYSTEM: '1',
+    // The hook bakes in the MAIN checkout, which need not have this branch's
+    // export-config.mjs; the commits here must run the script under test.
+    HARNESS_REPO: HARNESS_ROOT,
     GIT_AUTHOR_NAME: 'Test',
     GIT_AUTHOR_EMAIL: 'test@example.com',
     GIT_COMMITTER_NAME: 'Test',
@@ -397,6 +402,120 @@ test('the pre-commit hook blocks a staged fake key, a denylisted path and a stra
     assert.match(`${paths.stderr}`, /skills\/tdd\/\.env\.local.*denylist:\.env\*/);
     assert.match(`${paths.stderr}`, /notes\.md.*not-allowlisted/);
     assert.equal(commitCount(w), 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test('the pre-commit hook reads .scan-exceptions.json from the staged tree, not the working tree', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const w = world(root);
+    assert.equal(exportConfig(w, '--apply').status, 0);
+
+    const planted = `# tdd\n\npasted ${FAKE_GITHUB_TOKEN} here\n`;
+    write(w.clone, 'skills/tdd/SKILL.md', planted);
+    const entry = { path: 'skills/tdd/SKILL.md', rule: 'github-token', line: 3, sha256: sha256(planted) };
+    write(w.clone, SCAN_EXCEPTIONS_FILE, `${JSON.stringify([entry], null, 2)}\n`);
+    git(root, w.clone, 'add', 'skills/tdd/SKILL.md'); // the exception stays unstaged
+
+    const unstaged = git(root, w.clone, 'commit', '-q', '-m', 'key, exception not staged');
+    assert.notEqual(unstaged.status, 0, 'an exception only in the working tree accepts nothing');
+    assert.match(`${unstaged.stderr}`, /skills\/tdd\/SKILL\.md:3 github-token/);
+    assert.equal(commitCount(w), 1);
+
+    git(root, w.clone, 'add', SCAN_EXCEPTIONS_FILE);
+    const staged = git(root, w.clone, 'commit', '-q', '-m', 'key, exception staged');
+    assert.equal(staged.status, 0, `${staged.stdout}${staged.stderr}`);
+    assert.equal(commitCount(w), 2);
+  } finally {
+    cleanup();
+  }
+});
+
+test('the pre-commit hook finds a fake key in a staged UTF-16 file', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const w = world(root);
+    assert.equal(exportConfig(w, '--apply').status, 0);
+    const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`use ${FAKE_GITHUB_TOKEN}\r\n`, 'utf16le')]);
+    write(w.clone, 'skills/tdd/notes.md', utf16);
+    git(root, w.clone, 'add', '-A');
+    const blocked = git(root, w.clone, 'commit', '-q', '-m', 'utf-16 key');
+    assert.notEqual(blocked.status, 0);
+    assert.match(`${blocked.stderr}`, /skills\/tdd\/notes\.md:1 github-token/);
+    assert.equal(commitCount(w), 1);
+  } finally {
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Which checkout the hook calls back into
+// ---------------------------------------------------------------------------
+
+/** A committed repo at <root>/main and a worktree of it at <root>/wt. */
+function repoWithWorktree(root) {
+  const main = path.join(root, 'main');
+  execFileSync('git', ['init', '-q', '-b', 'main', main], { env: gitEnv(root) });
+  write(main, 'README.md', 'x\n');
+  git(root, main, 'add', '-A');
+  assert.equal(git(root, main, 'commit', '-q', '-m', 'init').status, 0);
+  const wt = path.join(root, 'wt');
+  assert.equal(git(root, main, 'worktree', 'add', '-q', '-b', 'feature', wt).status, 0);
+  return { main, wt };
+}
+
+const samePath = (a, b) => fs.realpathSync.native(a).toLowerCase() === fs.realpathSync.native(b).toLowerCase();
+/** The checkout a pre-commit hook's text falls back to when HARNESS_REPO is unset. */
+const bakedRepo = (hookText) => /HARNESS_REPO:-([^}]*)\}/.exec(hookText)[1];
+
+test('harnessCheckout: a worktree resolves to its main checkout; the main checkout and a non-repo to themselves', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { main, wt } = repoWithWorktree(root);
+    const fromWorktree = harnessCheckout(wt);
+    assert.ok(samePath(fromWorktree.path, main), fromWorktree.path);
+    assert.ok(samePath(fromWorktree.worktree, wt));
+    const fromMain = harnessCheckout(main);
+    assert.ok(samePath(fromMain.path, main));
+    assert.equal(fromMain.worktree, null);
+    const plain = path.join(root, 'plain');
+    fs.mkdirSync(plain);
+    assert.deepEqual(harnessCheckout(plain), { path: plain, worktree: null });
+  } finally {
+    cleanup();
+  }
+});
+
+test('export run from a worktree bakes the main checkout into the hook, says so, and HARNESS_REPO still wins', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { main, wt } = repoWithWorktree(root);
+    // This checkout's hooks/ (not its tests) stands in for the harness, in both checkouts.
+    for (const dir of [main, wt]) {
+      fs.cpSync(path.join(HARNESS_ROOT, 'hooks'), path.join(dir, 'hooks'), {
+        recursive: true,
+        filter: (source) => !/[\\/](tests|node_modules)$/.test(source),
+      });
+    }
+    const w = world(path.join(root, 'w'));
+    const { HARNESS_REPO: _unset, ...env } = gitEnv(w.root);
+    const args = [path.join(wt, 'hooks', 'export-config.mjs'), '--apply', '--config-repo', w.clone, '--source', w.source];
+    const result = spawnSync(process.execPath, args, { encoding: 'utf8', env, timeout: 120_000 });
+    const out = `${result.stdout}${result.stderr}`;
+    assert.equal(result.status, 0, out);
+    assert.match(out, /pre-commit: calls the main checkout .* \(this run is from the worktree /);
+
+    const hookFile = path.join(w.clone, '.git', 'hooks', 'pre-commit');
+    const baked = bakedRepo(fs.readFileSync(hookFile, 'utf8'));
+    assert.ok(samePath(baked, main), `the hook names ${baked}, not the main checkout ${main}`);
+    assert.equal(commitCount(w), 1, "the commit went through the main checkout's gate");
+
+    // HARNESS_REPO at export time is what gets baked, worktree or not.
+    const pinned = spawnSync(process.execPath, args, { encoding: 'utf8', env: { ...env, HARNESS_REPO: wt }, timeout: 120_000 });
+    assert.equal(pinned.status, 0, `${pinned.stdout}${pinned.stderr}`);
+    assert.ok(samePath(bakedRepo(fs.readFileSync(hookFile, 'utf8')), wt));
   } finally {
     cleanup();
   }

@@ -11,7 +11,8 @@
  * SubagentStop, `session-start.mjs` for SessionStart (R-H4). Each event gets
  * its own command, so the caller passes one per event (`hookCommands`).
  *
- * Idempotent by construction: an entry is recognised by the command it runs, so
+ * Idempotent by construction: an entry is recognised by the script it runs
+ * (`hookIdentity`: slashes, case and the node in front do not matter), so
  * running the installer twice changes nothing the second time. An entry that is
  * already there keeps its own `timeout`, `statusMessage` and `matcher`, because
  * if someone tuned them the installer has no business resetting them.
@@ -81,18 +82,7 @@ export function hookCommands(nodePath, hooksDir) {
   );
 }
 
-/**
- * Two command lines naming the same two files are the same registration.
- *
- * `C:\Program Files\nodejs\node.exe` and `C:/Program Files/nodejs/node.exe`
- * are one path, and Windows filenames are case-insensitive. Comparing the raw
- * strings meant an installer run added a *second* SessionEnd entry beside the
- * one already there, and then another on the next run.
- */
-function sameCommand(a, b) {
-  return comparable(a) === comparable(b);
-}
-
+/** Forward slashes, lower case: one spelling per Windows path. */
 function comparable(value) {
   return toPosix(String(value ?? '')).toLowerCase();
 }
@@ -136,7 +126,8 @@ export function withHookRegistered(settings, commands) {
 
   for (const event of HOOK_EVENTS) {
     const command = commands[event];
-    if (commandEntries(source, event).some((entry) => sameCommand(entry.command, command))) {
+    const identity = hookIdentity(command);
+    if (commandEntries(source, event).some((entry) => hookIdentity(entry.command) === identity)) {
       unchanged.push(event);
       continue;
     }
@@ -159,13 +150,36 @@ function matcherFor(event, command) {
 /** A command-line word: a double-quoted run (spaces allowed) or a bare one. */
 const COMMAND_WORD = /"([^"]*)"|(\S+)/g;
 
+/** `node` or `node.exe`: the last segment of a node command's first word. */
+const NODE_EXECUTABLE = /^node(?:\.exe)?$/i;
+
 /**
- * The script a command line runs: its second word (`"node" "script"`, quoted
- * or not). Forward slashes; '' when the line has only one word.
+ * The script a node command runs: `<node> <script>`, the node bare or a path,
+ * either word quoted or not. Forward slashes; '' for any other command,
+ * including node with a flag first (`node -e …`), which runs no script file.
  */
-export function commandScript(command) {
+export function nodeScript(command) {
   const words = [...String(command ?? '').matchAll(COMMAND_WORD)].map((match) => match[1] ?? match[2]);
-  return toPosix(words[1] ?? '');
+  if (words.length < 2 || words[1].startsWith('-')) return '';
+  return NODE_EXECUTABLE.test(path.posix.basename(toPosix(words[0]))) ? toPosix(words[1]) : '';
+}
+
+/**
+ * When two hook commands are one registration: the single rule shared by the
+ * installer (`withHookRegistered`), the config merge (`mergeSettingsTemplate`)
+ * and doctor (`registrationStatus`). With a rule each, bootstrap's config step
+ * then its install step under another node left two SessionEnd entries, and
+ * the merge took `bash -c "a"` and `bash -c "b"` for one hook (script `-c`).
+ *
+ * A node command is its script, whatever node runs it, slashes and case
+ * folded: `C:\Program Files\nodejs\node.exe` and `D:/node/node.exe` running
+ * one hook file are one registration. Any other command is its whole text,
+ * runs of spaces aside, so `bash -c "a"` and `bash -c "b"` are two.
+ */
+export function hookIdentity(command) {
+  const script = nodeScript(command);
+  if (script) return `node-script\0${comparable(script)}`;
+  return `command\0${String(command ?? '').trim().replace(/\s+/g, ' ')}`;
 }
 
 /**
@@ -182,10 +196,12 @@ export function registrationStatus(settings, event, hooksDir) {
   const registration = REGISTRATIONS[event];
   if (!registration) throw new RangeError(`not an event this installer owns: ${event}`);
   const expected = toPosix(path.join(hooksDir, registration.script));
-  const scripts = commandEntries(settings, event).map((entry) => commandScript(entry.command));
+  const expectedIdentity = hookIdentity(hookCommand('node', expected));
+  const commands = commandEntries(settings, event).map((entry) => entry.command);
 
-  const right = scripts.find((script) => comparable(script) === comparable(expected));
-  if (right) return Object.freeze({ state: 'registered', script: right, expected });
+  const right = commands.find((command) => hookIdentity(command) === expectedIdentity);
+  if (right) return Object.freeze({ state: 'registered', script: nodeScript(right), expected });
+  const scripts = commands.map(nodeScript);
   const ours = scripts.find((script) => isOurs(script, hooksDir));
   if (ours) return Object.freeze({ state: 'wrong-script', script: ours, expected });
   return Object.freeze({ state: 'missing', script: '', expected });

@@ -27,6 +27,7 @@ import {
 } from './lib/constants.mjs';
 import { CONFIG_REPO_SLUG, SCAN_EXCEPTIONS_FILE } from './lib/claude-config.mjs';
 import { DEFAULT_PROJECT_DIR, ENV_PROJECT_DIR, resolveUv } from './lib/enqueue-ingest.mjs';
+import { isEntryPoint } from './lib/entry-point.mjs';
 import { runGitSync } from './lib/git-log.mjs';
 import {
   MACHINE_ENV_SEGMENTS,
@@ -357,6 +358,6 @@ export function runDoctor(argv, { rows = () => diagnose(), write = (text) => con
   return EXIT_PROBLEMS;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (isEntryPoint(import.meta.url)) {
   process.exitCode = runDoctor(process.argv.slice(2));
 }

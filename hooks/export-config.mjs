@@ -50,14 +50,17 @@ import {
   repoPathRule,
   scanForSecrets,
 } from './lib/claude-config.mjs';
+import { isEntryPoint } from './lib/entry-point.mjs';
 import { runGitSync } from './lib/git-log.mjs';
 import { redactRemoteUrl } from './lib/realm-steps.mjs';
 import { repoArgs, trustedSpawnOptions } from './lib/spawn.mjs';
 import { toPosix } from './lib/text.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-/** The checkout this script runs from; the pre-commit hook calls back into it. */
+/** The checkout this script runs from; the pre-commit hook calls back into its main checkout. */
 const HARNESS_REPO = path.resolve(HERE, '..');
+/** Set at export time, it is the checkout baked into the hook, as it is the one run at commit time. */
+const HARNESS_REPO_ENV = 'HARNESS_REPO';
 
 export const EXIT_OK = 0;
 export const EXIT_REFUSED = 1;
@@ -268,16 +271,55 @@ function hookPath(clone) {
   return file;
 }
 
-/** `{file, text, state}`: state is new, updated or unchanged; a hook that is not ours refuses. */
+/**
+ * The checkout the pre-commit hook should call back into: the main checkout of
+ * the repo `dir` belongs to, found through `git rev-parse --git-common-dir`.
+ *
+ * A worktree is where changes are made and then deleted; a hook that names one
+ * refuses every commit to the clone once it is gone. So an export run from a
+ * worktree bakes in the main checkout, and `worktree` says it did. A folder
+ * that is not in a repo, or a repo whose main checkout is bare, is its own answer.
+ *
+ * @returns {{path: string, worktree: string|null}}
+ */
+export function harnessCheckout(dir) {
+  const same = { path: dir, worktree: null };
+  const result = runGitSync(['rev-parse', '--git-common-dir'], { cwd: dir, timeoutMs: GIT_LOCAL_TIMEOUT_MS });
+  if (!result.ok || !result.stdout.trim()) return same;
+  const commonDir = path.resolve(dir, result.stdout.trim());
+  if (path.basename(commonDir).toLowerCase() !== '.git') return same;
+  const main = path.dirname(commonDir);
+  const top = runGitSync(['rev-parse', '--show-toplevel'], { cwd: dir, timeoutMs: GIT_LOCAL_TIMEOUT_MS });
+  const here = top.ok ? top.stdout.trim() : dir;
+  return comparablePath(main) === comparablePath(here) ? same : { path: main, worktree: here };
+}
+
+/** The checkout to bake in, and the line that says which and why. */
+function hookHarness() {
+  const pinned = process.env[HARNESS_REPO_ENV];
+  if (pinned) return { path: path.resolve(pinned), note: `pre-commit: calls ${toPosix(path.resolve(pinned))} (${HARNESS_REPO_ENV})` };
+  const found = harnessCheckout(HARNESS_REPO);
+  if (!found.worktree) return { path: found.path, note: '' };
+  return {
+    path: found.path,
+    note: `pre-commit: calls the main checkout ${toPosix(found.path)} (this run is from the worktree ${toPosix(found.worktree)})`,
+  };
+}
+
+/** `{file, text, state, note}`: state is new, updated or unchanged; a hook that is not ours refuses. */
 function planHook(clone) {
   const file = hookPath(clone);
-  const text = preCommitHookScript({ node: process.execPath, harnessRepo: HARNESS_REPO });
-  if (!fs.existsSync(file)) return { file, text, state: 'new' };
+  const harness = hookHarness();
+  const script = path.join(harness.path, 'hooks', 'export-config.mjs');
+  const missing = fs.existsSync(script) ? '' : `pre-commit: WARNING ${toPosix(script)} does not exist yet; the hook refuses commits until it does`;
+  const note = [harness.note, missing].filter(Boolean).join('\n');
+  const text = preCommitHookScript({ node: process.execPath, harnessRepo: harness.path });
+  if (!fs.existsSync(file)) return { file, text, note, state: 'new' };
   const current = fs.readFileSync(file, 'utf8');
   if (!current.includes(PRE_COMMIT_MARKER)) {
     throw new Refusal(`${file} is a pre-commit hook that is not ours; merge the gate into it by hand, then rerun`);
   }
-  return { file, text, state: current === text ? 'unchanged' : 'updated' };
+  return { file, text, note, state: current === text ? 'unchanged' : 'updated' };
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +445,7 @@ function runExport(args) {
   if (!prepared) return EXIT_REFUSED;
   printPlan(args, prepared.plan, prepared.mirror, prepared.template, prepared.scan);
   console.log(`pre-commit: ${prepared.hook.state} (${prepared.hook.file})`);
+  if (prepared.hook.note) console.log(prepared.hook.note);
   if (args.mode === 'dry-run') {
     console.log('dry run: nothing written');
     return EXIT_OK;
@@ -476,6 +519,22 @@ function stagedBlobs(clone, shas) {
   return blobs;
 }
 
+/**
+ * The exceptions list as it will be committed: the staged blob, never the
+ * working-tree file. An exception written but not staged would otherwise let a
+ * staged secret through while the commit itself carries no record of why.
+ * Not staged (and not tracked) is no exceptions.
+ */
+function stagedExceptions(stagedFiles) {
+  const staged = stagedFiles.find((file) => file.path === SCAN_EXCEPTIONS_FILE);
+  if (!staged) return [];
+  try {
+    return parseScanExceptions(staged.content.toString('utf8'));
+  } catch (error) {
+    throw new Refusal(`${error.message} (the staged copy); fix it and stage it again`);
+  }
+}
+
 const GITLINK_MODE = '160000';
 const SYMLINK_MODE = '120000';
 
@@ -492,7 +551,7 @@ function preCommit(args) {
   const unreadable = entries.filter((e) => e.mode !== GITLINK_MODE && !blobs.has(e.sha));
   const hashes = new Map(files.map((f) => [f.path, sha256(f.content)]));
   const { findings } = scanForSecrets(files);
-  const { unexcepted } = partitionFindings(findings, readExceptions(args.configRepo), (p) => hashes.get(p));
+  const { unexcepted } = partitionFindings(findings, stagedExceptions(files), (p) => hashes.get(p));
 
   const problems = pathProblems.length + unexcepted.length + unreadable.length;
   if (problems === 0) return EXIT_OK;
@@ -525,6 +584,6 @@ export function run(argv) {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (isEntryPoint(import.meta.url)) {
   process.exitCode = run(process.argv.slice(2));
 }

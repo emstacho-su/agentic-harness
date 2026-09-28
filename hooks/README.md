@@ -328,8 +328,9 @@ through a private repo, `emstacho-su/claude-config`, built from an allowlist and
 nothing else: `CLAUDE.md`, `rules/`, `skills/`, `skill-vault/`, and a generated
 `settings.template.json` holding only `hooks` and `permissions`, with the home
 folder written as `{{HOME}}`. A denylist (`.credentials.json`, `history.jsonl`,
-`projects/`, `settings.json`, `.env*`, `node_modules/`, keys, logs, …) is refused
-on every path segment even inside an allowlisted folder. The lists and the
+`projects/`, `settings.json`, `.env*`, `node_modules/`, SSH and TLS keys, logs, …) is
+refused on every path segment even inside an allowlisted folder (`daemon*`, the
+daemon's state, only at the top of `~/.claude`). The lists and the
 planning are `lib/claude-config.mjs`; two CLIs sit on top.
 
 ```bash
@@ -375,13 +376,17 @@ run refuses instead, and so does a `core.hooksPath` that points outside the
 clone's `.git`). It runs `export-config.mjs --pre-commit`, which reads the
 staged tree with one `git cat-file --batch` and refuses the commit on a staged
 path outside the allowlist, a denylisted path, a symlink or submodule, or a
-secret finding that `.scan-exceptions.json` (the working-tree copy) does not
-cover. A commit made by hand is held to the same rules as an export. The hook
+secret finding that `.scan-exceptions.json` does not cover. The exceptions are
+read from the staged tree too: an exception that is written but not staged
+accepts nothing. A rule that throws is itself a finding (`<rule>:error`), and a
+UTF-16 file is read as UTF-16 as well as bytes, so neither passes unscanned. A commit made by hand is held to the same rules as an export. The hook
 finds node and this checkout by the absolute paths baked in when it was
-installed (`process.execPath`, and the checkout `export-config.mjs` ran from);
-`HARNESS_NODE` and `HARNESS_REPO` override them at commit time. If the script is
-not there, the hook refuses the commit: a gate that cannot run must not pass. So
-run the export from the main checkout, not a worktree that will be deleted.
+installed: `process.execPath`, and the MAIN checkout of the repo
+`export-config.mjs` ran from (found through `git rev-parse --git-common-dir`; an
+export run from a worktree says so and bakes in the main checkout, because a
+worktree gets deleted). `HARNESS_REPO` set at export time is baked in instead;
+`HARNESS_NODE` and `HARNESS_REPO` override both at commit time. If the script is
+not there, the hook refuses the commit: a gate that cannot run must not pass.
 
 **Install.** `install.mjs --config` walks the clone through the same
 allowlist and denylist (`planInstall`), scans it again with the same exceptions,
@@ -390,8 +395,9 @@ write that would pass through a link. Files it overwrites are copied first to
 `~/.claude/config-backup-<stamp>/`; nothing in `~/.claude` is ever deleted.
 The template is rendered for this home and merged into `~/.claude/settings.json`
 add-only: a hook entry is added when no entry for that event runs the same
-script (recognised by `commandScript`, so slashes, case and the node in front
-do not matter), a permissions list gains the rules it lacks, a permissions
+hook (recognised by `hookIdentity` in `lib/settings.mjs`, the one rule the
+installer, the merge and doctor share: a node hook by its script, whatever node,
+slashes or case; any other command by its whole text), a permissions list gains the rules it lacks, a permissions
 setting this machine lacks is added and one it has is kept; every other key is
 left alone. A template hook whose node path does not exist here is rewritten to
 `--node` (default: the node running the installer). The write is a temporary

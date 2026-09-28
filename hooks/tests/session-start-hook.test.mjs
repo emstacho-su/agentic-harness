@@ -6,11 +6,12 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { STATE_DIR_ENV_VAR, readSessionStartRecord } from '../lib/session-start.mjs';
 import { LOG_ENV_VAR as START_LOG_ENV_VAR, DISABLE_ENV_VAR as START_DISABLE_ENV_VAR, SESSION_START_EVENT } from '../lib/start-brief.mjs';
@@ -208,4 +209,62 @@ test('process: garbage on stdin is still valid empty JSON and exit 0', (t) => {
   const { status, stdout } = spawnHook('{{{ not json', { ...env, [START_LOG_ENV_VAR]: logPath });
   assert.equal(status, 0);
   assert.equal(stdout, EMPTY_OUTPUT);
+});
+
+// ------------------------------------------------------------------ a throw from outside run()
+
+/**
+ * Spawn the hook with a preload (`--import`) that injects a throw the hook's
+ * own code never sees coming: before it has answered, or after. No test seam
+ * in the hook itself; the preload is the only thing that differs.
+ */
+function spawnWithPreload(t, preloadSource, input, env) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'session-start-preload-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const preload = path.join(dir, 'preload.mjs');
+  fs.writeFileSync(preload, preloadSource, 'utf8');
+  return spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, HOOK], {
+    input,
+    encoding: 'utf8',
+    timeout: 30_000,
+    env: { ...process.env, ...env },
+  });
+}
+
+test('process: an uncaught exception before the answer still writes the empty answer once, exit 0', (t) => {
+  const { sandbox, env } = setup(t);
+  const logPath = path.join(sandbox.root, 'session-start.log');
+  const early = "setTimeout(() => { throw new Error('injected early throw'); }, 0);\n";
+  const result = spawnWithPreload(t, early, payload(sandbox), { ...env, [START_LOG_ENV_VAR]: logPath });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, EMPTY_OUTPUT, 'exactly one JSON document, and it is the empty answer');
+});
+
+test('process: an unhandled rejection before the answer still writes the empty answer once, exit 0', (t) => {
+  const { sandbox, env } = setup(t);
+  const logPath = path.join(sandbox.root, 'session-start.log');
+  const early = "setTimeout(() => { Promise.reject(new Error('injected early rejection')); }, 0);\n";
+  const result = spawnWithPreload(t, early, payload(sandbox), { ...env, [START_LOG_ENV_VAR]: logPath });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, EMPTY_OUTPUT);
+});
+
+test('process: a throw after the answer is written never adds a second JSON document', (t) => {
+  const { sandbox, env } = setup(t);
+  const logPath = path.join(sandbox.root, 'session-start.log');
+  // Throw right after the first write, while its callback (and so the exit) is held back.
+  const late = [
+    'const write = process.stdout.write.bind(process.stdout);',
+    'process.stdout.write = (chunk, ...rest) => {',
+    '  const callback = rest.find((arg) => typeof arg === "function");',
+    '  const ok = write(chunk);',
+    '  setImmediate(() => { throw new Error("injected late throw"); });',
+    '  if (callback) setTimeout(callback, 200);',
+    '  return ok;',
+    '};',
+    '',
+  ].join('\n');
+  const result = spawnWithPreload(t, late, payload(sandbox), { ...env, [START_LOG_ENV_VAR]: logPath });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(context(result.stdout), /BRIEF-BODY-MARKER/, 'the one document is the brief');
 });

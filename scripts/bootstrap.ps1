@@ -40,6 +40,11 @@
 .PARAMETER DryRun
     Print every step and its exact command; run nothing. `--dry-run` works too.
 
+.PARAMETER SkipConfig
+    Skip step 7 (config), saying so, and run every other step. For a machine
+    whose account cannot read the private claude-config repo (the work VM
+    until Phase E). `--skip-config` works too.
+
 .OUTPUTS
     Exit 0 every step passed (or the dry run finished).
     Exit 1 a step failed, named on the `bootstrap: step <n> <name> failed (exit <code>)` line.
@@ -48,10 +53,12 @@
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -DryRun
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -SkipConfig
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
     [switch] $DryRun,
+    [switch] $SkipConfig,
     # `--dry-run` arrives here, as does anything unknown (refused below).
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]] $Rest = @()
@@ -73,8 +80,9 @@ $StoreWaitSeconds = 120
 
 foreach ($arg in $Rest) {
     if ($arg -ceq '--dry-run') { $DryRun = [switch] $true; continue }
+    if ($arg -ceq '--skip-config') { $SkipConfig = [switch] $true; continue }
     [Console]::Error.WriteLine("bootstrap: unknown argument '$arg'")
-    [Console]::Error.WriteLine('usage: bootstrap.ps1 [-DryRun | --dry-run]')
+    [Console]::Error.WriteLine('usage: bootstrap.ps1 [-DryRun | --dry-run] [-SkipConfig | --skip-config]')
     exit 2
 }
 
@@ -299,6 +307,10 @@ function Invoke-Realms {
 }
 
 function Invoke-Config {
+    if ($SkipConfig) {
+        Write-Host '  skipped (--skip-config): claude-config is neither cloned nor installed'
+        return 0
+    }
     $code = Invoke-EnsureClone $ConfigRemote $ConfigDir
     if ($code -ne 0) { return $code }
     return Invoke-Step $RepoDir 'node' @('hooks/install.mjs', '--config', '--apply', '--config-repo', $ConfigDir)

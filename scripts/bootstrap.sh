@@ -5,6 +5,8 @@
 #
 #   scripts/bootstrap.sh --dry-run   # print every step and its exact command; run nothing
 #   scripts/bootstrap.sh             # run them, stopping at the first failure
+#   scripts/bootstrap.sh --skip-config  # the same, with step 7 skipped: for an account
+#                                       # that cannot read the private claude-config repo
 #
 # The steps, in order (STEP_NAMES; bootstrap.ps1 holds the same list):
 #   0 preflight      the machine file exists; git, uv, node, npm and docker are found
@@ -48,12 +50,14 @@ REALM_POLICY_RE='^(push|local)$'
 # How long compose waits for the container's healthcheck (db/docker-compose.yml).
 STORE_WAIT_SECONDS=120
 
-usage() { echo "usage: bootstrap.sh [--dry-run]" >&2; }
+usage() { echo "usage: bootstrap.sh [--dry-run] [--skip-config]" >&2; }
 
 DRY_RUN=0
+SKIP_CONFIG=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
+    --skip-config) SKIP_CONFIG=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "bootstrap: unknown argument '$arg'" >&2; usage; exit 2 ;;
   esac
@@ -214,6 +218,10 @@ step_realms() {
 }
 
 step_config() {
+  if [ "$SKIP_CONFIG" -eq 1 ]; then
+    echo "  skipped (--skip-config): claude-config is neither cloned nor installed"
+    return 0
+  fi
   ensure_clone "$CONFIG_REMOTE" "$CONFIG_DIR" || return
   run_cmd "$REPO_DIR" node hooks/install.mjs --config --apply --config-repo "$CONFIG_DIR"
 }

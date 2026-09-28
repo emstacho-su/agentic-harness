@@ -28,9 +28,9 @@
 
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { DEFAULT_VAULT_SEGMENTS, DISABLE_VALUES, VAULT_ENV_VAR } from './lib/constants.mjs';
+import { isEntryPoint } from './lib/entry-point.mjs';
 import { createLogger } from './lib/logger.mjs';
 import { loadMachineEnv } from './lib/machine-env.mjs';
 import { defaultStateDir, writeSessionStartRecord } from './lib/session-start.mjs';
@@ -220,17 +220,36 @@ async function main() {
   return stdout;
 }
 
+/** Set once the one answer is on its way; rule 1 allows exactly one JSON document. */
+let answered = false;
+
 function answerAndExit(stdout) {
+  if (answered) return;
+  answered = true;
   // A pending read on a stalled drive would otherwise keep the process alive.
   setTimeout(() => process.exit(0), EXIT_GRACE_MS).unref();
   process.stdout.on('error', () => process.exit(0));
   process.stdout.write(stdout, () => process.exit(0));
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  // The last line of defence for rule 1: nothing escapes as a non-zero exit.
-  process.on('uncaughtException', () => process.exit(0));
-  process.on('unhandledRejection', () => process.exit(0));
+/**
+ * The last line of defence for rule 1: a throw from outside run() — a stray
+ * timer, a rejected promise nobody awaited — still gets the empty answer if
+ * none has gone out, and never a second one if it has; the exit is 0 either
+ * way (the pending write's callback, or the grace timer, ends the process).
+ */
+function onFatal(error) {
+  try {
+    createLogger(defaultLogPath(process.env))(`fatal: uncaught ${describeError(error)}`);
+  } catch {
+    /* the answer matters more than the log line */
+  }
+  answerAndExit(EMPTY_OUTPUT);
+}
+
+if (isEntryPoint(import.meta.url)) {
+  process.on('uncaughtException', onFatal);
+  process.on('unhandledRejection', onFatal);
   main().then(answerAndExit, (error) => {
     createLogger(defaultLogPath(process.env))(`fatal: ${describeError(error)}`);
     answerAndExit(EMPTY_OUTPUT);

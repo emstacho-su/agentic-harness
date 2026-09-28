@@ -53,20 +53,25 @@ import {
   planInstall,
   scanForSecrets,
 } from './lib/claude-config.mjs';
+import { isEntryPoint } from './lib/entry-point.mjs';
 import { loadMachineEnv, loadRepoEnv } from './lib/machine-env.mjs';
 import { SCOPE, SERVER_NAME, buildRagServerConfig, registerRagServer } from './lib/mcp-registration.mjs';
 import { hookCommands, withHookRegistered } from './lib/settings.mjs';
 
-// `--register-mcp` builds the server entry from the environment: the repo's
-// .env (secrets) and the machine file (paths), the shell winning over both.
-const HERE_EARLY = path.dirname(fileURLToPath(import.meta.url));
-const report = (problem) => console.error(problem);
-Object.assign(
-  process.env,
-  loadMachineEnv(loadRepoEnv(process.env, path.resolve(HERE_EARLY, '..'), report), os.homedir(), report),
-);
-
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * `--register-mcp` builds the server entry from the environment: the repo's
+ * .env (secrets) and the machine file (paths), the shell winning over both.
+ * Loaded on a direct run only, so importing this module changes nothing.
+ */
+function loadEnvironment() {
+  const report = (problem) => console.error(problem);
+  Object.assign(
+    process.env,
+    loadMachineEnv(loadRepoEnv(process.env, path.resolve(HERE, '..'), report), os.homedir(), report),
+  );
+}
 
 /** The scripts settings.json runs. Everything else deployed is what these import. */
 const ENTRY_POINTS = Object.freeze(['session-capture.mjs', 'session-start.mjs']);
@@ -497,9 +502,14 @@ function main() {
   if (args.registerMcp && !registerMcp(args)) process.exitCode = 1;
 }
 
-try {
-  main();
-} catch (err) {
-  console.error(`install failed: ${err?.message || err}`);
-  process.exitCode = 1;
+// Importable without acting: only a direct run loads the environment and installs.
+// A missing guard here once ran a real install against ~/.claude on `import`.
+if (isEntryPoint(import.meta.url)) {
+  try {
+    loadEnvironment();
+    main();
+  } catch (err) {
+    console.error(`install failed: ${err?.message || err}`);
+    process.exitCode = 1;
+  }
 }

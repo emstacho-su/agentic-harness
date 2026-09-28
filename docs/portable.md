@@ -251,7 +251,7 @@ exists on no remote yet, the Obsidian plugin, the scheduled jobs and the push cr
    | 4 | store | `docker compose up -d --wait --wait-timeout 120` in `db/`, then `docker exec harness-postgres pg_isready -U harness -d harness` |
    | 5 | embed-migrate | in `ingest/`: `uv run ingest embed-check`, `uv run ingest db migrate --dry-run`, `uv run ingest db migrate` |
    | 6 | realms | `git clone -- <remote> ~/vault/<realm>` for each realm `HARNESS_REALMS` names that is not on disk |
-   | 7 | config | `git clone -- https://github.com/emstacho-su/claude-config.git ~/claude-config` (skipped when present), then `node hooks/install.mjs --config --apply --config-repo ~/claude-config` (R-H5) |
+   | 7 | config | `git clone -- https://github.com/emstacho-su/claude-config.git ~/claude-config` (skipped when present), then `node hooks/install.mjs --config --apply --config-repo ~/claude-config` (R-H5). Pass `-SkipConfig` (`--skip-config` to `bootstrap.sh`) when this machine's account cannot read the private `claude-config` repo, e.g. the work VM until Phase E; the step prints `skipped (--skip-config)` and the run goes on |
    | 8 | install | `node hooks/install.mjs --register-mcp` |
    | 9 | doctor | `node hooks/doctor.mjs --strict`; exit 1 (any row doctor marks as a problem) fails the run |
 

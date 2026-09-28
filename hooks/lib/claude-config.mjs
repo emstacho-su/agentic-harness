@@ -5,8 +5,8 @@
  * it also holds live credentials, session history and per-project memory. So
  * nothing here ever asks "what should be left out?". It walks an ALLOWLIST and
  * nothing else, and inside that it still refuses anything the DENYLIST names,
- * matched on every path segment, because a skill folder can carry a `.env` or a
- * `node_modules/` of its own. Symlinks are never followed: a link inside
+ * matched on every path segment (all but `daemon*`, a top-level entry),
+ * because a skill folder can carry a `.env` or a `node_modules/` of its own. Symlinks are never followed: a link inside
  * `skills/` can point anywhere, including back at the credentials.
  *
  * Pure planning only. Nothing here writes a file; the CLIs built on top
@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { findSecretMatches } from './redact.mjs';
-import { commandScript } from './settings.mjs';
+import { hookIdentity, nodeScript } from './settings.mjs';
 import { toPosix } from './text.mjs';
 
 /** The private GitHub repo the config lives in. Creating it is live step L2. */
@@ -47,7 +47,8 @@ export const ALLOWLIST = deepFreeze([
 /**
  * Refused even inside an allowlisted folder. A trailing `/` matches directories
  * only; `*` matches within one segment; matching is case-insensitive, as the
- * Windows filesystem is.
+ * Windows filesystem is. A rule matches any segment of the path unless it is
+ * `topLevel`, which matches the first segment only.
  */
 export const DENYLIST = deepFreeze([
   { pattern: '.credentials.json', reason: 'Claude Code OAuth credentials for this machine' },
@@ -59,7 +60,9 @@ export const DENYLIST = deepFreeze([
   { pattern: 'shell-snapshots/', reason: 'shell environment captures, which include exported secrets' },
   { pattern: 'telemetry/', reason: 'machine-local usage data' },
   { pattern: '*.log', reason: 'logs echo commands, paths and sometimes tokens' },
-  { pattern: 'daemon*', reason: 'daemon state and its auth status files' },
+  // Top level only: ~/.claude/daemon* is the daemon's state. A skill named
+  // `daemon-tools` is prose like any other and travels.
+  { pattern: 'daemon*', topLevel: true, reason: 'daemon state and its auth status files, at the top of ~/.claude' },
   { pattern: 'settings.json', reason: 'holds env, apiKeyHelper and MCP config; only the template travels' },
   { pattern: 'settings.local.json', reason: 'per-machine overrides by definition; only the template travels' },
   { pattern: '.env*', reason: 'environment files exist to hold secrets' },
@@ -69,15 +72,21 @@ export const DENYLIST = deepFreeze([
   { pattern: '*.key', reason: 'private key material' },
   { pattern: '*.p12', reason: 'key-store bundle, usually with a private key' },
   { pattern: '*.pfx', reason: 'key-store bundle, usually with a private key' },
-  { pattern: 'id_*', reason: 'SSH key pair names (id_rsa, id_ed25519 and their .pub)' },
+  // SSH key names, not every `id_` file (`id_map.py` is a script). The `*`
+  // also refuses the `.pub` halves and suffixed copies (`id_rsa_work`): a
+  // public key is harmless, but one rule per key type is simpler to trust.
+  { pattern: 'id_rsa*', reason: 'SSH RSA key pair (private key, its .pub and suffixed copies)' },
+  { pattern: 'id_dsa*', reason: 'SSH DSA key pair (private key, its .pub and suffixed copies)' },
+  { pattern: 'id_ecdsa*', reason: 'SSH ECDSA key pair, including id_ecdsa_sk (and its .pub)' },
+  { pattern: 'id_ed25519*', reason: 'SSH Ed25519 key pair, including id_ed25519_sk (and its .pub)' },
 ]);
 
 const COMPILED_DENYLIST = Object.freeze(
-  DENYLIST.map(({ pattern }) => {
+  DENYLIST.map(({ pattern, topLevel = false }) => {
     const directoryOnly = pattern.endsWith('/');
     const glob = directoryOnly ? pattern.slice(0, -1) : pattern;
     const re = new RegExp(`^${glob.split('*').map(escapeRegExp).join('[^/]*')}$`, 'i');
-    return Object.freeze({ pattern, directoryOnly, re });
+    return Object.freeze({ pattern, directoryOnly, topLevel, re });
   }),
 );
 
@@ -90,9 +99,12 @@ const COMPILED_DENYLIST = Object.freeze(
 export function denylistRule(relPath, { isDirectory = false } = {}) {
   const segments = toPosix(relPath).split('/').filter(Boolean);
   const directories = isDirectory ? segments : segments.slice(0, -1);
-  const hit = COMPILED_DENYLIST.find((rule) =>
-    (rule.directoryOnly ? directories : segments).some((segment) => rule.re.test(segment)),
-  );
+  // A top-level rule sees only the first segment; the others see every one.
+  const candidates = (rule) => {
+    const pool = rule.directoryOnly ? directories : segments;
+    return rule.topLevel ? pool.slice(0, 1) : pool;
+  };
+  const hit = COMPILED_DENYLIST.find((rule) => candidates(rule).some((segment) => rule.re.test(segment)));
   return hit ? hit.pattern : null;
 }
 
@@ -129,23 +141,37 @@ export function scanForSecrets(files) {
 
 function scanOne(file) {
   const relPath = String(file?.path ?? '');
-  let text;
+  let texts;
   try {
-    text = file.content !== undefined ? decode(file.content) : decode(fs.readFileSync(file.source));
+    texts = decodings(file.content !== undefined ? file.content : fs.readFileSync(file.source));
   } catch {
     return [{ path: relPath, rule: 'unreadable', line: 0 }];
   }
-  return findSecretMatches(text).map(({ rule, index }) => ({ path: relPath, rule, line: lineAt(text, index) }));
+  return texts.flatMap((text) =>
+    findSecretMatches(text).map(({ rule, index }) => ({ path: relPath, rule, line: lineAt(text, index) })),
+  );
 }
 
 /** Git's heuristic: a NUL in the first 8000 bytes means binary. */
 const BINARY_SNIFF_BYTES = 8000;
+const UTF16_BOMS = Object.freeze([Buffer.from([0xff, 0xfe]), Buffer.from([0xfe, 0xff])]);
 
-function decode(content) {
-  if (typeof content === 'string') return content;
+/**
+ * Every reading of `content` a secret could hide in. Text without a NUL is
+ * UTF-8. Anything else — a UTF-16 file (Windows tools write them: PowerShell
+ * 5.1's `>`, regedit exports) or a binary — is read three ways: as latin1
+ * bytes, and as UTF-16 at each byte alignment, which covers LE and BE with or
+ * without a BOM. UTF-16 ASCII is a NUL between every letter, so the latin1
+ * reading alone would call a UTF-16 file with a key in it clean. A finding in
+ * two readings is one finding (scanForSecrets dedupes by path, line and rule).
+ */
+function decodings(content) {
+  if (typeof content === 'string') return [content];
   if (!Buffer.isBuffer(content)) throw new TypeError('content must be a string or Buffer');
+  const hasBom = UTF16_BOMS.some((bom) => content.subarray(0, 2).equals(bom));
   const binary = content.subarray(0, BINARY_SNIFF_BYTES).includes(0);
-  return content.toString(binary ? 'latin1' : 'utf8');
+  if (!hasBom && !binary) return [content.toString('utf8')];
+  return [content.toString('latin1'), content.toString('utf16le'), content.subarray(1).toString('utf16le')];
 }
 
 function lineAt(text, index) {
@@ -332,7 +358,8 @@ function mapStrings(value, fn) {
  *
  * Add-only, like the hook installer's merge: a hook entry is added when no
  * entry for that event already runs the same script (recognised by
- * `commandScript`, so slashes, case and the node in front do not matter); a
+ * `hookIdentity`, the installer's own rule: a node hook by its script, whatever
+ * node, slashes or case; any other command by its whole text); a
  * permissions list gains the rules it lacks; a permissions setting the machine
  * does not have is added, one it has is kept. Nothing is removed and every
  * other key is left as it was, so a second merge changes nothing.
@@ -383,7 +410,7 @@ function mergeHooks(current, template, { nodePath, exists }) {
       if (missing.length === 0) return [];
       const entries = missing.map((entry) => withMachineNode(entry, { nodePath, exists }));
       entries.forEach(({ from }) => from && rewritten.push({ event, from, to: toPosix(nodePath) }));
-      missing.forEach((entry) => added.push({ event, script: commandScript(entry.command) }));
+      missing.forEach((entry) => added.push({ event, script: nodeScript(entry.command) }));
       return [{ ...group, hooks: entries.map(({ entry }) => entry) }];
     });
     if (newGroups.length) value[event] = [...(Array.isArray(value[event]) ? value[event] : []), ...newGroups];
@@ -396,11 +423,9 @@ function hookEntries(groups) {
   return groups.flatMap((group) => (group && Array.isArray(group.hooks) ? group.hooks : [])).filter(isPlainObject);
 }
 
-/** A command entry is its script (or its whole command when it runs none); anything else, its JSON. */
+/** A command entry is its `hookIdentity`; anything else, its JSON. */
 function entryKey(entry) {
-  if (entry.type === 'command' && typeof entry.command === 'string') {
-    return `command\0${comparablePath(commandScript(entry.command) || entry.command)}`;
-  }
+  if (entry.type === 'command' && typeof entry.command === 'string') return `command\0${hookIdentity(entry.command)}`;
   return `other\0${JSON.stringify(entry)}`;
 }
 
@@ -447,10 +472,6 @@ function mergePermissions(current, template) {
 /** Two spellings of one path-bearing rule are one rule: `Read(C:\x\**)` and `Read(C:/x/**)`. */
 function comparableRule(item) {
   return typeof item === 'string' ? toPosix(item) : JSON.stringify(item);
-}
-
-function comparablePath(value) {
-  return toPosix(value).toLowerCase();
 }
 
 // ---------------------------------------------------------------------------

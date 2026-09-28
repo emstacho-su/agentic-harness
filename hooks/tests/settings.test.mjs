@@ -16,6 +16,8 @@ import {
   SESSION_START_TIMEOUT_SECONDS,
   hookCommand,
   hookCommands,
+  hookIdentity,
+  nodeScript,
   registeredEvents,
   registrationStatus,
   withHookRegistered,
@@ -262,4 +264,37 @@ test('registrationStatus: a right entry anywhere wins over a wrong one', () => {
 
 test('registrationStatus refuses an event it does not own', () => {
   assert.throws(() => registrationStatus({}, 'PreToolUse', HOOKS_DIR), /PreToolUse/);
+});
+
+// ------------------------------------------------------- hookIdentity: one rule for installer, merge and doctor
+
+test('hookIdentity: a node command is its script, any node, slashes or case; anything else is the whole command', () => {
+  const script = `${HOOKS_DIR}/session-start.mjs`;
+  const same = [
+    `"${NODE}" "${script}"`,
+    `node ${script}`,
+    String.raw`"D:\Tools\NODE.EXE" "C:\Users\estac\.claude\hooks\session-start.mjs"`,
+    `/usr/local/bin/node "${script.toUpperCase()}"`,
+  ];
+  for (const command of same) assert.equal(hookIdentity(command), hookIdentity(same[0]), command);
+  assert.notEqual(hookIdentity(`node ${HOOKS_DIR}/session-capture.mjs`), hookIdentity(same[0]));
+
+  assert.notEqual(hookIdentity('bash -c "a"'), hookIdentity('bash -c "b"'));
+  assert.equal(hookIdentity('  bash   -c "a" '), hookIdentity('bash -c "a"'), 'spacing is not identity');
+  assert.notEqual(hookIdentity('bash -c "A"'), hookIdentity('bash -c "a"'), 'a non-node command keeps its case');
+  assert.notEqual(hookIdentity('node -e "1"'), hookIdentity('node -e "2"'), 'node with a flag first runs no script');
+  assert.equal(nodeScript(`"${NODE}" "${script}"`), script);
+  assert.equal(nodeScript('bash -c "node x.mjs"'), '');
+});
+
+test('withHookRegistered: our script under another node is already registered, not added again', () => {
+  const otherNode = {
+    hooks: {
+      SessionEnd: [{ hooks: [{ type: 'command', command: `"D:/other/node.exe" "${HOOKS_DIR}/session-capture.mjs"` }] }],
+    },
+  };
+  const { added, unchanged, settings } = withHookRegistered(otherNode, COMMANDS);
+  assert.deepEqual(unchanged, ['SessionEnd']);
+  assert.deepEqual(added, ['SubagentStop', 'SessionStart']);
+  assert.equal(settings.hooks.SessionEnd.length, 1);
 });

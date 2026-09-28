@@ -332,7 +332,23 @@ try {
     Test-Check 'a credential in a remote URL is not printed' (-not $r.Text.Contains('tok3n-secret'))
     Test-Check 'the redacted URL is still shown' ($r.Text.Contains('https://***@github.com/work-acct/vault-work-vm.git')) $r.Text
 
-    # (13) an unknown argument is refused before anything runs.
+    # (13) -SkipConfig (or --skip-config) skips step 7 with a line that says so; every other step still runs.
+    $homeDir = New-FakeHome 'skip-config' @('HARNESS_REALMS=')
+    $r = Invoke-Bootstrap $homeDir 'skip-config' @('-SkipConfig')
+    Test-Check "-SkipConfig exits 0 (exit $($r.Code))" ($r.Code -eq 0) $r.Text
+    Test-Check '-SkipConfig still prints the step 7 header' ($r.Text.Contains('== step 7 config')) $r.Text
+    Test-Check '-SkipConfig says step 7 was skipped and why' ($r.Text.Contains('skipped (--skip-config)')) $r.Text
+    Test-Check '-SkipConfig clones no claude-config' (-not $r.CallText.Contains('claude-config')) $r.CallText
+    Test-Check '-SkipConfig runs no install --config' (-not $r.CallText.Contains('--config --apply')) $r.CallText
+    Test-Check '-SkipConfig still runs install and doctor' (Test-InOrder $r.Calls @('hooks/install.mjs --register-mcp', 'hooks/doctor.mjs --strict')) $r.CallText
+    Test-Check '-SkipConfig creates no config folder' (-not (Test-Path (Join-Path $homeDir 'claude-config')))
+    $r = Invoke-Bootstrap $homeDir 'skip-config-dashes' @('--dry-run', '--skip-config')
+    Test-Check '--skip-config with --dry-run says so and shows no config command' ($r.Text.Contains('skipped (--skip-config)') -and -not $r.Text.Contains('install.mjs --config')) $r.Text
+    $homeDir = New-FakeHome 'config-fails' @('HARNESS_REALMS=')
+    $r = Invoke-Bootstrap $homeDir 'config-fails' -Environment @{ FAKE_EXIT_NODE = '1' }
+    Test-Check 'without -SkipConfig a failing step 7 still stops the run' ($r.Text.Contains('bootstrap: step 7 config failed (exit 1)')) $r.Text
+
+    # (14) an unknown argument is refused before anything runs.
     $homeDir = New-FakeHome 'bad-arg' @('HARNESS_REALMS=')
     $r = Invoke-Bootstrap $homeDir 'bad-arg' @('--apply')
     Test-Check "an unknown argument exits 2 (exit $($r.Code))" ($r.Code -eq 2) $r.Text

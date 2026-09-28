@@ -292,7 +292,23 @@ run_bootstrap redact -- --dry-run
 check "a credential in a remote URL is not printed" out_lacks "tok3n-secret"
 check "the redacted URL is still shown" out_has "https://***@github.com/work-acct/vault-work-vm.git"
 
-# (13) an unknown argument is refused before anything runs.
+# (13) --skip-config skips step 7 with a line that says so; every other step still runs.
+new_home skip-config "HARNESS_REALMS="
+run_bootstrap skip-config -- --skip-config
+check "--skip-config exits 0 (exit $run_code)" exit_is 0
+check "--skip-config still prints the step 7 header" out_has "== step 7 config"
+check "--skip-config says step 7 was skipped and why" out_has "skipped (--skip-config)"
+check "--skip-config clones no claude-config" calls_lack "claude-config"
+check "--skip-config runs no install --config" calls_lack "--config --apply"
+check "--skip-config still runs install and doctor" in_order "$CALLS" "hooks/install.mjs --register-mcp" "hooks/doctor.mjs --strict"
+check "--skip-config creates no config folder" [ ! -e "$FAKE_HOME/claude-config" ]
+run_bootstrap skip-config-dry -- --dry-run --skip-config
+check "--skip-config with --dry-run says so and shows no config command" out_has "skipped (--skip-config)" && out_lacks "install.mjs --config"
+new_home config-fails "HARNESS_REALMS="
+run_bootstrap config-fails FAKE_EXIT_NODE=1
+check "without --skip-config a failing step 7 still stops the run" out_has "bootstrap: step 7 config failed (exit 1)"
+
+# (14) an unknown argument is refused before anything runs.
 new_home bad-arg "HARNESS_REALMS="
 run_bootstrap bad-arg -- --apply
 check "an unknown argument exits 2 (exit $run_code)" exit_is 2

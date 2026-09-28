@@ -32,7 +32,7 @@ import {
   renderSettingsTemplate,
   scanForSecrets,
 } from '../lib/claude-config.mjs';
-import { findSecretMatches, redact } from '../lib/redact.mjs';
+import { SECRET_RULES, findSecretMatches, redact } from '../lib/redact.mjs';
 import { FIXTURES_DIR } from './helpers/sandbox.mjs';
 
 const FIXTURE_HOME = path.join(FIXTURES_DIR, 'claude-home');
@@ -99,7 +99,7 @@ test('the denylist carries every required rule, each with a reason', () => {
   const required = [
     '.credentials.json', 'history.jsonl', 'projects/', 'sessions/', 'file-history/', 'paste-cache/',
     'shell-snapshots/', 'telemetry/', '*.log', 'daemon*', 'settings.json', 'settings.local.json',
-    '.env*', 'node_modules/', '.git/', '*.pem', '*.key', 'id_*',
+    '.env*', 'node_modules/', '.git/', '*.pem', '*.key', 'id_rsa*', 'id_dsa*', 'id_ecdsa*', 'id_ed25519*',
   ];
   const patterns = DENYLIST.map((entry) => entry.pattern);
   for (const pattern of required) assert.ok(patterns.includes(pattern), `missing ${pattern}`);
@@ -118,8 +118,19 @@ test('denylist resolution matches any segment, directory rules only on directori
     ['skills/x/.git', true, '.git/'],
     ['skills/projects/notes.md', false, 'projects/'],
     ['rules/debug.log', false, '*.log'],
-    ['skills/daemon-helper/SKILL.md', false, 'daemon*'],
-    ['skills/ssh/id_ed25519', false, 'id_*'],
+    ['daemon', true, 'daemon*'],
+    ['daemon.json', false, 'daemon*'],
+    ['skills/ssh/id_ed25519', false, 'id_ed25519*'],
+    ['skills/ssh/id_ed25519.pub', false, 'id_ed25519*'],
+    ['skills/x/id_rsa', false, 'id_rsa*'],
+    ['skills/x/id_rsa_work', false, 'id_rsa*'],
+    ['skills/x/id_ecdsa_sk', false, 'id_ecdsa*'],
+    ['skills/x/id_dsa', false, 'id_dsa*'],
+    // daemon* is a top-level entry of ~/.claude only; id_ names only SSH keys.
+    ['skills/daemon-tools/a.md', false, null],
+    ['skills/daemon-helper/SKILL.md', false, null],
+    ['skills/x/scripts/id_map.py', false, null],
+    ['skills/x/id_rsa.md', false, 'id_rsa*'],
     ['skills/tls/server.pem', false, '*.pem'],
     ['skills/tls/server.key', false, '*.key'],
     ['skills/foo/settings.json', false, 'settings.json'],
@@ -178,6 +189,9 @@ test('planExport never walks outside the allowlist and refuses denylisted paths 
     write(claudeDir, 'skills/x/SKILL.md', '# x');
     write(claudeDir, 'rules/debug.log', 'log');
     write(claudeDir, 'skills/ssh/id_rsa', 'fake');
+    // Named like a hazard, but not one: exported.
+    write(claudeDir, 'skills/x/scripts/id_map.py', 'ID_MAP = {}\n');
+    write(claudeDir, 'skills/daemon-tools/a.md', '# daemon tools\n');
 
     const plan = planExport(claudeDir);
 
@@ -185,14 +199,16 @@ test('planExport never walks outside the allowlist and refuses denylisted paths 
       'CLAUDE.md',
       'rules/common/coding-style.md',
       'skill-vault/languages/python/SKILL.md',
+      'skills/daemon-tools/a.md',
       'skills/foo/SKILL.md',
       'skills/tdd/SKILL.md',
       'skills/x/SKILL.md',
+      'skills/x/scripts/id_map.py',
     ]);
     assert.deepEqual(plan.refused, [
       { path: 'rules/debug.log', rule: '*.log' },
       { path: 'skills/foo/.env', rule: '.env*' },
-      { path: 'skills/ssh/id_rsa', rule: 'id_*' },
+      { path: 'skills/ssh/id_rsa', rule: 'id_rsa*' },
       { path: 'skills/x/node_modules', rule: 'node_modules/' },
     ]);
     for (const leaked of ['.credentials.json', 'history.jsonl', 'NEXT-SESSION.md', 'settings.json']) {
@@ -306,6 +322,17 @@ test('findSecretMatches ignores placeholders and references, as the capture hook
   assert.deepEqual(findSecretMatches(null), []);
 });
 
+test('findSecretMatches: a rule that throws is a finding named <rule>:error, so the gate fails closed', () => {
+  const throwsOnMatch = { name: 'throws-on-match', re: /t/g, secret: () => { throw new Error('rule bug'); } };
+  const notGlobal = { name: 'not-global', re: /t/ }; // matchAll itself throws on a non-global pattern
+  const text = `line one\npasted ${FAKE_GITHUB_TOKEN}\n`;
+  const matches = findSecretMatches(text, [throwsOnMatch, ...SECRET_RULES, notGlobal]);
+  assert.deepEqual(matches.map((m) => m.rule), ['throws-on-match:error', 'github-token', 'not-global:error']);
+  assert.ok(!JSON.stringify(matches).includes(FAKE_GITHUB_TOKEN));
+  // The capture hook's redaction still skips a bad rule rather than lose the note.
+  assert.equal(redact(`x ${FAKE_GITHUB_TOKEN}`), 'x [REDACTED-KEY]');
+});
+
 test('findSecretMatches reads PAT as a word, not the letters inside path, pattern or dispatch', () => {
   const value = 'ValueLongEnough123';
   const lines = [
@@ -365,6 +392,35 @@ test('a key inside a binary file is still found: binaries are scanned as bytes, 
 
     const verdict = scanForSecrets(planExport(claudeDir).files);
     assert.deepEqual(verdict.findings, [{ path: 'skills/bin/blob.dat', rule: 'github-token', line: 1 }]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('a key in a UTF-16 file is found: LE or BE, with a BOM or without, on disk or in memory', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const text = `# notes\r\n\r\nuse ${FAKE_GITHUB_TOKEN} to push\r\n`;
+    const le = Buffer.from(text, 'utf16le');
+    const be = Buffer.from(le).swap16();
+    const bom = (bytes, mark) => Buffer.concat([Buffer.from(mark), bytes]);
+    const files = [
+      { path: 'skills/u/utf8.md', bytes: Buffer.from(text, 'utf8') },
+      { path: 'skills/u/le-bom.md', bytes: bom(le, [0xff, 0xfe]) },
+      { path: 'skills/u/be-bom.md', bytes: bom(be, [0xfe, 0xff]) },
+      { path: 'skills/u/le-plain.md', bytes: le },
+      { path: 'skills/u/be-plain.md', bytes: be },
+    ];
+    for (const file of files) write(root, file.path, file.bytes);
+
+    const onDisk = scanForSecrets(files.map((file) => ({ path: file.path, source: path.join(root, ...file.path.split('/')) })));
+    const inMemory = scanForSecrets(files.map((file) => ({ path: file.path, content: file.bytes })));
+    for (const verdict of [onDisk, inMemory]) {
+      assert.deepEqual(
+        verdict.findings,
+        files.map((file) => ({ path: file.path, rule: 'github-token', line: 3 })).sort((a, b) => (a.path < b.path ? -1 : 1)),
+      );
+    }
   } finally {
     cleanup();
   }
