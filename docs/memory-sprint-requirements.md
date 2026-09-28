@@ -211,6 +211,50 @@ untrusted notes) and R-H5 (a repo built from a folder that holds credentials).
 - **Done when.** `projects/{claude,memory,projects,remote}` are gone; `harness/agentic-harness` holds
   the moved notes; ingest reports only `metadata-updated` for them and 0 deleted; eval is unchanged.
 
+### Phase H-a record — L3, 2026-09-27
+
+Code: PR #23 (merged `35a450b`): R-H1 realm, R-H2 routing, R-H3 `move-to-realm`, three review passes.
+
+**Gate waived.** Stack said "go L3 (skip the nightly log)": the three `committed -> pulled ->
+pushed` nights never ran (see the Phase P record). A manual `sync-realms --push` just before the
+move gave `committed -> pulled -> pushed` for both realms.
+
+What the live vault held, and the spec did not know: `projects/memory` (26) and `projects/projects`
+(37) were **bb2dash** work, filed by cwds inside Claude Code's own folders
+(`~/.claude/projects/C--Users-estac-projects-bb2dash/{memory,<session>/subagents/…}`). R-H2 therefore
+decodes those folders and scratchpads before any rule reads the cwd, for every project, and
+`~/projects` itself is routed to `misc` (Stack's call).
+
+What ran, 17:02–17:20 EDT, from `main` at `35a450b`:
+
+- Main checkout pulled to `35a450b` (the nightly runs scripts and ingest from it).
+- `uv run ingest eval` before: hit@3 0.92 (57/62), MRR 0.78, negatives 5/5.
+- `~/.harness/machine.env`: `HARNESS_REALMS=projects:push,classes:push,harness:push` (first, so no
+  unlisted realm is ever on disk).
+- `gh repo create emstacho-su/vault-harness --private`; `init-realm --realm harness --remote …`
+  (baseline = the three policy files, `675cb91`); `git push -u origin main` by hand.
+- Doctor: `realm harness  git checkout, origin …/vault-harness.git`.
+- `move-to-realm --dry-run`: 332 moves (260 to `harness/agentic-harness`, 71 to `projects/bb2dash`,
+  1 to `projects/misc`), 4 hubs to archive, 0 conflicts; read by Stack
+  (`~/.claude-archive/2026-09-27-move-to-realm-dry-run.txt`). `--apply`: moved 332, archived 4,
+  failed 0. The five source collections are gone.
+- `install.mjs`: 5 files, settings unchanged; backup `~/.claude/hooks/backup-2026-09-27T21-13-29-405Z`.
+- `sync-realms --push`: `projects` and `harness` `committed -> pulled -> pushed`.
+- Full ingest with `--prune`: 262 `metadata-updated`, 637 unchanged, 0 chunks written. Pruned 5 in
+  `projects`: the 4 archived hubs (`claude`, `memory`, `projects`, `remote`), which the move takes
+  out of the vault by design, and `projects/vault/index.md`, deleted by the 17:53 sync that same day
+  and never pruned because that run's ingest failed on DNS. No moved note was deleted.
+- Eval after: hit@3 0.92 (57/62), MRR 0.78, negatives 5/5, the same five failing cases. Label check
+  lists seven cases whose answers now sit in `harness/agentic-harness`, `projects/bb2dash` or
+  `projects/misc`; relabelling them is Q-b's (golden.yaml says so).
+- `rename-hubs --check`: 1,049 up links, 0 broken hub links, 127 pending worker links.
+- The installed hook routes `~/agentic-harness`, a `-wt-` worktree, `~/.claude`, the harness Claude
+  memory folder and a harness scratchpad to `harness/agentic-harness`, and bb2dash (repo and Claude
+  memory folder) to `projects/bb2dash`.
+
+Open: the done-when's three real sessions landing in `harness/agentic-harness/sessions/` (they
+will on their next SessionEnd); the next nightly's `harness: … -> pushed` line.
+
 ### R-H4 A harness session starts knowing where the project is
 - **Requirement.** A `SessionStart` hook (startup and resume) resolves the collection with the same
   rules as capture and returns `additionalContext` of at most ~1,500 tokens: the collection's
