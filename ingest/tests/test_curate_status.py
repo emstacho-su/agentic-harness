@@ -8,6 +8,7 @@ facts; nothing reaches a model, a database, git or the real vault.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ import pytest
 from ingest.curate.gitfacts import Commit, GitFacts, PullRequest
 from ingest.curate.inventory import build_inventory
 from ingest.curate.plan import PlanSourceProblem, parse_plan
+from ingest.curate.profile import PlanSource
 from ingest.curate.status import (
     STATES,
     Claim,
@@ -195,9 +197,12 @@ def git_pr(number: int, title: str, merged_at: str | None) -> PullRequest:
                        merged_at, None, ())
 
 
-def build(root: Path, store: InMemoryCurateStore, git=None, docs=None):
+def build(root: Path, store: InMemoryCurateStore, git=None, docs=None, plan_sources=None):
     plan_docs = (parse_plan(PLAN, "/repo/docs/plan.md"),) if docs is None else docs
-    return build_status(inventory(root), store.get_extractions, plan_docs, git, version=VERSION)
+    inv = inventory(root)
+    if plan_sources is not None:
+        inv = replace(inv, profile=replace(inv.profile, plan_sources=plan_sources))
+    return build_status(inv, store.get_extractions, plan_docs, git, version=VERSION)
 
 
 def by_id(status):
@@ -333,6 +338,40 @@ def test_a_requirement_repeated_with_the_same_title_is_not_a_collision(vault: Pa
     other = parse_plan("# Other\n\n### R-A2 Write the store\nMore detail.\n", "/repo/docs/other.md")
     status = build(vault, InMemoryCurateStore(), docs=(parse_plan(PLAN, "/repo/docs/plan.md"), other))
     assert status.id_collisions == ()
+
+
+def test_a_collision_names_sources_the_way_evidence_does(vault: Path) -> None:
+    # Everywhere else a source is shown to a human -- CollectionStatus.sources, an Evidence ref --
+    # it goes through the hub's own plan_sources: aliases, not the resolved filesystem path.
+    other = parse_plan("# Other\n\n### R-A2 Store again\n", "/repo/docs/other.md")
+    sources = (
+        PlanSource(given="Plan", resolved="/repo/docs/plan.md", exists=True),
+        PlanSource(given="Other", resolved="/repo/docs/other.md", exists=True),
+    )
+    status = build(vault, InMemoryCurateStore(), docs=(parse_plan(PLAN, "/repo/docs/plan.md"), other),
+                   plan_sources=sources)
+    assert status.sources == ("Plan", "Other")
+    assert status.id_collisions == (
+        RequirementIdCollision(id="R-A2", kept_source="Plan", kept_title="Write the store",
+                               other_source="Other", other_title="Store again"),
+    )
+
+
+def test_two_headings_for_one_id_in_one_document_is_a_same_source_collision(vault: Path) -> None:
+    doc = parse_plan("# One\n\n### R-A2 First\n\n### R-A2 Second\n", "/repo/docs/one.md")
+    status = build(vault, InMemoryCurateStore(), docs=(doc,))
+    assert status.id_collisions == (
+        RequirementIdCollision(id="R-A2", kept_source="/repo/docs/one.md", kept_title="First",
+                               other_source="/repo/docs/one.md", other_title="Second"),
+    )
+
+
+def test_the_same_alternate_title_from_a_third_document_is_reported_once(vault: Path) -> None:
+    doc_b = parse_plan("# B\n\n### R-A2 Store again\n", "/repo/docs/b.md")
+    doc_c = parse_plan("# C\n\n### R-A2 Store again\n", "/repo/docs/c.md")
+    status = build(vault, InMemoryCurateStore(), docs=(parse_plan(PLAN, "/repo/docs/plan.md"), doc_b, doc_c))
+    assert len(status.id_collisions) == 1
+    assert status.id_collisions[0].other_source == "/repo/docs/b.md"
 
 
 def test_plan_problems_and_sources_are_kept(vault: Path) -> None:

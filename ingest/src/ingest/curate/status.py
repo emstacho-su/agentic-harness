@@ -194,7 +194,7 @@ def build_status(inventory: Inventory, lookup: Lookup, plan_docs: Iterable[PlanD
     documents = [doc for doc in loaded if isinstance(doc, PlanDocument)]
     problems = tuple(doc for doc in loaded if isinstance(doc, PlanSourceProblem))
     names = _source_names(inventory, documents)
-    planned, id_collisions = _planned(documents)
+    planned, id_collisions = _planned(documents, names)
 
     gathered: dict[str, _Gathered] = {rid: _Gathered([], []) for rid in planned}
     for rid, (_, boxes) in planned.items():
@@ -229,7 +229,7 @@ def _source_names(inventory: Inventory, documents: Sequence[PlanDocument]) -> di
 
 
 def _planned(
-    documents: Sequence[PlanDocument],
+    documents: Sequence[PlanDocument], names: Mapping[str, str],
 ) -> tuple[dict[str, tuple[PlanRequirement, list[tuple[str, PlanCheckbox]]]], tuple[RequirementIdCollision, ...]]:
     """id -> (its first PlanRequirement, [(document source, checkbox)] across every heading for it).
 
@@ -238,24 +238,28 @@ def _planned(
     independent plan documents can also reuse an id by coincidence (each letters its own phases
     from A); the merge does not change for that case -- there is no way to tell them apart from
     here, and evidence (a note, a commit) is just as ambiguous either way -- but a title mismatch
-    is reported as a collision so it is never silently invisible.
+    is reported as a collision (named through ``names``, the same hub-friendly source names
+    everything else in the report uses) so it is never silently invisible. A given
+    ``(id, other title)`` is only reported once, even with a third document repeating it.
     """
     planned: dict[str, tuple[PlanRequirement, list[tuple[str, PlanCheckbox]]]] = {}
     first_source: dict[str, str] = {}
+    reported: set[tuple[str, str]] = set()
     collisions: list[RequirementIdCollision] = []
     for doc in documents:
         for requirement in doc.requirements:
             existing = planned.get(requirement.id)
             if existing is None:
-                planned[requirement.id] = (requirement, [])
+                existing = (requirement, [])
+                planned[requirement.id] = existing
                 first_source[requirement.id] = doc.source
-            elif existing[0].title != requirement.title:
+            elif existing[0].title != requirement.title and (requirement.id, requirement.title) not in reported:
+                reported.add((requirement.id, requirement.title))
                 collisions.append(RequirementIdCollision(
-                    id=requirement.id, kept_source=first_source[requirement.id], kept_title=existing[0].title,
-                    other_source=doc.source, other_title=requirement.title,
+                    id=requirement.id, kept_source=names[first_source[requirement.id]], kept_title=existing[0].title,
+                    other_source=names[doc.source], other_title=requirement.title,
                 ))
-            _, boxes = planned[requirement.id]
-            boxes.extend((doc.source, box) for box in requirement.checkboxes)
+            existing[1].extend((doc.source, box) for box in requirement.checkboxes)
     return planned, tuple(collisions)
 
 

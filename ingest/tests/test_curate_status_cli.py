@@ -259,6 +259,19 @@ def test_a_missing_plan_source_exits_one(tmp_path: Path, plan_file: Path, capsys
     assert "gone.md: not found" in status_path(vault).read_text(encoding="utf-8")
 
 
+def test_an_id_collision_across_plan_sources_exits_one(tmp_path: Path, plan_file: Path, capsys) -> None:
+    other = tmp_path / "repo" / "docs" / "other.md"
+    other.write_text("# Other\n\n### R-A2 Store again\n- [x] store shipped\n", encoding="utf-8")
+    vault = make_vault(tmp_path, [plan_file.as_posix(), other.as_posix()])
+    code, out, _ = run(vault, ["--collection", "demo"], capsys, store=InMemoryCurateStore())
+    assert code == 1
+    assert "id collisions 1" in out
+    assert f"    id collision: R-A2 kept from {plan_file.as_posix()} (Write the store); " \
+           f"also in {other.as_posix()} (Store again)" in out
+    body = status_path(vault).read_text(encoding="utf-8")
+    assert "**R-A2** is defined in both" in body and "Write the store" in body and "Store again" in body
+
+
 def test_the_fixture_vault_demo_has_a_missing_plan_source(tmp_path: Path, capsys) -> None:
     vault = tmp_path / "vault"
     shutil.copytree(FIXTURE, vault)

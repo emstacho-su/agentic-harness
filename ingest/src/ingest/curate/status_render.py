@@ -35,6 +35,7 @@ from .status import (
     Claim,
     CollectionStatus,
     Evidence,
+    RequirementIdCollision,
     RequirementStatus,
 )
 
@@ -179,11 +180,21 @@ def _briefs(items: Sequence[BriefItem]) -> list[str]:
 def _sources(status: CollectionStatus) -> list[str]:
     lines = [f"- {escape_inline(name)}: found" for name in status.sources]
     lines.extend(f"- {escape_inline(p.given)}: {escape_inline(p.reason)}" for p in status.problems)
-    lines.extend(
-        f"- **{escape_inline(c.id)}** is defined in both {escape_inline(c.kept_source)} "
-        f"({escape_inline(c.kept_title)}) and {escape_inline(c.other_source)} "
-        f"({escape_inline(c.other_title)}) with different titles; they are tracked as one row "
-        "under the first title, so evidence for this id may belong to either."
-        for c in status.id_collisions
-    )
+    lines.extend(_collision_line(c) for c in status.id_collisions)
     return lines or ["No plan sources in the hub."]
+
+
+def _collision_line(c: RequirementIdCollision) -> str:
+    title = f"({escape_inline(c.kept_title)})"
+    other_title = f"({escape_inline(c.other_title)})"
+    if c.kept_source == c.other_source:
+        return (
+            f"- **{escape_inline(c.id)}** has two headings with different titles in "
+            f"{escape_inline(c.kept_source)}: {title} and {other_title}; they are tracked as one row "
+            "under the first title, so evidence for this id may belong to either."
+        )
+    return (
+        f"- **{escape_inline(c.id)}** is defined in both {escape_inline(c.kept_source)} {title} and "
+        f"{escape_inline(c.other_source)} {other_title} with different titles; they are tracked as "
+        "one row under the first title, so evidence for this id may belong to either."
+    )

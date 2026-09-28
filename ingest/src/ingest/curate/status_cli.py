@@ -14,10 +14,11 @@ report. ``--dry-run`` writes no file; the store is never written by this stage.
 The report prints ids, paths and counts only: claim texts, titles and commit
 subjects are note- or repo-derived and stay in status.md.
 
-Exit codes: 0 done; 1 findings (a requirement is contradicted, or a plan source
-is missing or unreadable); 2 could not run (bad arguments or vault, a hub that
-cannot be read, the store unreachable even for a dry run, a status.md the
-curator may not overwrite or cannot write). Never 3: there is no budget.
+Exit codes: 0 done; 1 findings (a requirement is contradicted, a plan source is
+missing or unreadable, or two plan sources give the same requirement id
+different titles); 2 could not run (bad arguments or vault, a hub that cannot
+be read, the store unreachable even for a dry run, a status.md the curator may
+not overwrite or cannot write). Never 3: there is no budget.
 """
 
 from __future__ import annotations

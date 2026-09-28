@@ -151,6 +151,15 @@ def test_an_id_collision_is_visible_in_plan_sources() -> None:
     assert "docs/plan.md" in section and "docs/other.md" in section
 
 
+def test_a_same_document_id_collision_reads_as_two_headings_not_two_sources() -> None:
+    collision = RequirementIdCollision(id="R-A2", kept_source="docs/plan.md", kept_title="First",
+                                       other_source="docs/plan.md", other_title="Second")
+    body = status_body(status(id_collisions=[collision]), NOTES)
+    section = body.split("## Plan sources", 1)[1]
+    assert "has two headings with different titles in docs/plan.md" in section
+    assert "is defined in both" not in section
+
+
 def test_an_id_collision_title_is_escaped() -> None:
     collision = RequirementIdCollision(id="R-C1", kept_source="docs/plan.md", kept_title="<b>bold</b>",
                                        other_source="docs/other.md", other_title="[[x]]")
