@@ -64,6 +64,10 @@ LEGACY_PARENTS = ("projects", "classes")
 NOT_A_COLLECTION = "not a collection (no hub note and no sessions/)"
 NAME_NOT_ALLOWED = "collection name not allowed"
 
+# Hub fields a hub should set rather than leave to a fallback; one warning per
+# missing field, which the L7 pre-flight reads. ``repo`` is not among them.
+EXPECTED_HUB_FIELDS = ("kind", "plan_sources", "repo_path")
+
 # (repo_path, repo_slug) -> GitFacts. gitfacts.collect_git_facts, bound to its runner.
 GitCollector = Callable[[Path | None, str | None], Any]
 
@@ -267,6 +271,10 @@ def _profile_warnings(profile: CollectionProfile):
             yield f"plan source not found: {source.given}"
     if profile.repo_path is not None and not Path(profile.repo_path).is_dir():
         yield f"repo_path does not exist: {profile.repo_path}"
+    if profile.hub_path is not None:
+        for name in EXPECTED_HUB_FIELDS:
+            if name not in profile.explicit:
+                yield f"hub does not set {name} explicitly"
 
 
 def _git_facts(profile: CollectionProfile, git_collector: GitCollector | None, warnings: list[str]) -> Any:

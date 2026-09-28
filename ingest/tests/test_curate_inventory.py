@@ -294,6 +294,55 @@ def test_a_hub_repo_path_that_does_not_exist_is_a_warning() -> None:
     assert any("repo_path does not exist" in w for w in demo.warnings)
 
 
+# -- explicit hub fields (read by the L7 pre-flight) -------------------------------------
+
+
+def test_a_hub_that_sets_every_field_gets_no_explicit_field_warning() -> None:
+    demo = by_name(build_inventory(FIXTURE), "demo")
+    assert demo.warnings == (
+        "plan source not found: C:/definitely/not/here/requirements.md",
+        "repo_path does not exist: C:/definitely/not/here",
+    )
+
+
+def test_a_hub_that_sets_no_field_gets_one_warning_for_each_field_the_curator_relies_on() -> None:
+    nokind = by_name(build_inventory(FIXTURE), "nokind")
+    assert nokind.warnings == (
+        "hub does not set kind explicitly",
+        "hub does not set plan_sources explicitly",
+        "hub does not set repo_path explicitly",
+    )
+
+
+def test_a_hub_that_sets_some_fields_is_warned_about_the_rest() -> None:
+    ist999 = by_name(build_inventory(FIXTURE), "ist999")
+    assert ist999.warnings == ("hub does not set repo_path explicitly",)
+
+
+def test_a_collection_without_a_hub_gets_no_explicit_field_warning(vault: Path) -> None:
+    (vault / "projects/nokind/nokind.md").unlink()
+    nokind = by_name(build_inventory(vault), "nokind")
+    assert nokind.profile.hub_path is None
+    assert nokind.warnings == ()
+
+
+def test_profile_explicit_names_the_fields_the_hub_set() -> None:
+    result = build_inventory(FIXTURE)
+    assert by_name(result, "demo").profile.explicit == ("kind", "plan_sources", "repo", "repo_path")
+    assert by_name(result, "nokind").profile.explicit == ()
+    assert by_name(result, "ist999").profile.explicit == ("kind", "plan_sources")
+
+
+def test_a_null_hub_field_is_not_explicit(tmp_path: Path) -> None:
+    directory = _collection(tmp_path, "projects", "---\ntype: index\nkind:\nrepo: 'a/b'\nplan_sources: []\n---\n")
+    assert _profile(tmp_path, directory, "projects").explicit == ("plan_sources", "repo")
+
+
+def test_a_collection_without_a_hub_has_no_explicit_fields(tmp_path: Path) -> None:
+    directory = _collection(tmp_path, "projects", None)
+    assert _profile(tmp_path, directory, "projects").explicit == ()
+
+
 # -- profile -----------------------------------------------------------------------------
 
 
@@ -373,6 +422,30 @@ def test_plan_source_wikilinks_are_resolved_as_vault_notes(tmp_path: Path) -> No
     (directory / "plan.md").write_text("x", encoding="utf-8")
     source = _profile(tmp_path, directory, "projects").plan_sources[0]
     assert (source.given, source.exists) == ("[[projects/coll/plan|Plan]]", True)
+
+
+def test_a_plan_source_that_is_a_directory_is_valid(tmp_path: Path) -> None:
+    repo_planning = tmp_path / "repo" / "docs" / "planning"
+    repo_planning.mkdir(parents=True)
+    hub = (
+        "---\ntype: index\nplan_sources:\n  - 'projects/coll/planning'\n"
+        f"  - '{repo_planning.as_posix()}'\n  - 'projects/coll/plan'\n---\n"
+    )
+    directory = _collection(tmp_path, "projects", hub)
+    (directory / "planning").mkdir()
+    (directory / "plan.md").write_text("x", encoding="utf-8")
+    sources = _profile(tmp_path, directory, "projects").plan_sources
+    assert [(s.resolved, s.exists, s.is_dir) for s in sources] == [
+        ((directory / "planning").as_posix(), True, True),
+        (repo_planning.as_posix(), True, True),
+        ((directory / "plan.md").as_posix(), True, False),
+    ]
+
+
+def test_a_missing_plan_source_is_neither_a_file_nor_a_directory(tmp_path: Path) -> None:
+    directory = _collection(tmp_path, "projects", "---\ntype: index\nplan_sources: ['projects/coll/gone']\n---\n")
+    (source,) = _profile(tmp_path, directory, "projects").plan_sources
+    assert (source.resolved, source.exists, source.is_dir) == ((directory / "gone.md").as_posix(), False, False)
 
 
 def test_repo_path_is_derived_from_the_most_frequent_session_cwd_inside_a_git_repo(tmp_path: Path) -> None:

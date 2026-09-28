@@ -6,13 +6,15 @@ the CLI runs against a scripted connection. Nothing here touches a database.
 
 from __future__ import annotations
 
+import io
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from ingest.errors import ConfigError
-from ingest.report_cli import HEADINGS, run_report
+from ingest.report_cli import HEADINGS, _as_text, run_report
 from ingest.retrieval_report import (
     DocumentRow,
     EventRow,
@@ -472,3 +474,66 @@ def test_the_cli_dispatches_report_to_this_module(capsys):
     # --limit 0 fails before any connection is opened, so no database is needed.
     assert main(["report", "retrievals", "--limit", "0"]) == 2
     assert "--limit" in capsys.readouterr().err
+
+
+def test_an_injected_clock_bounds_days_back(capsys):
+    conn = ScriptedConnection()
+    assert run_report(["retrievals", "--since", "14d", "--json"], connection=conn, clock=lambda: NOW) == 0
+    capsys.readouterr()
+    assert events_calls(conn)[0][1] == (NOW - timedelta(days=14),) * 2
+
+
+# --------------------------------------------------------------------------
+# stdout is UTF-8 (Phase P: `·` printed as `�` on the Windows console)
+# --------------------------------------------------------------------------
+
+
+class RecordingStream(io.StringIO):
+    def __init__(self, *, fail: bool = False) -> None:
+        super().__init__()
+        self.fail = fail
+        self.reconfigured: list[dict] = []
+
+    def reconfigure(self, **kwargs):
+        self.reconfigured.append(kwargs)
+        if self.fail:
+            raise ValueError("cannot reconfigure")
+
+
+def test_the_text_output_is_unchanged(capsys):
+    assert run_report(["retrievals", "--limit", "3"], connection=ScriptedConnection()) == 0
+    expected = _as_text(build_report(EVENTS, NEVER, since=None, limit=3), 3)
+    assert capsys.readouterr().out == expected + "\n"
+
+
+def test_the_json_output_is_unchanged(capsys):
+    assert run_report(["retrievals", "--json"], connection=ScriptedConnection()) == 0
+    expected = json.dumps(build_report(EVENTS, NEVER, since=None, limit=20), indent=2)
+    assert capsys.readouterr().out == expected + "\n"
+
+
+def test_stdout_is_reconfigured_to_utf8(monkeypatch):
+    stream = RecordingStream()
+    monkeypatch.setattr(sys, "stdout", stream)
+    assert run_report(["retrievals", "--json"], connection=ScriptedConnection()) == 0
+    assert stream.reconfigured == [{"encoding": "utf-8"}]
+    assert json.loads(stream.getvalue())["totals"]["events"] == 15
+
+
+@pytest.mark.parametrize("fail", [None, True], ids=["no-reconfigure", "reconfigure-refused"])
+def test_a_stream_that_cannot_be_reconfigured_still_gets_the_report(monkeypatch, fail):
+    stream = io.StringIO() if fail is None else RecordingStream(fail=True)
+    monkeypatch.setattr(sys, "stdout", stream)
+    assert run_report(["retrievals"], connection=ScriptedConnection()) == 0
+    assert HEADINGS["totals"] in stream.getvalue()
+
+
+def test_a_middle_dot_reaches_a_legacy_console_as_utf8(monkeypatch):
+    dotted = event("n9", 0, 1, session="s9", external_id="d.md", title="Session · 2026-09-27")
+    monkeypatch.setitem(globals(), "EVENTS", (*EVENTS, dotted))
+    raw = io.BytesIO()
+    console = io.TextIOWrapper(raw, encoding="ascii")
+    monkeypatch.setattr(sys, "stdout", console)
+    assert run_report(["retrievals", "--limit", "50"], connection=ScriptedConnection()) == 0
+    console.flush()
+    assert "Session · 2026-09-27" in raw.getvalue().decode("utf-8")

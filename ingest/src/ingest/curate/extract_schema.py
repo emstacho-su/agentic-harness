@@ -57,6 +57,8 @@ ISSUE_KINDS = {
     KIND_CLASS: ("misconception", "blocker", "unresolved-question"),
 }
 CLAIMS = ("found", "fixed", "workaround", "wontfix")
+# A status claim's state, which R-C4 reads: finished, started, stopped, or done once and now failing.
+STATUS_STATES = ("done", "in-progress", "blocked", "broken")
 
 # Loose on purpose: R-C2, R-H4, B-3, SC-4, R-N1a all match; a bare word does not.
 REQUIREMENT_ID_PATTERN = r"^[A-Z][A-Za-z0-9]*(-[A-Za-z0-9]+)+$"
@@ -138,6 +140,7 @@ def build_schema(kind: str) -> dict[str, Any]:
             "decision": _object({"summary": summary, "evidence": evidence}),
             "status_claim": _object({
                 "requirement_id": {**requirement_id, "type": ["string", "null"]},
+                "state": {"enum": list(STATUS_STATES)},
                 "claim": summary,
                 "evidence": evidence,
             }),

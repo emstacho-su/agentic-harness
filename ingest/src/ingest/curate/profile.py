@@ -7,13 +7,18 @@ The curator reads four optional fields from it:
   back to the realm folder: ``projects`` -> project, ``classes`` -> class. Any
   other realm needs an explicit ``kind``; guessing would pick the wrong rubric.
 * ``plan_sources:`` — a list (or one string) of vault-relative notes or absolute
-  repo files. Each is kept exactly as given, resolved, and its existence reported.
+  repo files or folders. Each is kept exactly as given, resolved, and its
+  existence reported; a folder (bb2dash's ``docs/planning/``) stands for the
+  ``*.md`` files directly in it (see plan.py).
 * ``repo:`` — the GitHub ``owner/name`` slug. Absent, the most frequent valid
   ``repo:`` among the collection's session notes.
 * ``repo_path:`` — the local checkout. Absent, the most frequent session ``cwd``
   that still exists and is inside a git repo, mapped to that repo's toplevel by
   ``git -C <cwd> rev-parse --show-toplevel``. The runner is injectable: tests
   never shell out.
+
+``CollectionProfile.explicit`` names which of those four the hub set (a key with
+a non-null value), so the inventory can warn about a fallback nobody chose.
 
 A bad field raises :class:`SourceError` naming the hub; the inventory turns that
 into an error for this one collection.
@@ -40,6 +45,9 @@ REALM_FOLDER_KINDS = {"projects": KIND_PROJECT, "classes": KIND_CLASS}
 
 HUB_TYPE = "index"
 
+# The hub fields the curator reads, in the order ``CollectionProfile.explicit`` lists them.
+HUB_FIELDS = ("kind", "plan_sources", "repo", "repo_path")
+
 # Collection names that may be joined into a path. Spaces are allowed because
 # historical collections carry them ("wa2 final"); separators and dots are not.
 COLLECTION_NAME = re.compile(r"^[a-z0-9][a-z0-9 _-]*$")
@@ -55,11 +63,15 @@ Runner = Callable[[Sequence[str], "Path | None"], str]
 
 @dataclass(frozen=True)
 class PlanSource:
-    """One ``plan_sources`` entry: as written, where it points, and whether it is there."""
+    """One ``plan_sources`` entry: as written, where it points, and whether it is there.
+
+    ``exists`` is True for a file or a directory; ``is_dir`` tells them apart.
+    """
 
     given: str
     resolved: str
     exists: bool
+    is_dir: bool = False
 
 
 @dataclass(frozen=True)
@@ -79,6 +91,7 @@ class CollectionProfile:
     repo: str | None
     repo_path: str | None
     hub_path: str | None  # vault-relative posix path, None when the collection has no hub
+    explicit: tuple[str, ...] = ()  # which of HUB_FIELDS the hub set; () without a hub
 
 
 def check_collection_name(name: str) -> str:
@@ -133,6 +146,7 @@ def build_profile(
         repo=_repo(fields, hub_path) or most_frequent_repo(hints),
         repo_path=repo_path or derive_repo_path(hints, runner),
         hub_path=hub_path,
+        explicit=tuple(name for name in HUB_FIELDS if fields.get(name) is not None),
     )
 
 
@@ -174,14 +188,22 @@ def _plan_sources(raw: object, hub_path: str | None) -> tuple[str, ...]:
 
 
 def _resolve(vault: Path, given: str) -> PlanSource:
-    """An absolute path is a repo file; anything else is a vault note, wikilink or not."""
+    """An absolute path is a repo file or folder; anything else is a vault note or folder.
+
+    A vault path without a suffix is a note (``.md`` appended), wikilink or not;
+    it is a folder only when no such note exists and the folder does.
+    """
     target = _unlink(given)
     candidate = Path(target)
     if not candidate.is_absolute():
         candidate = vault / target
         if not candidate.suffix:
-            candidate = candidate.with_name(candidate.name + ".md")
-    return PlanSource(given=given, resolved=candidate.as_posix(), exists=_is_file(candidate))
+            note = candidate.with_name(candidate.name + ".md")
+            candidate = candidate if not _is_file(note) and _is_dir(candidate) else note
+    is_dir = _is_dir(candidate)
+    return PlanSource(
+        given=given, resolved=candidate.as_posix(), exists=is_dir or _is_file(candidate), is_dir=is_dir,
+    )
 
 
 def _unlink(given: str) -> str:

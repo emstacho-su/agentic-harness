@@ -120,8 +120,9 @@ def test_the_schema_accepts_a_full_answer() -> None:
         issues=[_issue("the build failed on Windows", files=["a.py"], claim="fixed", fix_ref="#12")],
         decisions=[{"summary": "Use Postgres.", "evidence": "we chose Postgres"}],
         requirement_ids=["R-C2", "B-3"],
-        status_claims=[{"requirement_id": "R-C2", "claim": "done", "evidence": "R-C2 is done now"},
-                       {"requirement_id": None, "claim": "tests pass", "evidence": "all tests pass"}],
+        status_claims=[{"requirement_id": "R-C2", "state": "done", "claim": "done", "evidence": "R-C2 is done now"},
+                       {"requirement_id": None, "state": "in-progress", "claim": "tests pass",
+                        "evidence": "all tests pass"}],
         open_questions=[{"question": "Why?", "evidence": "why does it fail"}],
     )]}
     assert validate_output(answer, build_schema("project")) == answer
@@ -139,13 +140,25 @@ def test_the_schema_accepts_a_full_answer() -> None:
         lambda a: a["notes"][0].update(ref=1),
         lambda a: a["notes"][0].pop("open_questions"),
         lambda a: a.update(more=[]),
+        lambda a: a["notes"][0]["status_claims"][0].update(state="finished"),
+        lambda a: a["notes"][0]["status_claims"][0].pop("state"),
     ],
 )
 def test_the_schema_rejects_bad_answers(mutate) -> None:
-    answer = {"notes": [_note("N1", issues=[_issue("the build failed on Windows")])]}
+    answer = {"notes": [_note("N1", issues=[_issue("the build failed on Windows")], status_claims=[
+        {"requirement_id": "R-C2", "state": "broken", "claim": "R-C2 broke", "evidence": "R-C2 broke again"}])]}
     mutate(answer)
     with pytest.raises(JudgeOutputInvalid):
         validate_output(answer, build_schema("project"))
+
+
+@pytest.mark.parametrize("kind", ["project", "class"])
+def test_a_status_claim_carries_one_of_four_states(kind: str) -> None:
+    claim = build_schema(kind)["$defs"]["status_claim"]
+    assert claim["properties"]["state"] == {"enum": ["done", "in-progress", "blocked", "broken"]}
+    assert "state" in claim["required"]
+    for state in extract_schema.STATUS_STATES:
+        assert f'"{state}"' in prompts.INSTRUCTIONS
 
 
 def test_the_class_schema_uses_the_class_issue_kinds() -> None:
@@ -218,8 +231,8 @@ def test_a_requirement_id_must_appear_verbatim_in_the_note() -> None:
 def test_a_status_claim_naming_an_absent_requirement_is_rejected() -> None:
     body = "R-C2 is done now and the tests pass."
     answer = _note("N1", status_claims=[
-        {"requirement_id": "R-C9", "claim": "done", "evidence": "R-C2 is done now"},
-        {"requirement_id": "R-C2", "claim": "done", "evidence": "R-C2 is done now"},
+        {"requirement_id": "R-C9", "state": "done", "claim": "done", "evidence": "R-C2 is done now"},
+        {"requirement_id": "R-C2", "state": "done", "claim": "done", "evidence": "R-C2 is done now"},
     ])
     checked = check_note_answer(answer, body)
     assert [item["requirement_id"] for item in checked.accepted] == ["R-C2"]
@@ -261,6 +274,8 @@ def test_the_class_prompt_uses_the_class_rubric() -> None:
 def test_the_version_carries_a_fingerprint_of_schema_and_rubrics(monkeypatch) -> None:
     version = extractor_version()
     assert re.fullmatch(re.escape(extract.EXTRACTOR_VERSION) + r"\+[0-9a-f]{8}", version)
+    assert version.startswith("c2-v1+")
+    assert version != "c2-v1+0eeed88f"  # the version before status_claim gained its state: changed on its own
     monkeypatch.setitem(prompts.RUBRICS, "project", prompts.RUBRICS["project"] + " Also typos.")
     changed = extractor_version()
     assert changed != version and changed.startswith(extract.EXTRACTOR_VERSION + "+")
@@ -547,7 +562,8 @@ def test_an_over_long_or_blank_text_field_rejects_only_that_item() -> None:
                 _issue("The build failed with exit code 3", fix_ref="a" * 201),
                 _issue("The build failed with exit code 3", summary="x" * 300)],
         decisions=[{"summary": "   ", "evidence": "We decided: use R-C2 now."}],
-        status_claims=[{"requirement_id": None, "claim": "c" * 301, "evidence": "We decided: use R-C2 now."}],
+        status_claims=[{"requirement_id": None, "state": "done", "claim": "c" * 301,
+                        "evidence": "We decided: use R-C2 now."}],
         open_questions=[{"question": "q" * 301, "evidence": "First line of the note."}],
     )
     checked = check_note_answer(answer, BODY)
@@ -561,7 +577,7 @@ def test_an_over_long_or_blank_text_field_rejects_only_that_item() -> None:
 def test_a_malformed_requirement_id_is_rejected_as_such() -> None:
     body = "not an id, r-c2 and R-C2 all appear here."
     answer = _note("N1", requirement_ids=["not an id", "r-c2", "R-C2"], status_claims=[
-        {"requirement_id": "r-c2", "claim": "done", "evidence": "all appear here."}])
+        {"requirement_id": "r-c2", "state": "done", "claim": "done", "evidence": "all appear here."}])
     checked = check_note_answer(answer, body)
     assert checked.accepted == ({"type": "requirement", "requirement_id": "R-C2"},)
     assert [(r["type"], r["reason"]) for r in checked.rejected] == [

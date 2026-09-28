@@ -2,6 +2,13 @@
 
 Split from inventory.py so each stays readable. Nothing here decides order or
 nesting; it reads files, classifies them, and says why anything was left out.
+
+The session note's list fields (``commits``, ``prs``, ``files_modified``,
+``retrieved``; see hooks/lib/frontmatter.mjs) are parsed for R-C6's scores,
+which read only ``commits`` and ``prs`` so far (``files_modified`` and
+``retrieved`` are parsed but not yet read). They are parsed defensively: a scalar becomes a one-tuple, a number in a text list becomes its
+text, a PR given as digits becomes its number, and anything else (a map, a
+nested list, a boolean, null, blank text) is dropped rather than refused.
 """
 
 from __future__ import annotations
@@ -56,6 +63,10 @@ class NoteRecord:
     content_hash: str
     cwd: str | None = None
     repo: str | None = None
+    commits: tuple[str, ...] = ()
+    prs: tuple[int, ...] = ()
+    files_modified: tuple[str, ...] = ()
+    retrieved: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -140,6 +151,10 @@ def _record(
         content_hash=content_hash(body),
         cwd=_text(fields.get("cwd")),
         repo=_text(fields.get("repo")),
+        commits=_texts(fields.get("commits")),
+        prs=_numbers(fields.get("prs")),
+        files_modified=_texts(fields.get("files_modified")),
+        retrieved=_texts(fields.get("retrieved")),
     )
 
 
@@ -186,6 +201,39 @@ def _text(value: object) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
+
+
+def _entries(value: object) -> list[object]:
+    """A YAML list as it is, a scalar as a one-item list, nothing for null."""
+    if value is None:
+        return []
+    return list(value) if isinstance(value, list) else [value]
+
+
+def _texts(value: object) -> tuple[str, ...]:
+    """A list field as stripped text; an int (YAML reads an all-digit sha as one) becomes text."""
+    kept: list[str] = []
+    for entry in _entries(value):
+        if isinstance(entry, bool):
+            continue
+        if isinstance(entry, int):
+            kept.append(str(entry))
+        elif (text := _text(entry)) is not None:
+            kept.append(text)
+    return tuple(kept)
+
+
+def _numbers(value: object) -> tuple[int, ...]:
+    """A list field of numbers (``prs``); digits given as text count, anything else is dropped."""
+    kept: list[int] = []
+    for entry in _entries(value):
+        if isinstance(entry, bool):
+            continue
+        if isinstance(entry, int):
+            kept.append(entry)
+        elif isinstance(entry, str) and entry.strip().isascii() and entry.strip().isdigit():
+            kept.append(int(entry.strip()))
+    return tuple(kept)
 
 
 def _iso(value: object) -> str | None:

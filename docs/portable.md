@@ -295,6 +295,27 @@ exists on no remote yet, the Obsidian plugin, the scheduled jobs and the push cr
    `scripts/backup-store.sh` elsewhere). There is no register script for it, so this is a
    hand-made task. The script never starts Docker or the container, so a night when
    Docker Desktop is not running is an exit 2 with no backup, never a half-written file.
+   Then the weekly curator (the memory sprint's Phase C), Sunday 04:30, after the nightly
+   and the backup. Stack registers it, typed in Claude Code with the `!` prefix:
+   `! powershell -NoProfile -File C:/Users/estac/agentic-harness/scripts/register-weekly-curate.ps1`
+   (with `-DryRun` for a first week that calls no judge and writes nothing; going live is
+   a re-registration without it). On Linux/macOS, cron or launchd, e.g.
+   `30 4 * * 0 /path/to/agentic-harness/scripts/weekly-curate.sh`. The task carries no
+   settings: `weekly-curate.ps1|sh` reads these from the machine file at each run, the
+   environment winning, and refuses a bad value, named by its key, before any stage runs:
+   - `CURATE_MODEL`: the judge model for the stages that call it (extract, ledger,
+     history, report).
+   - `CURATE_MAX_CALLS`: their judge-call budget per run, a positive integer.
+   - `CURATE_MAX_TOKENS`: their token budget per run, a positive integer.
+   - `CURATE_GIT`: `apply` (the default) or `skip`, which gives `--no-git` to every stage
+     that reads git.
+   - `CURATE_STAGES`: the stages to run, space- or comma-separated, from `inventory extract
+     ledger status history report retrievals`; default `all`, always in that order.
+   It logs to `~/.claude/hooks/weekly-curate.log` (`HARNESS_WEEKLY_LOG`) and writes
+   `retrievals-<date>.json` and `retrievals-dashboard.html` to `~/.harness/reports/`
+   (`HARNESS_REPORTS_DIR`). Its first run is step L7 of
+   `docs/memory-sprint-orchestration.md` and waits for Stack's "go"; until then the task is
+   not registered.
 8. **MANUAL: the push credential.** The VM and the work laptop use a separate **work GitHub
    account**; `vault-work-vm` is created under it (private), and `emstacho-su` is added as
    a read collaborator so the home PC can pull it (the home PC then lists `work-vm:local`
@@ -608,6 +629,30 @@ Claude Code sessions in that window.
     `node hooks/sync-realms.mjs --push`, see exit 2 with a `credential` line within 30 s,
     restore it, see a push). The full re-ingest and the one-time `--prune-legacy` are
     Phase D (R-D1), not this runbook.
+
+    The weekly curator task (the memory sprint's Phase C, not this runbook's) is registered
+    once the nightly is live, typed by Stack in Claude Code with the `!` prefix:
+
+    ```
+    ! powershell -NoProfile -File C:/Users/estac/agentic-harness/scripts/register-weekly-curate.ps1
+    ```
+
+    It runs `scripts/weekly-curate.ps1` on Sundays at 04:30, after the nightly and the
+    backup, and logs to `C:/Users/estac/.claude/hooks/weekly-curate.log`. Its settings are
+    read from `C:/Users/estac/.harness/machine.env` at each run, so changing one needs no
+    re-registration:
+
+    - `CURATE_MODEL`: the judge model for the stages that call it (extract, ledger,
+      history, report).
+    - `CURATE_MAX_CALLS`: their judge-call budget per run, a positive integer.
+    - `CURATE_MAX_TOKENS`: their token budget per run, a positive integer.
+    - `CURATE_GIT`: `apply` (the default) or `skip`, which gives `--no-git` to every stage
+      that reads git.
+    - `CURATE_STAGES`: the stages to run, space- or comma-separated, from `inventory extract
+      ledger status history report retrievals`; default `all`, always in that order.
+
+    Its first run is step L7 of `docs/memory-sprint-orchestration.md` and waits for Stack's
+    "go".
 
 **Day 21 (R-F2).** 21 days after the R-F1 smoke test, if no rollback was needed, both old
 copies go, so the vault exists only in `C:\Users\estac\vault` and the realm remotes:

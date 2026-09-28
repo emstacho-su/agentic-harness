@@ -4,8 +4,8 @@
 decisions already made. Do not re-litigate them; if something here looks wrong, report it rather than
 silently diverging.
 
-Last updated: 2026-09-24 (memory sprint unit N: hub notes named after their folder, readable
-session titles, path-qualified subagent links)
+Last updated: 2026-09-27 (memory sprint unit C-b: curator status, history, scores and curation
+report, the weekly curator run; built, not live)
 
 ---
 
@@ -457,4 +457,4 @@ OneDrive sync corrupt each other. Branch `main`. Public at
 | 8 Self-evolution | deferred; repo currently unlicensed, re-check before adopting |
 | 9 Docs repo | done — public on GitHub, docs rewritten for the harness-memory relocation |
 | Memory sprint | proposed 2026-09-24 — `docs/memory-sprint-requirements.md`: phases N (hub names), H (`harness` realm, SessionStart brief, portable `~/.claude`), P (retrieval provenance), Q (store audit, location matrix), C (read-only curator); Hermes stays optional, the curator is tool-neutral |
-| Curator C-a | built 2026-09-27, not live — `uv run ingest curate` stages inventory, extract and ledger (ingest/README.md, *Curator*); the `curate` schema migration is applied at L7 |
+| Curator C-a / C-b | built, not live (fixtures and a fake judge only) — `uv run ingest curate` stages inventory, extract, ledger, status, history and report (ingest/README.md, *Curator*); both `curate` migrations (`20260927200342_curate_schema`, `20260927214500_curate_status_scores`) are applied at L7; the weekly task (`scripts/weekly-curate.ps1|sh`, Sunday 04:30) is registered by Stack at L7 |

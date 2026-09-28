@@ -411,6 +411,15 @@ uv run ingest curate inventory --path C:/Users/estac/vault                     #
 uv run ingest curate extract --path C:/Users/estac/vault --collection agentic-harness --dry-run
 uv run ingest curate extract --path C:/Users/estac/vault --collection agentic-harness   # R-C2, calls the judge
 uv run ingest curate ledger  --path C:/Users/estac/vault --collection agentic-harness   # R-C3, writes ledger.md
+uv run ingest curate status  --path C:/Users/estac/vault --collection agentic-harness   # R-C4, writes status.md, no judge
+uv run ingest curate history --path C:/Users/estac/vault --collection agentic-harness --dry-run
+uv run ingest curate history --path C:/Users/estac/vault --collection agentic-harness   # R-C5, one judge call per new week
+uv run ingest curate report  --path C:/Users/estac/vault --all --dry-run               # R-C6/R-C7: scores, proposals, tally
+uv run ingest curate report  --path C:/Users/estac/vault --all                         # writes <realm>/curation/<date>.md
+
+# The weekly run: the six stages in order, then the retrievals JSON and dashboard
+powershell -NoProfile -File C:/Users/estac/agentic-harness/scripts/weekly-curate.ps1 -DryRun
+scripts/weekly-curate.sh --dry-run                                                      # Linux, macOS
 ```
 
 The read-only half of Phase C in `docs/memory-sprint-requirements.md`. Python does
@@ -427,6 +436,9 @@ never call a model.
 | `inventory` | the vault; `git log` and `gh pr list` unless `--no-git` | nothing | `0` clean, `1` a collection's count differs from its `sessions/*.md`, `2` could not run |
 | `extract` | inventory notes, the `curate.extractions` cache | cache rows, one batch at a time | `0` done, `1` notes failed, `2` could not run, `3` stopped by budget |
 | `ledger` | cached extractions, git facts, `curate.issues`/`issue_events` | issues, members, events, `<realm>/<collection>/ledger.md` | as `extract` |
+| `status` | inventory, cached extractions, the hub's plan sources, git facts unless `--no-git` | `<realm>/<collection>/status.md` (the store is only read; no judge) | `0` done, `1` a requirement is contradicted or a plan source is missing, `2` could not run |
+| `history` | inventory, cached extractions, git facts, the `curate.history_weeks` cache | new `history_weeks` rows, `<realm>/<collection>/history.md` | as `extract` |
+| `report` | the scores' inputs (cached extractions, ledger, status open items, git facts), `rag.retrieval_events` counts, the ticks in earlier `<realm>/curation/*.md` | `curate.note_scores`, `importance_judgements`, `proposals`, `decisions`, `<realm>/curation/<date>.md` | as `extract` |
 
 - **Inventory:** each collection's timeline in date order, with subagents nested
   under their main session. It includes the `sdk-*` review-worker notes that
@@ -454,13 +466,82 @@ never call a model.
   main or a merged PR. State (`open`, `claimed-fixed`, `verified`, `regressed`)
   is replayed from them in effective-time order. A fix closes a validity
   interval; a recurrence opens a new one.
+- **Plan sources:** a hub's `plan_sources:` entry is a vault note, a repo file or
+  a repo folder; a folder stands for the `*.md` files directly in it (one level,
+  nothing that leads outside it). `curate/plan.py` reads a heading whose first
+  token is a requirement id (`### R-C4 ...`) as that requirement's section, with
+  its `**Done when.**` and `**Tests.**` bullets; a table whose first header cell
+  is `Phase` as the phase table; every `- [ ]` / `- [x]` as a checkbox of the
+  section it sits in. A document with no requirement headings is one numbered
+  phase brief (bb2dash's `docs/planning/50_PHASE7_x.md`), its id from the
+  filename. A source that is missing or unreadable is a finding, not a stop.
+- **Status states:** `curate/status.py` gives each requirement one of five, in
+  this order of precedence: `contradicted` (a done claim, from a note, a ticked
+  checkbox or a merged PR, then a later note claim `broken`), `verified` (a done
+  claim and a merged PR or a commit on main naming the id as a whole token),
+  `claimed done` (a done claim, no such git evidence, nothing contradicting),
+  `in progress` (any other evidence: a mention, a commit off main, an unmerged
+  PR, an in-progress or blocked claim), `not started` (nothing). An unticked box
+  is the plan, not evidence. status.md puts its state tables first, because
+  R-H4 injects the top of it.
+- **History:** one narrative per ISO week (Monday start) over the collection's
+  dated sessions, subagents, notes and decisions, cached by a hash of the
+  week's notes, commits and PRs, so a rerun pays only for a week that changed.
+  The judge sees opaque labels (S1, S2 ...), never an id or a path; Python maps
+  its citations back. A citation to an unknown label is dropped, and a paragraph
+  left with no valid citation is dropped and counted. The suggested session
+  titles are stored in `curate.history_weeks` and shown in history.md; they are
+  never written into a note.
+- **Scores:** impact (0 to 10) is `min(10, Σ w·log1p(f))` over commits, PRs,
+  decisions, issues found, issues fixed, requirement references, later
+  citations, retrievals, `used` retrievals and subagent children. The judge's
+  1 to 10 importance is asked only where those disagree (activity without
+  knowledge, knowledge without activity, usage without either), cached per note
+  version in `curate.importance_judgements`, and averaged in. Relevance (0 to 1)
+  is 0.5 × the best cosine to status's open items, plus 0.3 × recency (half-life
+  90 days for a project, 42 for a class), plus 0.2 × membership of an open or
+  regressed ledger issue. Scores live in `curate.note_scores`, one row per note
+  per run, never in frontmatter.
+- **Curation report:** `<realm>/curation/<date>.md` lists condense candidates (a
+  subagent note whose every extracted item is already represented, its issues
+  in the ledger and the rest in its parent's extraction, with no commit or PR)
+  and prune candidates (every impact feature zero, and a scratchpad `cwd` or a
+  body under 400 characters), one checkbox each, reasons joined by `; `:
+  ``- [ ] condense `<note id>` [[link|date]] — reasons (no-loss: yes)``.
+  Tick a box to accept it; the next run records it in `curate.decisions`. A box
+  left unticked counts as a rejection once the report is older than the run's
+  day, or when it undoes a recorded tick; today's unticked boxes stay undecided,
+  and a report with undecided boxes is shown as `(open)` in the tally and not
+  counted yet. `no-loss` is the verifier: nothing extracted from the note would
+  be lost.
+- **Tally and promotion (R-C7):** each report tallies, per action type and per
+  earlier report, the share of proposals that were ticked; a report with no
+  proposal of a type is not a run for it. Condense and prune are promoted
+  separately: three consecutive runs at ≥ 95% acceptance with no loss make a
+  type automatic, and a rejection while automatic demotes it back to proposals.
+  Nothing is applied this sprint: the report only proposes.
+- **Weekly run:** `scripts/weekly-curate.ps1` (or `.sh`), Sunday 04:30 after the
+  nightly job and the store backup, runs `inventory`, `extract --all`,
+  `ledger --all`, `status --all`, `history --all`, `report --all`, then
+  `ingest report retrievals --quiet --json-out ... --html ...`, which writes
+  `retrievals-<date>.json` and `retrievals-dashboard.html` under
+  `~/.harness/reports/`. Every stage runs whatever the one before did; the run
+  exits 2 only when a stage could not run. `CURATE_MODEL`, `CURATE_MAX_CALLS`,
+  `CURATE_MAX_TOKENS`, `CURATE_GIT` (`apply` or `skip`) and `CURATE_STAGES` come
+  from `~/.harness/machine.env`, the environment winning. Stack registers it
+  with `scripts/register-weekly-curate.ps1` (`docs/portable.md`).
 - **`curate/writer.py`** is the curator's only file writer. It writes
   allowlisted names only (`ledger`, `status`, `history`,
   `curation/<date>.md`), never leaves the vault, never overwrites a note it did
   not write, and skips the write when only `generated_at` would change.
 
-Schema: `db/migrations/20260927200342_curate_schema.sql` (schema `curate`, RLS on,
-no policies). The first live run is step L7 of `docs/memory-sprint-orchestration.md`.
+Schema: `db/migrations/20260927200342_curate_schema.sql` (schema `curate`: the
+extraction cache, issues, members, events, judge confirmations) and
+`db/migrations/20260927214500_curate_status_scores.sql` (`history_weeks`,
+`note_scores`, `importance_judgements`, `proposals`, `decisions`); RLS on, no
+policies, nothing deleted. All of it is built and tested against fixtures and a
+fake judge, never run live; the first live run is step L7 of
+`docs/memory-sprint-orchestration.md`.
 
 ---
 
@@ -501,7 +582,9 @@ ingest/
     verify*.py          read-only store audit: types, checks, SQL, CLI
     envfile.py          minimal .env reader
     cli.py              argument parsing and reporting
-    curate/             the read-only curator: inventory, judge, extract, ledger, writer
+    curate/             the read-only curator: inventory, judge, extract, ledger, plan,
+                        status, history, scores, report, writer
+    retrieval_dashboard.py  the retrievals report as one offline HTML page
     loaders/
       obsidian.py
       claude_mem.py
