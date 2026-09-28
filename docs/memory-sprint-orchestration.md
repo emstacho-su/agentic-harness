@@ -168,10 +168,13 @@ Prerequisite for everything below: the nights of 2026-09-25, 26 and 27 each show
 - [ ] **L1 — N.** `node hooks/rename-hubs.mjs --dry-run`, read, `--apply`; sync; ingest (19
   `metadata-updated`); eval. MANUAL: install Front Matter Title in Obsidian and set it to show
   `title` in the graph and explorer.
-- [ ] **L2 — H-b.** `node hooks/install.mjs --dry-run`, then Stack runs the install (it edits
+- [x] **L2 — H-b.** `node hooks/install.mjs --dry-run`, then Stack runs the install (it edits
   `settings.json`) to register SessionStart; `gh repo create emstacho-su/claude-config --private`
   and the first push of the allowlist, after Stack reads the dry-run file list; bootstrap trial on a
-  scratch user profile.
+  scratch user profile. *Ran 2026-09-28: install deployed the reviewed H-b hooks, all 16 scan
+  findings reviewed and accepted, `claude-config` pushed, and a full scratch-profile bootstrap
+  trial ended `doctor --strict: no problems`. Record under Phase H in the requirements doc. Q-b now
+  unblocked.*
 - [ ] **L3 — H-a.** `init-realm --realm harness`, the private remote `vault-harness`, Stack adds
   `harness:push` to `~/.harness/machine.env`; `move-to-realm --dry-run`, Stack reads every line,
   `--apply`; sync; ingest (only `metadata-updated`, 0 deleted); eval. *Ran 2026-09-27 (gate

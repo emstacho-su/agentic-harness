@@ -300,6 +300,67 @@ will on their next SessionEnd); the next nightly's `harness: … -> pushed` line
 - **Done when.** That live run succeeds with only the bootstrap and the MANUAL credential step, and the
   dev-VM runbook in `docs/portable.md` is rewritten around it.
 
+### Phase H-b record — L2, 2026-09-28
+
+Code: PR #29 (merged `896f8e4`): R-H4 SessionStart brief, R-H5 `claude-config` export, R-H6
+bootstrap.
+
+**Real install.** An accidental early run of `node hooks/install.mjs` (no flags) turned out to
+already match this step's intent: it backed up the previous hook copy
+(`~/.claude/hooks/backup-2026-09-28T01-36-07-066Z`) and deployed 4 files (`lib/entry-point.mjs`
+new; `lib/redact.mjs`, `session-capture.mjs`, `session-start.mjs` updated), all verified
+byte-identical to the merged source. `settings.json` was untouched (SessionEnd/SubagentStop/
+SessionStart were already registered). Diffed against the backup: the changes are exactly the
+reviewed H-b hardening — `redact.mjs`'s fail-closed-per-rule handling (a throwing rule becomes its
+own `<rule>:error` finding instead of being silently skipped) and an `isEntryPoint()` refactor in
+`session-capture.mjs`/`session-start.mjs` for testability, plus a single-answer guard in
+`session-start.mjs`. No scope beyond that. Kept.
+
+**`claude-config` repo.** Created private (`gh repo create emstacho-su/claude-config --private`),
+cloned locally. `node hooks/export-config.mjs --list-findings` reported 16 secret-scan findings
+(`skills/synced/` allowlisted, so the full count) in 285 files. Read every flagged line: 3 are this
+repo's own "never do this" / mock-test examples (`"sk-proj-xxxxx"`, `"password": "test"`,
+`PropertyMock(return_value="test-key")`); 2 are placeholder API-doc examples (a truncated fake JWT,
+`sk_live_abc123`); 2 are runtime header reads with no literal value at all
+(`.replace('Bearer ', '')`); 5 are the word "tokens" in a synced skill's benchmark-stats code
+(`a_tokens`, `delta_tokens` — LLM token counts, unrelated to credentials); 2 are `qpdf
+--password=secret123`/`--password=mypassword` in a synced PDF skill's CLI examples; 1 is a
+manufacturing gauge-ID regex in a synced skill with no secret-related keyword nearby. All 16 are
+false positives from a deliberately fail-closed scanner; none grant access to anything real.
+Accepted all 16 into `.scan-exceptions.json`. `--dry-run` then `--apply`: 284 new files, 1 refused
+(`skills/humanizer/.git`, correctly denylisted), committed locally; the tool withholds the push as
+its own explicit gate. Pushed: `main` is live at `github.com/emstacho-su/claude-config`.
+
+**Bootstrap trial**, on a scratch profile (`C:/Users/estac/bootstrap-trial-scratch`, a temporary
+`$env:USERPROFILE`/`HARNESS_MACHINE_ENV` override for the child process only — never the real
+profile), per R-H6's done-when:
+
+- Full `-DryRun` against the scratch profile: all 10 steps correctly detected as needed (fresh
+  clone, would-clone all 3 realms and `claude-config`, would-run every tool). One iteration
+  caught a genuinely missing `HARNESS_REALM_REMOTE_BASE` in the scratch machine file and stopped
+  cleanly with an actionable message — correct dry-run behavior, not a bug.
+- Real run: steps 0–3 (preflight, clone, `uv sync` — 41 packages — `npm ci` + `npm run build`)
+  succeeded outright. Step 4 (store) failed once because Docker Desktop wasn't running (an
+  environment precondition, not a bootstrap defect) — clean exit 1, exact message, safe to
+  re-run. After Stack started Docker Desktop, a second real run: step 4 pulled the pinned
+  `pgvector/pgvector:0.8.6-pg17` image, brought up `harness-postgres`, healthy. Step 5 failed once
+  on a missing `DATABASE_URL` in the scratch machine file (my gap, not the script's) — fixed and
+  re-run.
+- Third real run, clean end to end: `embed-check` passed (worst cosine 1.00000); `db migrate`
+  applied all 7 pending migrations from empty in order; step 6 cloned all three private realms;
+  step 7 cloned the freshly-pushed `claude-config` and installed it into a scratch `.claude`
+  (284 files, SHA-256 verified); step 8 installed 33 hook files (byte-identical) and registered
+  the `rag` MCP server; step 9's `doctor --strict` reported **"no problems."**
+  `bootstrap: all steps done`.
+- Cleanup: `docker compose down -v` (container, network and named volume removed), the scratch
+  directory deleted. Nothing left behind that could collide with a real local-store bring-up
+  later.
+
+Open: the MANUAL items bootstrap itself prints (push credential, Obsidian Front Matter Title, a
+realm with no remote yet, registering the nightly job and store backup, the embedder's minimum
+cosine) are runbook items for an actual second machine, not blockers here — this was a same-machine
+scratch trial, not Phase E's VM.
+
 ---
 
 ## Phase P — retrieval provenance
