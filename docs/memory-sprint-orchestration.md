@@ -165,9 +165,10 @@ both scores recorded in the requirements doc.
 Prerequisite for everything below: the nights of 2026-09-25, 26 and 27 each show
 `committed -> pulled -> pushed` for both realms in `~/.claude/hooks/nightly-ingest.log`.
 
-- [ ] **L1 — N.** `node hooks/rename-hubs.mjs --dry-run`, read, `--apply`; sync; ingest (19
+- [x] **L1 — N.** `node hooks/rename-hubs.mjs --dry-run`, read, `--apply`; sync; ingest (19
   `metadata-updated`); eval. MANUAL: install Front Matter Title in Obsidian and set it to show
-  `title` in the graph and explorer.
+  `title` in the graph and explorer. *Ran 2026-09-27; recorded retroactively 2026-09-28 (see
+  Phase N record). The Front Matter Title MANUAL step is still unconfirmed.*
 - [ ] **L2 — H-b.** `node hooks/install.mjs --dry-run`, then Stack runs the install (it edits
   `settings.json`) to register SessionStart; `gh repo create emstacho-su/claude-config --private`
   and the first push of the allowlist, after Stack reads the dry-run file list; bootstrap trial on a

@@ -156,6 +156,36 @@ untrusted notes) and R-H5 (a repo built from a folder that holds credentials).
 - **Done when.** New notes carry the form, and on home-pc the graph labels session nodes and hub
   nodes by `title` with the plugin installed.
 
+### Phase N record — L1, 2026-09-27
+
+Code: PR #21 (merged `797c251`): R-N1 hub rename, R-N2 subagent link fix, R-N3 readable titles.
+
+**Written retroactively** (2026-09-28), from the evidence left in `hooks/README.md` and a fresh
+`--check`: the live step ran on 2026-09-27 but nobody wrote it up at the time, so it read as an
+undocumented "done" until this audit found it.
+
+What ran, 2026-09-27, from `main`:
+
+- `hooks/rename-hubs.mjs --apply`: 19 moves, 348 rewrites, `--check` 0 broken (`hooks/README.md`
+  §"The hub rename").
+- R-N2's root orphan moved to `~/.claude-archive/2026-09-24-vault-orphans/` (confirmed present).
+- Re-run of `node hooks/rename-hubs.mjs --check` during this audit (2026-09-28): 1,105 up links
+  checked, 0 unreadable, **0 broken hub links**, 169 pending worker links (all "parent session not
+  captured yet" — the ordinary state for a worker whose session is still open, including this
+  orchestrator session itself).
+- `Get-ChildItem C:\Users\estac\vault -Recurse -Filter index.md` and a root-level `*.md` listing
+  are both empty (checked live during this audit).
+
+Not found or not verified:
+- No before/after `uv run ingest eval` scores for this live step were recorded anywhere.
+- R-N3's Front Matter Title plugin install (MANUAL, per machine) — not confirmed either way.
+- R-N3's "three real sessions land with readable titles" spot-check — not specifically verified,
+  though every session since has gone through the same code path.
+
+Open:
+- [ ] Confirm Front Matter Title is installed and configured in Obsidian on home-pc.
+- [ ] No eval baseline exists for this step; treat the next eval run as the first data point.
+
 ---
 
 ## Phase H — the harness's own realm
