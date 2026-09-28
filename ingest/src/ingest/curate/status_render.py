@@ -179,4 +179,11 @@ def _briefs(items: Sequence[BriefItem]) -> list[str]:
 def _sources(status: CollectionStatus) -> list[str]:
     lines = [f"- {escape_inline(name)}: found" for name in status.sources]
     lines.extend(f"- {escape_inline(p.given)}: {escape_inline(p.reason)}" for p in status.problems)
+    lines.extend(
+        f"- **{escape_inline(c.id)}** is defined in both {escape_inline(c.kept_source)} "
+        f"({escape_inline(c.kept_title)}) and {escape_inline(c.other_source)} "
+        f"({escape_inline(c.other_title)}) with different titles; they are tracked as one row "
+        "under the first title, so evidence for this id may belong to either."
+        for c in status.id_collisions
+    )
     return lines or ["No plan sources in the hub."]

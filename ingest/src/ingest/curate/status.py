@@ -62,8 +62,8 @@ from .plan import PlanBrief, PlanCheckbox, PlanDocument, PlanRequirement, PlanSo
 from .store_models import Extraction, ExtractionKey, to_utc_iso
 
 __all__ = [
-    "STATES", "OPEN_ORDER", "BriefItem", "Claim", "CollectionStatus", "Evidence", "RequirementStatus",
-    "build_status", "note_index", "open_items", "requirement_state",
+    "STATES", "OPEN_ORDER", "BriefItem", "Claim", "CollectionStatus", "Evidence", "RequirementIdCollision",
+    "RequirementStatus", "build_status", "note_index", "open_items", "requirement_state",
 ]
 
 STATE_NOT_STARTED = "not started"
@@ -122,6 +122,19 @@ class RequirementStatus:
 
 
 @dataclass(frozen=True)
+class RequirementIdCollision:
+    """Two plan documents give the same id a different title -- still one merged row (id is the
+    sole key, by design: see ``_planned``), but a human should know evidence for the id may belong
+    to either requirement."""
+
+    id: str
+    kept_source: str
+    kept_title: str
+    other_source: str
+    other_title: str
+
+
+@dataclass(frozen=True)
 class BriefItem:
     brief_id: str
     title: str
@@ -141,6 +154,7 @@ class CollectionStatus:
     sources: tuple[str, ...] = ()  # every plan document read, as the hub names it
     notes: int = 0
     extracted: int = 0
+    id_collisions: tuple[RequirementIdCollision, ...] = ()
 
 
 def requirement_state(claims: Sequence[Claim], evidence: Sequence[Evidence]) -> str:
@@ -180,7 +194,7 @@ def build_status(inventory: Inventory, lookup: Lookup, plan_docs: Iterable[PlanD
     documents = [doc for doc in loaded if isinstance(doc, PlanDocument)]
     problems = tuple(doc for doc in loaded if isinstance(doc, PlanSourceProblem))
     names = _source_names(inventory, documents)
-    planned = _planned(documents)
+    planned, id_collisions = _planned(documents)
 
     gathered: dict[str, _Gathered] = {rid: _Gathered([], []) for rid in planned}
     for rid, (_, boxes) in planned.items():
@@ -197,7 +211,7 @@ def build_status(inventory: Inventory, lookup: Lookup, plan_docs: Iterable[PlanD
         collection=inventory.profile.collection, realm_folder=inventory.folder.split("/", 1)[0],
         folder=inventory.folder, requirements=requirements, brief_items=_brief_items(documents),
         problems=problems, counts=counts, sources=tuple(names[doc.source] for doc in documents),
-        notes=notes, extracted=extracted,
+        notes=notes, extracted=extracted, id_collisions=id_collisions,
     )
 
 
@@ -214,14 +228,35 @@ def _source_names(inventory: Inventory, documents: Sequence[PlanDocument]) -> di
     return names
 
 
-def _planned(documents: Sequence[PlanDocument]) -> dict[str, tuple[PlanRequirement, list[tuple[str, PlanCheckbox]]]]:
-    """id -> (its first PlanRequirement, [(document source, checkbox)] across every heading for it)."""
+def _planned(
+    documents: Sequence[PlanDocument],
+) -> tuple[dict[str, tuple[PlanRequirement, list[tuple[str, PlanCheckbox]]]], tuple[RequirementIdCollision, ...]]:
+    """id -> (its first PlanRequirement, [(document source, checkbox)] across every heading for it).
+
+    id is the sole key, by design: a later heading for an id already seen adds only its
+    checkboxes, on the assumption it elaborates the same requirement from another document. Two
+    independent plan documents can also reuse an id by coincidence (each letters its own phases
+    from A); the merge does not change for that case -- there is no way to tell them apart from
+    here, and evidence (a note, a commit) is just as ambiguous either way -- but a title mismatch
+    is reported as a collision so it is never silently invisible.
+    """
     planned: dict[str, tuple[PlanRequirement, list[tuple[str, PlanCheckbox]]]] = {}
+    first_source: dict[str, str] = {}
+    collisions: list[RequirementIdCollision] = []
     for doc in documents:
         for requirement in doc.requirements:
-            _, boxes = planned.setdefault(requirement.id, (requirement, []))
+            existing = planned.get(requirement.id)
+            if existing is None:
+                planned[requirement.id] = (requirement, [])
+                first_source[requirement.id] = doc.source
+            elif existing[0].title != requirement.title:
+                collisions.append(RequirementIdCollision(
+                    id=requirement.id, kept_source=first_source[requirement.id], kept_title=existing[0].title,
+                    other_source=doc.source, other_title=requirement.title,
+                ))
+            _, boxes = planned[requirement.id]
             boxes.extend((doc.source, box) for box in requirement.checkboxes)
-    return planned
+    return planned, tuple(collisions)
 
 
 def _note_evidence(inventory: Inventory, lookup: Lookup, version: str,

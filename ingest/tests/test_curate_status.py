@@ -19,6 +19,7 @@ from ingest.curate.status import (
     STATES,
     Claim,
     Evidence,
+    RequirementIdCollision,
     build_status,
     note_index,
     open_items,
@@ -309,6 +310,29 @@ def test_a_requirement_in_two_documents_is_one_row_with_both_checkboxes(vault: P
     assert [r.id for r in status.requirements].count("R-A2") == 1
     assert a2.title == "Write the store" and a2.state == "claimed done"
     assert [e.ref for e in a2.evidence] == ["/repo/docs/other.md"]
+
+
+def test_a_title_mismatch_across_documents_is_reported_as_a_collision(vault: Path) -> None:
+    # Two unrelated plan documents can reuse the same id by coincidence (each letters its own
+    # phases independently). The merge itself stays as it is -- id is the sole key, so this is
+    # still one row -- but the mismatch must be visible, never silently dropped.
+    other = parse_plan("# Other\n\n### R-A2 Store again\n- [x] store shipped\n", "/repo/docs/other.md")
+    status = build(vault, InMemoryCurateStore(), docs=(parse_plan(PLAN, "/repo/docs/plan.md"), other))
+    assert status.id_collisions == (
+        RequirementIdCollision(
+            id="R-A2", kept_source="/repo/docs/plan.md", kept_title="Write the store",
+            other_source="/repo/docs/other.md", other_title="Store again",
+        ),
+    )
+    a2 = by_id(status)["R-A2"]
+    assert a2.title == "Write the store" and a2.state == "claimed done"
+    assert [e.ref for e in a2.evidence] == ["/repo/docs/other.md"]
+
+
+def test_a_requirement_repeated_with_the_same_title_is_not_a_collision(vault: Path) -> None:
+    other = parse_plan("# Other\n\n### R-A2 Write the store\nMore detail.\n", "/repo/docs/other.md")
+    status = build(vault, InMemoryCurateStore(), docs=(parse_plan(PLAN, "/repo/docs/plan.md"), other))
+    assert status.id_collisions == ()
 
 
 def test_plan_problems_and_sources_are_kept(vault: Path) -> None:
