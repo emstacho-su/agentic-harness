@@ -273,7 +273,8 @@ will on their next SessionEnd); the next nightly's `harness: … -> pushed` line
 
 ### R-H5 `~/.claude` travels too
 - **Requirement.** A private repo `emstacho-su/claude-config` built from an **allowlist**: `CLAUDE.md`,
-  `rules/`, `skills/`, and a `settings.template.json` holding the hooks and permissions but no secret.
+  `rules/`, `skills/`, `skill-vault/` (on-demand skills; added by Stack 2026-09-27), and a
+  `settings.template.json` holding the hooks and permissions but no secret.
   `install.mjs --config --dry-run|--apply` places it on a machine. A **denylist** that is refused even
   if allowlisted: `.credentials.json`, `history.jsonl`, `projects/`, `sessions/`, `file-history/`,
   `paste-cache/`, `shell-snapshots/`, `telemetry/`, `*.log`, `daemon*`. A secret scan with the capture

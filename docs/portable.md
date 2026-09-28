@@ -184,35 +184,42 @@ Exit 2 on a conflict, an error, a refusal or a held lock.
 
 ## Runbook: a second machine (the Windows dev VM)
 
-1. Install per-user: Node 22+, `uv`, git, Claude Code, Docker Desktop.
-2. Clone `agentic-harness` to `~/agentic-harness`; `uv sync` in `ingest/`,
-   `npm ci && npm run build` in `mcp-server/`.
-3. The store: `cd db && docker compose up -d`, using the compose file as committed (the
-   pinned `pgvector/pgvector:0.8.6-pg17`, `maintenance_work_mem=512MB`, `shm_size: 1g`;
-   see *Local store* above). Do not change the tag to `pg17` locally: the pin is what
-   makes this machine's pgvector the same as the next one's. Then, in `ingest/`, with
-   `DATABASE_URL` and `DATABASE_SSL=disable` in the machine file:
-   - `uv run ingest embed-check` before the first ingest; like every subcommand it reads
-     the machine file, so `HARNESS_MACHINE` and `FASTEMBED_CACHE_DIR` come from there. It embeds the ten texts in `ingest/eval/embeddings.json` and must exit
-     0 (every cosine ≥ 0.999 against the references recorded on home-pc); exit 1 names
-     the worst text, exit 2 is a file or model mismatch. On anything but 0, stop: an
-     ingest on this machine would write vectors that do not match the other machine's.
-     It needs the model, so on a machine without that egress do step 9 first. The
-     Node-side counterpart is `npm run verify:embedder` in `mcp-server/`, which prints
-     the cosine per reference text and the minimum (a report, not a gate); read its
-     minimum too, because `search_context` embeds queries on the Node side.
-   - `uv run ingest db migrate --dry-run`: a fresh store shows 6 pending. Then the same
-     without `--dry-run`.
-4. The vault: `mkdir ~/vault`, then the one realm this machine holds. The dev VM holds
-   only `work-vm`; there is no `projects` clone on it (decision 7: the internship work has
-   no cross-section with the personal projects, so nothing personal needs to be there).
-   A new realm is made the way Phase C made the home ones, with the job identity in the
-   shell for that step: `mkdir ~/vault/work-vm`, then
-   `node hooks/init-realm.mjs --vault C:/Users/<you>/vault --realm work-vm --dry-run`, then
-   the same without `--dry-run` (policy files, `git init -b main`, the guard, one baseline
-   commit), then `--remote https://github.com/<work-account>/vault-work-vm.git` and
-   `git push -u origin main`. An existing realm is cloned instead:
-   `git clone <remote> ~/vault/work-vm`; the clone already carries its `.realm`.
+One command does the middle of this runbook: `scripts/bootstrap.ps1` (Windows PowerShell 5.1)
+or `scripts/bootstrap.sh` (Linux, macOS, Git Bash), R-H6. Around it sit the steps it cannot
+do for you, each marked **MANUAL** below: installing the tools, the machine file, a realm that
+exists on no remote yet, the Obsidian plugin, the scheduled jobs and the push credential.
+
+1. **MANUAL: install per-user** Node 22+, `uv`, git, Claude Code, Docker Desktop, and start
+   Docker Desktop. The bootstrap's preflight stops if `git`, `uv`, `node`, `npm` or `docker`
+   is not found (`uv` is also looked for in `~/.local/bin`).
+2. **MANUAL: clone the repo**, the one clone the bootstrap cannot do for itself:
+   `git clone https://github.com/emstacho-su/agentic-harness.git ~/agentic-harness`. The
+   bootstrap's own clone step then sees a clone of the right remote and skips it; run from a
+   copy elsewhere, it would clone it there. A folder at `~/agentic-harness` that is a clone of
+   another remote, or not a clone at all, stops the run rather than being touched.
+3. **MANUAL: write `~/.harness/machine.env`** (above): `HARNESS_MACHINE=work-vm`,
+   `HARNESS_REALMS=work-vm:push`, `HARNESS_GIT_EMAIL` set to the **work account's** address
+   (so unattended realm commits carry this machine's name and the identity that owns the
+   remote), `DATABASE_URL` and `DATABASE_SSL=disable` for the local store, and where the
+   realms come from: `HARNESS_REALM_REMOTE_BASE=https://github.com/<work-account>` clones
+   realm `<r>` from `<base>/vault-<r>.git`; `HARNESS_REALM_REMOTE_<R>` (the name upper-cased,
+   `-` as `_`, e.g. `HARNESS_REALM_REMOTE_WORK_VM`) names one realm's URL and wins over the
+   base, which is how the home PC lists `work-vm:local` from the work account next to its own
+   realms. `HARNESS_VAULT` defaults to `~/vault`. The bootstrap stops at preflight when the
+   file is missing.
+4. The vault and its realm. The dev VM holds only `work-vm`; there is no `projects` clone on
+   it (decision 7: the internship work has no cross-section with the personal projects, so
+   nothing personal needs to be there). A realm that exists on its remote is cloned by the
+   bootstrap into `~/vault/<realm>` (the clone already carries its `.realm`); one already on
+   disk is skipped.
+   - **MANUAL: a realm that exists on no remote yet** is made the way Phase C made the home
+     ones, before the bootstrap, with the job identity in the shell for that step:
+     `mkdir ~/vault/work-vm`, then
+     `node hooks/init-realm.mjs --vault C:/Users/<you>/vault --realm work-vm --dry-run`, then
+     the same without `--dry-run` (policy files, `git init -b main`, the guard, one baseline
+     commit), then `--remote https://github.com/<work-account>/vault-work-vm.git` and
+     `git push -u origin main`. A realm with neither a folder nor a remote setting stops the
+     bootstrap at its realms step, naming the setting to add.
    - **MANUAL, per machine: Front Matter Title** (R-N3), when you first open `~/vault` in
      Obsidian (Open another vault › Open folder as vault). Settings › Community plugins ›
      Browse, install [Front Matter Title](https://github.com/snezhig/obsidian-front-matter-title)
@@ -220,16 +227,62 @@ Exit 2 on a conflict, an error, a refusal or a held lock.
      note's frontmatter `title` rather than its UUID filename. It is manual because
      `.obsidian/` is untracked and each machine keeps its own (see the rules above), so no
      sync or install script carries it.
-5. Write `~/.harness/machine.env` (above): `HARNESS_MACHINE=work-vm`,
-   `HARNESS_REALMS=work-vm:push`, and `HARNESS_GIT_EMAIL` set to the **work account's**
-   address, so unattended realm commits carry this machine's name and the identity that
-   owns the remote. `node hooks/doctor.mjs`.
-6. `node hooks/install.mjs --register-mcp` — copies the hook, registers it in
-   `settings.json`, and registers the `rag` MCP server. The registration carries only
-   the *path* to the repo `.env` (`HARNESS_ENV_FILE`); the server reads the secret
-   itself at start. `claude mcp get` prints a server's env block in clear text, so a
-   connection string must never be put there.
-7. Register the nightly job: `powershell -File scripts/register-nightly-ingest.ps1`
+5. **Run the bootstrap**, dry first:
+
+   ```
+   powershell -NoProfile -ExecutionPolicy Bypass -File ~/agentic-harness/scripts/bootstrap.ps1 -DryRun
+   powershell -NoProfile -ExecutionPolicy Bypass -File ~/agentic-harness/scripts/bootstrap.ps1
+   ```
+
+   (`bash ~/agentic-harness/scripts/bootstrap.sh --dry-run`, then without, elsewhere.) The dry
+   run prints every step and its exact command and runs nothing; it only looks at whether each
+   clone target exists and, for one that does, asks git for its origin. The real run prints
+   each command before it runs it and stops at the first failure with
+   `bootstrap: step <n> <name> failed (exit <code>)`; fix that and run it again, since every
+   step is safe to repeat and a second run on a finished machine skips every clone and ends
+   at doctor. The steps:
+
+   | n | step | what it runs |
+   |---|---|---|
+   | 0 | preflight | the machine file exists; `git`, `uv`, `node`, `npm`, `docker` found |
+   | 1 | clone | `git clone -- <agentic-harness> ~/agentic-harness`, skipped when it is already a clone of it |
+   | 2 | uv-sync | `uv sync` in `ingest/` |
+   | 3 | mcp-build | `npm ci`, then `npm run build`, in `mcp-server/` |
+   | 4 | store | `docker compose up -d --wait --wait-timeout 120` in `db/`, then `docker exec harness-postgres pg_isready -U harness -d harness` |
+   | 5 | embed-migrate | in `ingest/`: `uv run ingest embed-check`, `uv run ingest db migrate --dry-run`, `uv run ingest db migrate` |
+   | 6 | realms | `git clone -- <remote> ~/vault/<realm>` for each realm `HARNESS_REALMS` names that is not on disk |
+   | 7 | config | `git clone -- https://github.com/emstacho-su/claude-config.git ~/claude-config` (skipped when present), then `node hooks/install.mjs --config --apply --config-repo ~/claude-config` (R-H5). Pass `-SkipConfig` (`--skip-config` to `bootstrap.sh`) when this machine's account cannot read the private `claude-config` repo, e.g. the work VM until Phase E; the step prints `skipped (--skip-config)` and the run goes on |
+   | 8 | install | `node hooks/install.mjs --register-mcp` |
+   | 9 | doctor | `node hooks/doctor.mjs --strict`; exit 1 (any row doctor marks as a problem) fails the run |
+
+   The clones in steps 6 and 7 run as you, so git may open its credential prompt; the account
+   signed in must be able to read the realm's remote and the private `claude-config` repo.
+   `HARNESS_STORE_CONTAINER` and `HARNESS_STORE_DB` rename the container and database in step
+   4, as they do for the backup. It ends with one `MANUAL:` line per step of this runbook it
+   leaves to you.
+6. What the bootstrap's steps rest on, and what to read in their output:
+   - The store uses the compose file as committed (the pinned `pgvector/pgvector:0.8.6-pg17`,
+     `maintenance_work_mem=512MB`, `shm_size: 1g`; see *Local store* above). Do not change the
+     tag to `pg17` locally: the pin is what makes this machine's pgvector the same as the next
+     one's. `--wait` holds until the container's healthcheck passes.
+   - `uv run ingest embed-check` runs before the first ingest; like every subcommand it reads
+     the machine file, so `HARNESS_MACHINE` and `FASTEMBED_CACHE_DIR` come from there. It
+     embeds the ten texts in `ingest/eval/embeddings.json` and must exit 0 (every cosine ≥
+     0.999 against the references recorded on home-pc); exit 1 names the worst text, exit 2 is
+     a file or model mismatch. On anything but 0 the bootstrap stops before the migrate: an
+     ingest on this machine would write vectors that do not match the other machine's. It
+     needs the model, so on a machine without that egress do step 9 first.
+   - **MANUAL: read the Node-side embedder too.** `npm run verify:embedder` in `mcp-server/`
+     prints the cosine per reference text and the minimum (a report, not a gate); read its
+     minimum, because `search_context` embeds queries on the Node side.
+   - `uv run ingest db migrate --dry-run` shows 6 pending on a fresh store; the migrate after
+     it applies them, and shows 0 on a second run.
+   - `install.mjs --register-mcp` copies the hook, registers it in `settings.json`, and
+     registers the `rag` MCP server. The registration carries only the *path* to the repo
+     `.env` (`HARNESS_ENV_FILE`); the server reads the secret itself at start.
+     `claude mcp get` prints a server's env block in clear text, so a connection string must
+     never be put there.
+7. **MANUAL: register the nightly job**: `powershell -File scripts/register-nightly-ingest.ps1`
    (reads the machine file). On Linux/macOS: cron or launchd running
    `scripts/nightly-ingest.sh`. For the first night pass `-RealmSync DryRun`, read the
    log, then re-register with `-RealmSync Apply`; the switch is a re-registration, not a
@@ -242,7 +295,7 @@ Exit 2 on a conflict, an error, a refusal or a held lock.
    `scripts/backup-store.sh` elsewhere). There is no register script for it, so this is a
    hand-made task. The script never starts Docker or the container, so a night when
    Docker Desktop is not running is an exit 2 with no backup, never a half-written file.
-8. The push credential. The VM and the work laptop use a separate **work GitHub
+8. **MANUAL: the push credential.** The VM and the work laptop use a separate **work GitHub
    account**; `vault-work-vm` is created under it (private), and `emstacho-su` is added as
    a read collaborator so the home PC can pull it (the home PC then lists `work-vm:local`
    in its own machine file). On the VM, create a fine-grained PAT of the work account

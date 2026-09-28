@@ -46,6 +46,7 @@ import {
 import { createLogger } from './lib/logger.mjs';
 import { loadMachineEnv } from './lib/machine-env.mjs';
 import { enqueueIngest } from './lib/enqueue-ingest.mjs';
+import { isEntryPoint } from './lib/entry-point.mjs';
 import { parseHookInput, readStdin } from './lib/stdin.mjs';
 
 const STARTED_AT_MS = Date.now();
@@ -55,19 +56,24 @@ const DEADLINE_AT = STARTED_AT_MS + BUDGET_MS;
 // detached ingest it spawns. Read after the clock starts, so its cost is in
 // the logged milliseconds, and inside its own guard: a machine file that
 // somehow throws must not cost the note. Problems are logged once the logger exists.
-const MACHINE_ENV_PROBLEMS = [];
-try {
-  Object.assign(process.env, loadMachineEnv(process.env, os.homedir(), (message) => MACHINE_ENV_PROBLEMS.push(message)));
-} catch (err) {
-  MACHINE_ENV_PROBLEMS.push(`machine.env: ${err?.message || err}`);
+function loadEnvironment() {
+  const problems = [];
+  try {
+    Object.assign(process.env, loadMachineEnv(process.env, os.homedir(), (message) => problems.push(message)));
+  } catch (err) {
+    problems.push(`machine.env: ${err?.message || err}`);
+  }
+  return problems;
 }
 
-const HOOKS_DIR = path.join(os.homedir(), '.claude', 'hooks');
-const LOG_PATH = process.env[LOG_ENV_VAR] || path.join(HOOKS_DIR, 'session-capture.log');
+/** Read after the machine file is loaded, which may name it. */
+function defaultLogPath() {
+  return process.env[LOG_ENV_VAR] || path.join(os.homedir(), '.claude', 'hooks', 'session-capture.log');
+}
 
-function main() {
-  const log = createLogger(LOG_PATH);
-  for (const problem of MACHINE_ENV_PROBLEMS) log(problem);
+function main(logPath, machineEnvProblems) {
+  const log = createLogger(logPath);
+  for (const problem of machineEnvProblems) log(problem);
 
   if (DISABLE_VALUES.has(String(process.env[DISABLE_ENV_VAR] ?? '').toLowerCase())) return;
 
@@ -123,10 +129,16 @@ function main() {
   log(`${outcome.action} ${outcome.detail} ms=${Date.now() - STARTED_AT_MS}`);
 }
 
-try {
-  main();
-} catch (err) {
-  // Absolute last line of defence: session exit must not surface an error.
-  createLogger(LOG_PATH)(`fatal: ${err?.stack || err?.message || String(err)}`);
+// Importable without acting (and without ending the importer's process): only
+// the run Claude Code starts reads stdin, writes a note and exits.
+if (isEntryPoint(import.meta.url)) {
+  const machineEnvProblems = loadEnvironment();
+  const logPath = defaultLogPath();
+  try {
+    main(logPath, machineEnvProblems);
+  } catch (err) {
+    // Absolute last line of defence: session exit must not surface an error.
+    createLogger(logPath)(`fatal: ${err?.stack || err?.message || String(err)}`);
+  }
+  process.exit(0);
 }
-process.exit(0);

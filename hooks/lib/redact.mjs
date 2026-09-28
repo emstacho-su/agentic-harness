@@ -156,6 +156,79 @@ export function findSecretValues(text) {
 }
 
 /**
+ * Which rules find a secret in `text`, and where — never the secret itself.
+ *
+ * The same rules and the same placeholder filter as `findSecretValues`, so a
+ * `API_KEY=$API_KEY` in a skill's docs is not a hit here any more than it is a
+ * redaction in a note. Built for the claude-config pre-commit scan (R-H5), which
+ * must say where a secret is without printing it.
+ *
+ * One reading differs, and only here: `PAT` in a key name counts only as a word
+ * (`GITHUB_PAT`, `githubPat`), not as the letters inside `output_path`,
+ * `pattern` or `dispatch`. Redaction stays greedy — a spurious `[REDACTED]`
+ * costs a note nothing — but a commit gate that fires on every `*_path = …` in
+ * a skill's scripts (165 of 180 hits on the real `~/.claude`) can never pass.
+ *
+ * A rule that throws is where this parts company with `redact()`. There a
+ * skipped rule costs a little redaction; here it would be a scan that reports
+ * clean without having looked. So the throw is itself a finding,
+ * `<rule>:error` at the start of the text, and a commit gate built on this
+ * fails closed. The rules that did run keep their own findings.
+ *
+ * @param {string} text
+ * @param {readonly object[]} [rules]  SECRET_RULES; a parameter so a test can inject a broken one
+ * @returns {{rule: string, index: number}[]} in rule order, then text order
+ */
+export function findSecretMatches(text, rules = SECRET_RULES) {
+  if (typeof text !== 'string' || text === '') return [];
+  return rules.flatMap((rule) => {
+    try {
+      return ruleMatches(text, rule);
+    } catch {
+      return [{ rule: `${rule?.name ?? 'unnamed-rule'}:error`, index: 0 }];
+    }
+  });
+}
+
+function ruleMatches(text, rule) {
+  const matches = [];
+  for (const match of text.matchAll(rule.re)) {
+    const value = String(rule.secret ? rule.secret(match) : match[0]).trim();
+    if (!isLiteralSecret(value)) continue;
+    if (rule.name === 'named-secret-assignment' && !namesASecret(match[2])) continue;
+    matches.push({ rule: rule.name, index: match.index });
+  }
+  return matches;
+}
+
+const isLetter = (ch) => /[A-Za-z]/.test(ch ?? '');
+const isLower = (ch) => /[a-z]/.test(ch ?? '');
+const isUpper = (ch) => /[A-Z]/.test(ch ?? '');
+
+/**
+ * Is this `pat` a word of its own? It is at a non-letter boundary on each side,
+ * or at a camelCase one: `githubPat` starts a word, `patValue` ends one.
+ * `path`, `PATH`, `dispatch`, `COMPATIBILITY` and `videosPath` are embedded.
+ */
+function patIsAWord(occurrence, before, after) {
+  const starts = !isLetter(before) || (occurrence[0] === 'P' && isLower(before));
+  const ends = !isLetter(after) || (isUpper(after) && occurrence[2] === 't');
+  return starts && ends;
+}
+
+/**
+ * Does this key name still read as a secret once every embedded `pat` is
+ * masked? Re-asks the rule itself, so the keyword list lives in one place.
+ */
+function namesASecret(key) {
+  const name = String(key ?? '');
+  const masked = name.replace(/pat/gi, (occurrence, offset) =>
+    patIsAWord(occurrence, name[offset - 1], name[offset + 3]) ? occurrence : '#');
+  const rule = SECRET_RULES.find((candidate) => candidate.name === 'named-secret-assignment');
+  return new RegExp(rule.re.source, 'i').test(`${masked}=probevalue`);
+}
+
+/**
  * Replace every literal occurrence of each value. Longest first, so a value
  * that contains another is removed whole.
  */

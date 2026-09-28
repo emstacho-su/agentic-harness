@@ -10,7 +10,9 @@ the other way round.
 ```
 hooks/
 ├── session-capture.mjs     the SessionEnd hook: stdin in, one note out
+├── session-start.mjs       the SessionStart hook: a short brief in, before the first prompt
 ├── install.mjs             deploy to ~/.claude/hooks, verified by hash
+├── doctor.mjs              what this machine resolved to; --strict exits 1 on a problem
 ├── migrate-sessions.mjs    one-time: v1 notes -> schema v2, right collection
 ├── rename-hubs.mjs         one-time: name each hub note after its folder
 ├── move-to-realm.mjs       one-time: harness history into the harness realm
@@ -233,15 +235,23 @@ node install.mjs --dry-run    # what would change in ~/.claude/hooks
 node install.mjs              # copy, then verify every file by SHA-256
 ```
 
-The installer also registers the hook for `SessionEnd` and `SubagentStop` in
-`~/.claude/settings.json`. That file is the user's — permissions, model,
-plugins, other tools' hooks — so the write is a read-merge-write that touches
-only those two events, keeps an existing entry's own `timeout` and
-`statusMessage`, and changes nothing on a second run. It writes through a
-temporary file and renames, because a half-written `settings.json` is read by
-every session.
+What it deploys is not a hand-kept list: the installer starts from the two
+entry points, `session-capture.mjs` and `session-start.mjs`, and follows their
+relative imports, so a new `lib/` module a hook imports is deployed with it and
+a repo tool no hook imports is not. `tests/install.test.mjs` walks the same
+graph on its own and imports both installed entry points from a scratch folder.
 
-It registers `~/.claude/hooks/session-capture.mjs`, never a worktree path:
+The installer also registers the hooks in `~/.claude/settings.json`:
+`session-capture.mjs` for `SessionEnd` and `SubagentStop`, `session-start.mjs`
+for `SessionStart`. That file is the user's — permissions, model, plugins,
+other tools' hooks — so the write is a read-merge-write that touches only those
+three events, keeps an existing entry's own `timeout`, `statusMessage` and
+`matcher`, leaves another tool's entry for the same event alone, and changes
+nothing on a second run. An entry is ours when it runs the same two files,
+whatever the slashes or case. It writes through a temporary file and renames,
+because a half-written `settings.json` is read by every session.
+
+It registers `~/.claude/hooks/<script>`, never a worktree path:
 a worktree gets deleted, and a hook that goes with it takes every future
 session's note along. `--target` without a matching `--settings` is refused for
 the same reason; `--skip-settings` deploys the files alone.
@@ -260,6 +270,144 @@ parent's `session_id` and never fire `SessionEnd` of their own. A worker run as
 a separate `claude` process is the only kind that gets its own note, and this is
 how it says who spawned it. When the transcript itself lives under
 `<parent>/subagents/`, `parent_session` is derived from the path instead.
+
+## The SessionStart brief
+
+`session-start.mjs` (R-H4) runs when a session starts or resumes and hands
+Claude a short brief on where the project stands, before the first prompt. It
+places the session with capture's own rules, so the brief is about the same
+realm and collection the session's note will be filed under, and returns as
+`additionalContext`, at most ~1,500 tokens (`lib/start-brief.mjs`), the first
+of these that exists:
+
+1. the collection's `status.md`, the body below its frontmatter;
+2. the `## Outcome` sections of the five newest main sessions of that
+   collection (not workers, not superseded notes), newest first;
+3. nothing.
+
+It always ends with one line naming the filter to search with:
+`mcp__rag__search_context` with `collection: "<collection>"`.
+
+It is registered with matcher `startup|resume`, so `clear`, `compact` and
+`fork` get no brief, and a 5 s timeout, which is only Claude Code's backstop:
+the hook gives up at 2 s by itself. It fails open. Bad input, any error, and
+anything slower than 2 s all give an empty `additionalContext` and exit 0, with
+the reason in the log. A session never waits on it and never sees an error
+from it.
+
+What it injected is recorded for capture at
+`<HARNESS_STATE_DIR, default ~/.harness/state>/session-start/<session_id>.json`
+(SC-2). The capture hook turns that file into one `channel: session-start` entry
+in the note's `retrievals:` list, so a brief counts like a search the agent chose
+to run.
+
+The log is `~/.claude/hooks/session-start.log`. Every run writes a
+`debug input-keys:` line (the input's key names, sorted, never a value), then
+either `start <session> <realm>/<collection> source=… ids=… tokens=… ms=…` or
+`empty: <reason> ms=…`. The text of the brief never reaches the log, because it
+quotes vault notes. `node hooks/doctor.mjs` shows how long ago the last line was
+written, and whether `SessionStart` is registered for the installed script.
+
+The input field that says why the session started is spelled differently in
+different sources (`source`, `startup_reason`), so nothing reads it: the
+matcher does the filtering. Its real name is confirmed at L2 from the
+`debug input-keys:` line of the first live run.
+
+| Variable | Effect |
+| --- | --- |
+| `HARNESS_SESSION_START` | `0`/`off`/`false`/`no` disables the hook (it answers empty) |
+| `HARNESS_SESSION_START_LOG` | log destination, default `~/.claude/hooks/session-start.log` |
+| `HARNESS_STATE_DIR` | where the start record goes, default `~/.harness/state` |
+| `HARNESS_VAULT` | vault root the brief is read from, as for capture |
+
+## claude-config: `~/.claude` as a private repo (R-H5)
+
+`~/.claude` is half of the harness (CLAUDE.md, rules, skills) and also holds
+live credentials, every prompt ever typed and per-project memory. So it travels
+through a private repo, `emstacho-su/claude-config`, built from an allowlist and
+nothing else: `CLAUDE.md`, `rules/`, `skills/`, `skill-vault/`, and a generated
+`settings.template.json` holding only `hooks` and `permissions`, with the home
+folder written as `{{HOME}}`. A denylist (`.credentials.json`, `history.jsonl`,
+`projects/`, `settings.json`, `.env*`, `node_modules/`, SSH and TLS keys, logs, …) is
+refused on every path segment even inside an allowlisted folder (`daemon*`, the
+daemon's state, only at the top of `~/.claude`). The lists and the
+planning are `lib/claude-config.mjs`; two CLIs sit on top.
+
+```bash
+node hooks/export-config.mjs --list-findings   # every secret-scan finding, with the entry that would accept it
+node hooks/export-config.mjs --dry-run         # the file list: new, changed, deleted, refused, skipped
+node hooks/export-config.mjs --apply           # mirror into ~/claude-config and commit (never pushes)
+node hooks/install.mjs --config --dry-run      # what placing ~/claude-config into ~/.claude would change
+node hooks/install.mjs --config --apply        # do it (bootstrap step 7)
+```
+
+Both take `--config-repo <dir>` (default `~/claude-config`); the exporter takes
+`--source <claudeDir>` and the installer `--target <claudeDir>` (default
+`~/.claude`) and `--node <node.exe>`.
+
+**Export.** The clone must already exist; creating the GitHub repo is live
+step L2, so a folder that is not the top of a git checkout is refused with the
+`gh repo create emstacho-su/claude-config --private` and `git clone` lines to
+run once it is approved. The scan runs first, over every file it would copy and
+the template it would write, with the capture hook's rules (`lib/redact.mjs`);
+any finding the exceptions list does not cover prints `path:line rule` (never
+the value) and stops the run with nothing copied. `--apply` then copies new and
+changed files (each read back by SHA-256), deletes files inside the clone's
+allowlisted folders that the source no longer exports (never anything in
+`~/.claude`), writes the template and a `.gitattributes` of `* -text`, and runs
+`git add -A` and `git commit`. It refuses first if the clone holds anything at
+its top level beyond the allowlist, `.git` and the meta files (`README.md`,
+`.gitignore`, `.gitattributes`, `.scan-exceptions.json`), and if the source has
+no allowlisted files at all, which would otherwise read as "delete everything".
+The push is L2's, by hand.
+
+**Exceptions.** `<clone>/.scan-exceptions.json` is a JSON list of
+`{"path", "rule", "line", "sha256"}` (plus an optional `"reason"`), where
+`sha256` is of the file's whole content. A finding is excepted only when all
+four match, so any edit to the file brings it back for another read.
+`--list-findings` prints each finding followed by its would-be entry; Stack
+reads them and pastes the ones he accepts. No tool writes this file. The
+`.gitattributes` exists for it: without `* -text`, git's line-ending conversion
+would change the bytes, and with them the hash, between this machine and the next.
+
+**The pre-commit hook.** `--apply` installs `.git/hooks/pre-commit` in the
+clone (idempotent; a pre-commit hook that is not ours is never overwritten, the
+run refuses instead, and so does a `core.hooksPath` that points outside the
+clone's `.git`). It runs `export-config.mjs --pre-commit`, which reads the
+staged tree with one `git cat-file --batch` and refuses the commit on a staged
+path outside the allowlist, a denylisted path, a symlink or submodule, or a
+secret finding that `.scan-exceptions.json` does not cover. The exceptions are
+read from the staged tree too: an exception that is written but not staged
+accepts nothing. A rule that throws is itself a finding (`<rule>:error`), and a
+UTF-16 file is read as UTF-16 as well as bytes, so neither passes unscanned. A commit made by hand is held to the same rules as an export. The hook
+finds node and this checkout by the absolute paths baked in when it was
+installed: `process.execPath`, and the MAIN checkout of the repo
+`export-config.mjs` ran from (found through `git rev-parse --git-common-dir`; an
+export run from a worktree says so and bakes in the main checkout, because a
+worktree gets deleted). `HARNESS_REPO` set at export time is baked in instead;
+`HARNESS_NODE` and `HARNESS_REPO` override both at commit time. If the script is
+not there, the hook refuses the commit: a gate that cannot run must not pass.
+
+**Install.** `install.mjs --config` walks the clone through the same
+allowlist and denylist (`planInstall`), scans it again with the same exceptions,
+and refuses the whole apply on a finding, a denylisted path in the repo, or a
+write that would pass through a link. Files it overwrites are copied first to
+`~/.claude/config-backup-<stamp>/`; nothing in `~/.claude` is ever deleted.
+The template is rendered for this home and merged into `~/.claude/settings.json`
+add-only: a hook entry is added when no entry for that event runs the same
+hook (recognised by `hookIdentity` in `lib/settings.mjs`, the one rule the
+installer, the merge and doctor share: a node hook by its script, whatever node,
+slashes or case; any other command by its whole text), a permissions list gains the rules it lacks, a permissions
+setting this machine lacks is added and one it has is kept; every other key is
+left alone. A template hook whose node path does not exist here is rewritten to
+`--node` (default: the node running the installer). The write is a temporary
+file and a rename, with the old file in the backup folder. A second run changes
+nothing.
+
+`node hooks/doctor.mjs` has a `claude-config` row: no clone is informational; a
+clone whose origin is not `emstacho-su/claude-config` (or has none) is a
+problem; otherwise it shows the last commit's age and whether
+`.scan-exceptions.json` exists.
 
 ## The one-time migration
 
@@ -335,10 +483,13 @@ second run finds nothing to move. The runbook is in `docs/portable.md`.
 | `hook-process.test.mjs` | the real process: exit 0, a log line, a live enqueue, the W-H2 seam |
 | `spawn.test.mjs` | `git` and `gh` never resolve against a directory a repository controls |
 | `subagent.test.mjs` | a worker's note, and the parent link in both event orders |
-| `settings.test.mjs` | the settings merge keeps every key and hook it does not own |
+| `settings.test.mjs` | the settings merge keeps every key and hook it does not own; one script per event; the SessionStart status doctor reports |
 | `unc.test.mjs` | no path that resolves onto another host is ever touched |
-| `install.test.mjs` | the deploy payload is exactly the hook's transitive imports |
+| `install.test.mjs` | the deploy payload is exactly both entry points' transitive imports; SessionStart registered once, end to end in a scratch folder |
 | `enqueue-ingest.test.mjs` | the detached `ingest --only` start: argv array, several notes in one spawn, absolute `uv`, kill switch, never throws |
+| `claude-config*.test.mjs` | R-H5: allowlist, denylist, secret scan, template; the exceptions match, the mirror plan, the settings merge |
+| `export-config.test.mjs` | export into a temp clone: scan first, exceptions by hash, mirror and delete inside the clone only, commit and never push, the pre-commit hook |
+| `install-config.test.mjs` | `install.mjs --config`: dry run, backups, never deletes, refusals, settings merge idempotent |
 
 The golden notes are approval tests. When one changes, read the diff: it is a
 change to what `ingest` stores and what retrieval can filter on.

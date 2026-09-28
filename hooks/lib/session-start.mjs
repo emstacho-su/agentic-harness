@@ -7,6 +7,8 @@
  *   {at, session_id, cwd, realm, collection,
  *    source: "status" | "outcomes" | "none", external_ids: [...], tokens}
  *
+ * The hook writes it with `writeSessionStartRecord` (at the end of this
+ * file), so the shape written and the shape read are checked in one place.
  * Capture reads it here and records it as one `channel: session-start` entry
  * of the note's `retrievals:` list (SC-1), so an injected brief is counted
  * the same way as a search the agent chose to run (R-P1).
@@ -19,6 +21,7 @@
  * that window still sees its record.
  */
 
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -149,4 +152,70 @@ function buildFilters(raw) {
 
 function isLabel(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_LABEL_CHARS;
+}
+
+// ------------------------------------------------------------------ writing
+
+/**
+ * Write one session's start record (SC-2), for the SessionStart hook.
+ *
+ * Takes the record in camelCase and writes exactly the SC-2 keys, so the
+ * shape the hook writes and the shape `readSessionStartRecord` checks live in
+ * this one file. Held to the reader's own rules: a UUID session id before any
+ * path is built, an ISO `at`, a known `source`, string ids capped as the
+ * reader caps them. Written to a temp file beside the target and renamed over
+ * it, so a capture never reads half a record. Never throws: returns
+ * `{ ok, reason, path }`, and `reason` never quotes the record.
+ */
+export function writeSessionStartRecord({ record, stateDir = defaultStateDir(process.env) } = {}) {
+  try {
+    const checked = toStoredRecord(record);
+    if (!checked.ok) return { ok: false, reason: checked.reason, path: '' };
+    if (typeof stateDir !== 'string' || !stateDir) return { ok: false, reason: 'bad state dir', path: '' };
+    return writeAtomically(path.join(stateDir, `${checked.value.session_id}${RECORD_SUFFIX}`), checked.value);
+  } catch (error) {
+    return { ok: false, reason: `unexpected ${error?.code || error?.name || 'error'}`, path: '' };
+  }
+}
+
+function toStoredRecord(record) {
+  if (record === null || typeof record !== 'object') return { ok: false, reason: 'not an object' };
+  const { at, sessionId, cwd, realm, collection, source, externalIds, tokens } = record;
+  if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) return { ok: false, reason: 'bad session id' };
+  if (!isIsoTimestamp(at)) return { ok: false, reason: 'bad at' };
+  if (!BRIEF_SOURCES.includes(source)) return { ok: false, reason: 'bad source' };
+  if (!Number.isSafeInteger(tokens) || tokens < 0) return { ok: false, reason: 'bad tokens' };
+  if (!Array.isArray(externalIds)) return { ok: false, reason: 'bad external_ids' };
+
+  const ids = externalIds
+    .filter((id) => typeof id === 'string' && id.length > 0 && id.length <= MAX_EXTERNAL_ID_CHARS)
+    .slice(0, MAX_EXTERNAL_IDS);
+  const value = {
+    at,
+    session_id: sessionId,
+    cwd: typeof cwd === 'string' ? cwd : '',
+    realm: isLabel(realm) ? realm : '',
+    collection: isLabel(collection) ? collection : '',
+    source,
+    external_ids: ids,
+    tokens,
+  };
+  return { ok: true, value };
+}
+
+function writeAtomically(file, value) {
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(temp, `${JSON.stringify(value)}\n`, { encoding: 'utf8', flag: 'wx' });
+    fs.renameSync(temp, file);
+    return { ok: true, reason: REASON_OK, path: file };
+  } catch (error) {
+    try {
+      fs.rmSync(temp, { force: true });
+    } catch {
+      /* the temp file is not a .json; the sweep would not take it, but it harms nothing */
+    }
+    return { ok: false, reason: `write failed (${error?.code || error?.name || 'error'})`, path: file };
+  }
 }

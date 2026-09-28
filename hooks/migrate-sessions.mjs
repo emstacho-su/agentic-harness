@@ -29,6 +29,7 @@ import { hubFilename } from './lib/links.mjs';
 import { COLLECTION_OVERRIDES, RETIRED_FOLDERS, alreadyMigrated, migrateNote, planNote } from './lib/migrate.mjs';
 import { makeRepoResolver } from './lib/paths.mjs';
 import { resolveRepo } from './lib/repo.mjs';
+import { isEntryPoint } from './lib/entry-point.mjs';
 import { toPosix } from './lib/text.mjs';
 import { readSessionNotes } from './untagged-sessions.mjs';
 
@@ -294,9 +295,12 @@ function isInsideVault(vault, candidate) {
   return target.startsWith(root + path.sep);
 }
 
-try {
-  main();
-} catch (err) {
-  console.error(`migration failed: ${err?.message || err}`);
-  process.exitCode = 1;
+// Importable without acting; only a direct run migrates.
+if (isEntryPoint(import.meta.url)) {
+  try {
+    main();
+  } catch (err) {
+    console.error(`migration failed: ${err?.message || err}`);
+    process.exitCode = 1;
+  }
 }
