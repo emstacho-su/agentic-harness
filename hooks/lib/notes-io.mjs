@@ -156,6 +156,14 @@ export function resolveChainHead(sessionsDir, sessionId) {
 }
 
 /**
+ * The body `ensureIndex` gives a hub it creates. move-to-realm compares a hub
+ * against it to tell a stub nobody has written in from a hub worth keeping.
+ */
+export function hubStubBody(collection) {
+  return ['', `# ${collection}`, '', `Collection \`${collection}\`. Session notes under \`sessions/\` link up to this note.`, ''].join('\n');
+}
+
+/**
  * Make sure the collection's hub note, `<area>/<collection>/<collection>.md`,
  * exists. Never throws, never overwrites.
  *
@@ -187,11 +195,7 @@ export function ensureIndex(vaultRoot, area, collection) {
     `collection: ${yamlStr(collection)}`,
     `type: ${HUB_NOTE_TYPE}`,
     '---',
-    '',
-    `# ${collection}`,
-    '',
-    `Collection \`${collection}\`. Session notes under \`sessions/\` link up to this note.`,
-    '',
+    hubStubBody(collection),
   ].join('\n');
   try {
     fs.mkdirSync(path.dirname(hubPath), { recursive: true });

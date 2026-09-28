@@ -80,6 +80,10 @@ SDK_SESSION_REASON = "session started by the Agent SDK (origin: sdk-*)"
 REALM_MARKER = ".realm"
 OUTSIDE_REALM_REASON = "not inside a realm"
 
+# The vault's top-level areas, each holding one folder per collection. Mirrors
+# AREAS in hooks/lib/constants.mjs; `harness` is the harness's own realm (R-H1).
+AREA_FOLDERS = frozenset({"projects", "classes", "harness"})
+
 
 def vault_root(vault_path: str | Path) -> Path:
     """Validate and return the vault directory. Shared by both entry points."""
@@ -514,8 +518,9 @@ def _wants_ingest(frontmatter: dict) -> bool:
 def _derive_collection(frontmatter: dict, relative: str) -> str | None:
     """Which project or class this note belongs to.
 
-    The vault is laid out ``projects/<name>/...`` and ``classes/<code>/...``, so
-    the second path segment is the collection. Frontmatter ``collection:`` wins
+    The vault is laid out ``<area>/<collection>/...`` for each of AREA_FOLDERS
+    (``projects/<name>``, ``classes/<code>``, ``harness/<name>``), so the second
+    path segment is the collection. Frontmatter ``collection:`` wins
     when present, which is the escape hatch for notes that live somewhere the
     folder structure does not describe.
 
@@ -529,7 +534,7 @@ def _derive_collection(frontmatter: dict, relative: str) -> str | None:
     parts = [p for p in relative.split("/") if p]
     if len(parts) < 2:
         return None
-    if parts[0] in {"projects", "classes"} and len(parts) >= 3:
+    if parts[0] in AREA_FOLDERS and len(parts) >= 3:
         return parts[1]
     return parts[0]
 

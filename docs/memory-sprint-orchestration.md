@@ -165,21 +165,29 @@ both scores recorded in the requirements doc.
 Prerequisite for everything below: the nights of 2026-09-25, 26 and 27 each show
 `committed -> pulled -> pushed` for both realms in `~/.claude/hooks/nightly-ingest.log`.
 
-- [ ] **L1 — N.** `node hooks/rename-hubs.mjs --dry-run`, read, `--apply`; sync; ingest (19
+- [x] **L1 — N.** `node hooks/rename-hubs.mjs --dry-run`, read, `--apply`; sync; ingest (19
   `metadata-updated`); eval. MANUAL: install Front Matter Title in Obsidian and set it to show
-  `title` in the graph and explorer.
-- [ ] **L2 — H-b.** `node hooks/install.mjs --dry-run`, then Stack runs the install (it edits
+  `title` in the graph and explorer. *Ran 2026-09-27; recorded retroactively 2026-09-28 (see
+  Phase N record). The Front Matter Title MANUAL step is still unconfirmed.*
+- [x] **L2 — H-b.** `node hooks/install.mjs --dry-run`, then Stack runs the install (it edits
   `settings.json`) to register SessionStart; `gh repo create emstacho-su/claude-config --private`
   and the first push of the allowlist, after Stack reads the dry-run file list; bootstrap trial on a
-  scratch user profile.
-- [ ] **L3 — H-a.** `init-realm --realm harness`, the private remote `vault-harness`, Stack adds
+  scratch user profile. *Ran 2026-09-28: install deployed the reviewed H-b hooks, all 16 scan
+  findings reviewed and accepted, `claude-config` pushed, and a full scratch-profile bootstrap
+  trial ended `doctor --strict: no problems`. Record under Phase H in the requirements doc. Q-b now
+  unblocked.*
+- [x] **L3 — H-a.** `init-realm --realm harness`, the private remote `vault-harness`, Stack adds
   `harness:push` to `~/.harness/machine.env`; `move-to-realm --dry-run`, Stack reads every line,
-  `--apply`; sync; ingest (only `metadata-updated`, 0 deleted); eval.
+  `--apply`; sync; ingest (only `metadata-updated`, 0 deleted); eval. *Ran 2026-09-27 (gate
+  waived); 332 moved, eval unchanged. Record under Phase H in the requirements doc. The
+  next-nightly-push open item closed 2026-09-28 — see the Phase Q-a record (L5).*
 - [ ] **L4 — P.** `ingest db migrate --dry-run`, then live; reinstall the hook; full ingest; check that
   `retrieved:` draws edges in the graph; first `ingest report retrievals`. *Ran 2026-09-27 (gate
   waived); only the MANUAL graph check is left. Record under Phase P in the requirements doc.*
-- [ ] **L5 — Q-a.** First nightly with `verify` and `eval`; read the log; fix or explain every
-  finding.
+- [x] **L5 — Q-a.** First nightly with `verify` and `eval`; read the log; fix or explain every
+  finding. *Ran clean 2026-09-28, no waiver: verify 0 findings, eval unchanged (0.92/0.78/5-5),
+  real `committed -> pulled -> pushed` for `projects` and `harness`. Record under Phase Q in the
+  requirements doc.*
 - [ ] **L6 — Q-b.** The noise experiment (re-ingest, eval before and after, keep or revert); new
   golden cases for the harness realm; the location matrix run (costs `claude -p` usage, about ten
   sessions).

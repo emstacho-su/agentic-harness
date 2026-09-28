@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AREA_CLASSES, AREA_PROJECTS, DEFAULT_VAULT_SEGMENTS, VAULT_ENV_VAR } from './lib/constants.mjs';
+import { AREAS, DEFAULT_VAULT_SEGMENTS, VAULT_ENV_VAR } from './lib/constants.mjs';
 import { parseFrontmatter } from './lib/frontmatter.mjs';
 import { UNCLASSIFIED } from './lib/vocabulary.mjs';
 
@@ -46,7 +46,7 @@ export function readSessionNotes(vaultRoot) {
   const notes = [];
   const problems = [];
 
-  for (const area of [AREA_PROJECTS, AREA_CLASSES]) {
+  for (const area of AREAS) {
     const areaDir = path.join(vaultRoot, area);
     let collections;
     try {

@@ -23,10 +23,9 @@ import {
   MAX_REPOS_TOUCHED,
   RESERVE_MS,
 } from './constants.mjs';
-import { deriveCollection } from './collection.mjs';
+import { placeSession } from './collection.mjs';
 import { collectCommits, runGitSync } from './git-log.mjs';
 import { classifyPaths, makeRepoResolver } from './paths.mjs';
-import { resolveRepo } from './repo.mjs';
 import { classify } from './tags.mjs';
 import { toPosix, uniqueCapped } from './text.mjs';
 import { createAccumulator, extractTools, scanToolResults } from './transcript.mjs';
@@ -72,8 +71,10 @@ export function analyseTranscript({
   // commits — comes from one directory, so it can never claim a git collection
   // with no repository. The stdin cwd is only provenance, kept as `cwd`.
   const placementCwd = declaredCwd(transcriptPath, cwdsSeen) || effectiveCwd;
-  const repo = resolveRepo(placementCwd);
-  const { area, collection, collectionSource } = deriveCollection({ cwd: placementCwd, vaultRoot, repo });
+  // For a Claude Code folder (`~/.claude/projects/<encoded>/…`, a scratchpad)
+  // the rules read the decoded cwd, and the repository comes from there too.
+  const { placement, repo } = placeSession({ cwd: placementCwd, vaultRoot });
+  const { area, collection, collectionSource } = placement;
   const branch = repo.branch || lastBranchSeen(accumulator) || '';
 
   const paths = classifyPaths(sortedFiles(accumulator), {

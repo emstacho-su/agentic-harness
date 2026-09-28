@@ -26,7 +26,7 @@ import path from 'node:path';
 
 import {
   CAPTURED_BY_MIGRATION,
-  AREA_CLASSES,
+  AREAS,
   AREA_PROJECTS,
   COLLECTION_FROM_FOLDER,
   COLLECTION_FROM_GIT,
@@ -120,7 +120,7 @@ export function planNote({ note, resolveRepoFor, overrides = COLLECTION_OVERRIDE
   }
 
   return {
-    area: note.area === AREA_CLASSES ? AREA_CLASSES : AREA_PROJECTS,
+    area: AREAS.includes(note.area) ? note.area : AREA_PROJECTS,
     collection: note.collection,
     collectionSource: COLLECTION_FROM_FOLDER,
     repoFullName: '',

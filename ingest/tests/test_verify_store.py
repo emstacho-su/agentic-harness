@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -168,13 +169,14 @@ def test_chunk_texts_return_content_and_the_stored_count() -> None:
 
 
 def test_vault_rows_of_a_realm_use_the_stores_containment_predicate() -> None:
-    conn = FakeConnection({"content_hash": [("a.md", "abc", "a.md"), ("uuid-1", "def", None)]})
+    written = datetime(2026, 9, 27, 19, 38, tzinfo=timezone.utc)
+    conn = FakeConnection({"content_hash": [("a.md", "abc", "a.md", written), ("uuid-1", "def", None, written)]})
 
     rows = PostgresReader(conn).vault_rows("projects")
 
-    assert rows == (VaultRow("a.md", "abc", "a.md"), VaultRow("uuid-1", "def", None))
+    assert rows == (VaultRow("a.md", "abc", "a.md", written), VaultRow("uuid-1", "def", None, written))
     sql, params = conn.log[1]
-    assert "metadata -> '_ingest' ->> 'path'" in sql
+    assert "metadata -> '_ingest' ->> 'path', updated_at" in sql
     assert "metadata @> %s::jsonb" in sql
     assert params[0] == "obsidian"
     assert json.loads(params[1]) == {"_ingest": {"realm": "projects"}}

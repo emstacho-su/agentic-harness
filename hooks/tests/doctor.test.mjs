@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { diagnose, formatRows, realmsOnDisk } from '../doctor.mjs';
+import { diagnose, formatRows, problemRows, realmsOnDisk, runDoctor } from '../doctor.mjs';
+
+const DOCTOR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'doctor.mjs');
 
 function scratch() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-'));
@@ -256,4 +258,281 @@ test('realm row against real git: unborn, then one commit and a file:// origin',
 
 test('formatRows pads labels into one column, as main prints them', () => {
   assert.equal(formatRows([['a', '1'], ['long', '2']]), 'a     1\nlong  2');
+});
+
+// ------------------------------------------------ problem status, the SessionStart rows, --strict
+
+/**
+ * The words bootstrap step 9 used to scan doctor's printed report for, before
+ * a problem became a field of the row. Kept here only to prove the field and
+ * the text agree on every row that existed then.
+ */
+const OLD_MARKERS = Object.freeze(['(MISSING', 'ABSENT', '(absent', '(not built', '(not found', 'ingest will refuse']);
+const oldScanSaysProblem = ([label, value]) =>
+  (label === 'realms missing' && value !== 'none') || OLD_MARKERS.some((marker) => value.includes(marker));
+const NEW_ROWS = Object.freeze(['SessionStart hook', 'session-start log']);
+
+test('every row is [label, value, problem], problem a boolean, frozen', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { env } = vaultWith(root);
+    for (const row of diagnose(env, root)) {
+      assert.equal(row.length, 3, `row ${row[0]} is not a triple`);
+      assert.equal(typeof row[1], 'string');
+      assert.equal(typeof row[2], 'boolean', `row ${row[0]} has no problem flag`);
+      assert.ok(Object.isFrozen(row));
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test('the problem field agrees with the text markers on every older row, in a bad and a good setup', () => {
+  const { root, cleanup } = scratch();
+  try {
+    // Bad: no machine file, no vault, no ingest project, no uv, a CA cert that is not there.
+    const bad = {
+      HARNESS_MACHINE_ENV: path.join(root, 'absent.env'),
+      HARNESS_VAULT: path.join(root, 'no-vault'),
+      HARNESS_INGEST_PROJECT: path.join(root, 'no-ingest'),
+      HARNESS_UV_BIN: path.join(root, 'no-uv.exe'),
+      DATABASE_CA_CERT: path.join(root, 'no-ca.pem'),
+    };
+    // Good-ish: a machine file and a vault, but a listed realm missing and an unlisted one on disk.
+    const { vault, env } = vaultWith(root, ['HARNESS_REALMS=projects:push']);
+    addRealm(vault, 'stray', 'none');
+    for (const rows of [diagnose(bad, root), diagnose(env, root)]) {
+      for (const row of rows.filter(([label]) => !NEW_ROWS.includes(label))) {
+        assert.equal(row[2], oldScanSaysProblem(row), `row ${row[0]} = ${row[1]}`);
+      }
+    }
+    const badProblems = problemRows(diagnose(bad, root)).map(([label]) => label);
+    for (const label of ['machine file', 'vault', 'ingest project', 'uv', 'DATABASE_CA_CERT']) {
+      assert.ok(badProblems.includes(label), `${label} is not flagged`);
+    }
+    const flags = Object.fromEntries(diagnose(env, root).map(([label, , problem]) => [label, problem]));
+    assert.equal(flags['realms missing'], true);
+    assert.equal(flags['realms unlisted'], true);
+    assert.equal(flags['machine file'], false);
+    assert.equal(flags['vault'], false);
+  } finally {
+    cleanup();
+  }
+});
+
+/** A settings.json under `<home>/.claude` holding `hooks` (or raw text); returns the hooks folder. */
+function settingsWith(home, hooks) {
+  const claude = path.join(home, '.claude');
+  fs.mkdirSync(path.join(claude, 'hooks'), { recursive: true });
+  fs.writeFileSync(path.join(claude, 'settings.json'), typeof hooks === 'string' ? hooks : JSON.stringify({ hooks }));
+  return path.join(claude, 'hooks').replace(/\\/g, '/');
+}
+const startHooks = (command) => ({
+  SessionStart: [{ matcher: 'startup|resume', hooks: [{ type: 'command', command }] }],
+});
+const sessionStartRow = (env, home) => diagnose(env, home).find(([label]) => label === 'SessionStart hook');
+
+test('SessionStart hook row: missing, not installed, registered, wrong script, unreadable', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { env } = vaultWith(root);
+    assert.deepEqual(sessionStartRow(env, root), [
+      'SessionStart hook', '(not registered: node hooks/install.mjs registers it)', true,
+    ]);
+
+    const installed = path.join(root, '.claude', 'hooks', 'session-start.mjs');
+    const hooksDir = settingsWith(root, startHooks(`"C:/node/node.exe" "${installed}"`));
+    const script = `${hooksDir}/session-start.mjs`;
+    assert.deepEqual(sessionStartRow(env, root), [
+      'SessionStart hook', `registered: ${script} (MISSING: node hooks/install.mjs)`, true,
+    ]);
+
+    fs.writeFileSync(installed, '// installed\n');
+    assert.deepEqual(sessionStartRow(env, root), ['SessionStart hook', `registered: ${script}`, false]);
+
+    settingsWith(root, startHooks(`node "${hooksDir}/session-capture.mjs"`));
+    assert.deepEqual(sessionStartRow(env, root), [
+      'SessionStart hook', `(wrong script: ${hooksDir}/session-capture.mjs; expected ${script})`, true,
+    ]);
+
+    settingsWith(root, '{ "env": { "TOKEN": "hunter2" }, oops');
+    const [, value, problem] = sessionStartRow(env, root);
+    assert.equal(problem, true);
+    assert.match(value, /settings\.json is not valid JSON/);
+    assert.ok(!value.includes('hunter2'), 'no part of settings.json reaches the report');
+  } finally {
+    cleanup();
+  }
+});
+
+test('session-start log row: none yet, then the age of the last line, and never a problem', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const log = path.join(root, 'logs', 'start.log');
+    const { env } = vaultWith(root, [`HARNESS_SESSION_START_LOG=${log}`]);
+    const now = () => Date.parse('2026-09-27T12:00:00.000Z');
+    const logRow = () => diagnose(env, root, { now }).find(([label]) => label === 'session-start log');
+
+    assert.deepEqual(logRow(), ['session-start log', `${log} (none yet: no session has started since install)`, false]);
+
+    fs.mkdirSync(path.dirname(log), { recursive: true });
+    fs.writeFileSync(log, [
+      '2026-09-25T12:00:00.000Z debug input-keys: cwd,session_id',
+      '2026-09-27T11:55:00.000Z start abc projects/harness source=status rule=x ids=0 tokens=12 ms=40',
+      '',
+    ].join('\n'));
+    assert.deepEqual(logRow(), ['session-start log', `${log}, last line 5m ago`, false]);
+
+    fs.appendFileSync(log, 'garbage without a date\n');
+    assert.deepEqual(logRow(), ['session-start log', `${log}, last line undated`, false]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('the new rows sit just before transcripts', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { env } = vaultWith(root);
+    const labels = diagnose(env, root).map(([label]) => label);
+    assert.deepEqual(labels.slice(-3), ['SessionStart hook', 'session-start log', 'transcripts']);
+  } finally {
+    cleanup();
+  }
+});
+
+const ROWS = Object.freeze([
+  Object.freeze(['vault', '/v', false]),
+  Object.freeze(['uv', '(not found: ~/.local/bin or PATH)', true]),
+  Object.freeze(['SessionStart hook', '(not registered: node hooks/install.mjs registers it)', true]),
+]);
+
+test('runDoctor without --strict prints exactly the report and exits 0 whatever it finds', () => {
+  const lines = [];
+  const code = runDoctor([], { rows: () => ROWS, write: (text) => lines.push(text) });
+  assert.equal(code, 0);
+  assert.deepEqual(lines, [formatRows(ROWS)]);
+});
+
+test('runDoctor --strict exits 1 and names each problem row; 0 when there is none', () => {
+  const lines = [];
+  assert.equal(runDoctor(['--strict'], { rows: () => ROWS, write: (text) => lines.push(text) }), 1);
+  assert.equal(lines[0], formatRows(ROWS));
+  assert.deepEqual(lines.slice(1), ['doctor --strict: 2 problems', '  problem: uv', '  problem: SessionStart hook']);
+
+  const clean = [];
+  assert.equal(runDoctor(['--strict'], { rows: () => ROWS.slice(0, 1), write: (text) => clean.push(text) }), 0);
+  assert.deepEqual(clean.slice(1), ['doctor --strict: no problems']);
+});
+
+test('runDoctor refuses an unknown argument with exit 2 and builds no report', () => {
+  const lines = [];
+  let built = false;
+  const rows = () => {
+    built = true;
+    return ROWS;
+  };
+  assert.equal(runDoctor(['--strcit'], { rows, write: (text) => lines.push(text) }), 2);
+  assert.equal(built, false);
+  assert.match(lines.join('\n'), /unknown argument: --strcit/);
+});
+
+test('the CLI: --strict exits 1 on a bare machine, the plain run exits 0 with the same report', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const env = {
+      ...process.env,
+      USERPROFILE: root,
+      HOME: root,
+      HARNESS_MACHINE_ENV: path.join(root, 'absent.env'),
+      HARNESS_VAULT: path.join(root, 'no-vault'),
+    };
+    const strict = spawnSync(process.execPath, [DOCTOR, '--strict'], { env, encoding: 'utf8', timeout: 60_000 });
+    assert.equal(strict.status, 1, strict.stderr);
+    assert.match(strict.stdout, /doctor --strict: \d+ problems/);
+    assert.match(strict.stdout, /problem: vault/);
+    const plain = spawnSync(process.execPath, [DOCTOR], { env, encoding: 'utf8', timeout: 60_000 });
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.ok(!plain.stdout.includes('doctor --strict'), 'the plain report is unchanged');
+    assert.ok(strict.stdout.startsWith(plain.stdout.trimEnd()), 'strict prints the same report first');
+  } finally {
+    cleanup();
+  }
+});
+
+// ------------------------------------------------ the claude-config row (R-H5)
+
+test('claude-config row: not cloned is informational; a clone with the wrong or no origin is a problem', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { env } = vaultWith(root);
+    const dir = path.join(root, 'claude-config');
+    const configRow = (runGit) => diagnose(env, root, { runGit }).find(([label]) => label === 'claude-config');
+
+    assert.deepEqual(configRow(), ['claude-config', `${dir} (not cloned on this machine)`, false]);
+
+    fs.mkdirSync(dir);
+    assert.deepEqual(configRow(), ['claude-config', `${dir} (exists but is not a git clone)`, true]);
+
+    fs.mkdirSync(path.join(dir, '.git'));
+    const other = scriptedGit({ [`claude-config|${ORIGIN}`]: ok('https://github.com/someone/else.git\n') });
+    assert.deepEqual(configRow(other.runGit), [
+      'claude-config', `${dir}, origin https://github.com/someone/else.git (expected emstacho-su/claude-config)`, true,
+    ]);
+
+    const none = scriptedGit({ [`claude-config|${ORIGIN}`]: exit(2) });
+    assert.deepEqual(configRow(none.runGit), [
+      'claude-config', `${dir}, no origin remote (expected emstacho-su/claude-config)`, true,
+    ]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('claude-config row: the right origin shows the last commit age and the exceptions file, never a token', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { env } = vaultWith(root);
+    const dir = path.join(root, 'claude-config');
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    const now = () => Date.parse('2026-09-27T12:00:00.000Z');
+    const twoDaysAgo = Math.floor(Date.parse('2026-09-25T12:00:00.000Z') / 1000);
+    const configRow = (script) =>
+      diagnose(env, root, { runGit: scriptedGit(script).runGit, now }).find(([label]) => label === 'claude-config');
+    const origin = { [`claude-config|${ORIGIN}`]: ok('https://x-access-token:s3cret@github.com/emstacho-su/claude-config.git\n') };
+
+    const fresh = configRow({ ...origin, 'claude-config|log -1 --format=%ct': ok(`${twoDaysAgo}\n`) });
+    assert.deepEqual(fresh, [
+      'claude-config',
+      `${dir}, origin https://github.com/emstacho-su/claude-config.git, last commit 2d ago, no .scan-exceptions.json`,
+      false,
+    ]);
+    assert.ok(!fresh[1].includes('s3cret'));
+
+    fs.writeFileSync(path.join(dir, '.scan-exceptions.json'), '[]\n');
+    const ssh = { [`claude-config|${ORIGIN}`]: ok('git@github.com:emstacho-su/claude-config.git\n') };
+    const unborn = configRow({
+      ...ssh,
+      'claude-config|log -1 --format=%ct': exit(128),
+      [`claude-config|${UNBORN}`]: exit(1),
+    });
+    assert.deepEqual(unborn, [
+      'claude-config',
+      `${dir}, origin git@github.com:emstacho-su/claude-config.git, no commits yet, .scan-exceptions.json present`,
+      false,
+    ]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('the claude-config row sits just before the SessionStart rows', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { env } = vaultWith(root);
+    const labels = diagnose(env, root).map(([label]) => label);
+    assert.deepEqual(labels.slice(-4), ['claude-config', 'SessionStart hook', 'session-start log', 'transcripts']);
+  } finally {
+    cleanup();
+  }
 });

@@ -131,3 +131,83 @@ def test_parse_realm_policies_reads_name_policy_pairs():
 def test_parse_realm_policies_refuses_a_malformed_entry(bad: str):
     with pytest.raises(ConfigError):
         parse_realm_policies(bad)
+
+
+# -- the harness realm (R-H1) -------------------------------------------------
+
+
+def test_the_harness_realm_is_accepted_and_its_collection_is_the_folder_below_it(tmp_path: Path):
+    realm(tmp_path / "projects")
+    realm(tmp_path / "harness")
+    note(tmp_path / "projects" / "bb2dash" / "sessions" / "a.md")
+    note(tmp_path / "harness" / "agentic-harness" / "sessions" / "b.md")
+    note(tmp_path / "harness" / "agentic-harness" / "agentic-harness.md")
+    loaded = load_vault(tmp_path, allowed_realms=["projects", "classes", "harness"])
+    assert realms_of(loaded) == {"a": "projects", "b": "harness", "agentic-harness": "harness"}
+    assert {doc.external_id: doc.collection for doc in loaded.documents} == {
+        "a": "bb2dash",
+        "b": "agentic-harness",
+        "agentic-harness": "agentic-harness",
+    }
+
+
+def test_parse_realm_policies_reads_the_three_realm_line():
+    assert parse_realm_policies("projects:push,classes:push,harness:push") == {
+        "projects": "push",
+        "classes": "push",
+        "harness": "push",
+    }
+
+
+def test_a_note_moved_from_projects_to_harness_is_a_metadata_update_and_nothing_is_pruned(
+    tmp_path: Path, fake_store, fake_embedder
+):
+    """R-H3: move-to-realm copies a note into the harness realm and removes it from
+    projects, keeping its ``id``. One full ingest with --prune then updates the row's
+    collection and realm in place and deletes nothing in either realm, because prune
+    runs after the load has re-tagged the row (cli._sweep)."""
+    import argparse
+
+    from ingest.chunking import MarkdownChunker
+    from ingest.cli import _sweep
+    from ingest.config import ChunkConfig
+    from ingest.pipeline import Action, IngestPipeline
+
+    realm(tmp_path / "projects")
+    realm(tmp_path / "harness")
+    body = "A harness session with enough words to be one chunk of text.\n"
+    old = tmp_path / "projects" / "agentic-harness" / "sessions" / "s.md"
+    old.parent.mkdir(parents=True)
+    old.write_text(f"---\nid: note-s\ncollection: 'agentic-harness'\n---\n\n{body}", encoding="utf-8")
+    note(tmp_path / "projects" / "bb2dash" / "sessions" / "b.md")
+
+    chunker = MarkdownChunker(
+        count_tokens=lambda t: len(t.split()),
+        config=ChunkConfig(target_tokens=40, overlap_tokens=8, min_tokens=5, hard_max_tokens=80),
+    )
+    args = argparse.Namespace(prune=True, prune_legacy=False, dry_run=False, limit=None, source="obsidian")
+
+    def full_run():
+        documents = load_vault(tmp_path, allowed_realms=["projects", "classes", "harness"]).documents
+        stats = IngestPipeline(fake_store, fake_embedder, chunker).run(documents)
+        # written_before=None: the strictest sweep, sparing nothing written during the run.
+        return stats, _sweep(args, fake_store, documents, stats, None)
+
+    first, _ = full_run()
+    assert first.count(Action.INSERTED) == 2
+    row_id = fake_store.documents[("obsidian", "note-s")].document_id
+
+    new = tmp_path / "harness" / "agentic-harness" / "sessions" / "s.md"
+    new.parent.mkdir(parents=True)
+    new.write_text(old.read_text(encoding="utf-8"), encoding="utf-8")
+    old.unlink()
+
+    second, prunes = full_run()
+    outcome = {o.external_id: o.action for o in second.outcomes}
+    assert outcome["note-s"] is Action.METADATA_UPDATED
+    assert sum(result.deleted for result in prunes) == 0
+    state = fake_store.documents[("obsidian", "note-s")]
+    assert state.document_id == row_id
+    assert state.collection == "agentic-harness"
+    assert state.metadata["_ingest"]["realm"] == "harness"
+    assert len(fake_store.documents) == 2

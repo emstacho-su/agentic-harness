@@ -285,3 +285,37 @@ def test_untruncated_refuses_a_tokenizer_it_cannot_copy() -> None:
 
 def test_the_module_exports_its_exit_codes() -> None:
     assert (verify_cli.EXIT_CLEAN, verify_cli.EXIT_FINDINGS, verify_cli.EXIT_UNAVAILABLE) == (0, 1, 2)
+
+
+def test_the_audit_cutoff_is_the_database_clock_read_before_the_walk(monkeypatch, clean_vault: Path, capsys) -> None:
+    # Rows the nightly ingest wrote minutes earlier predate this cutoff, so they are compared.
+    from datetime import datetime, timezone
+
+    db_now = datetime(2026, 9, 28, 3, 6, tzinfo=timezone.utc)
+    events: list[str] = []
+    reader = FakeReader.from_loaded(load_vault(clean_vault))
+    real_load = verify_cli.load_vault
+    walked = []
+
+    def clock():
+        events.append("clock")
+        return db_now
+
+    def load(*args, **kwargs):
+        events.append("walk")
+        return real_load(*args, **kwargs)
+
+    real_walk = verify_cli._walk
+
+    def walk(path, walked_at):
+        walked.append(walked_at)
+        return real_walk(path, walked_at)
+
+    reader.database_now = clock
+    monkeypatch.setattr(verify_cli, "load_vault", load)
+    monkeypatch.setattr(verify_cli, "_walk", walk)
+
+    run_verify(["--path", str(clean_vault)], reader=reader, embedder=HashEmbedder(), count_tokens=word_count)
+
+    assert events[:2] == ["clock", "walk"]
+    assert walked == [db_now]

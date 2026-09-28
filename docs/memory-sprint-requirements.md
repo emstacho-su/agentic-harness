@@ -156,6 +156,36 @@ untrusted notes) and R-H5 (a repo built from a folder that holds credentials).
 - **Done when.** New notes carry the form, and on home-pc the graph labels session nodes and hub
   nodes by `title` with the plugin installed.
 
+### Phase N record — L1, 2026-09-27
+
+Code: PR #21 (merged `797c251`): R-N1 hub rename, R-N2 subagent link fix, R-N3 readable titles.
+
+**Written retroactively** (2026-09-28), from the evidence left in `hooks/README.md` and a fresh
+`--check`: the live step ran on 2026-09-27 but nobody wrote it up at the time, so it read as an
+undocumented "done" until this audit found it.
+
+What ran, 2026-09-27, from `main`:
+
+- `hooks/rename-hubs.mjs --apply`: 19 moves, 348 rewrites, `--check` 0 broken (`hooks/README.md`
+  §"The hub rename").
+- R-N2's root orphan moved to `~/.claude-archive/2026-09-24-vault-orphans/` (confirmed present).
+- Re-run of `node hooks/rename-hubs.mjs --check` during this audit (2026-09-28): 1,105 up links
+  checked, 0 unreadable, **0 broken hub links**, 169 pending worker links (all "parent session not
+  captured yet" — the ordinary state for a worker whose session is still open, including this
+  orchestrator session itself).
+- `Get-ChildItem C:\Users\estac\vault -Recurse -Filter index.md` and a root-level `*.md` listing
+  are both empty (checked live during this audit).
+
+Not found or not verified:
+- No before/after `uv run ingest eval` scores for this live step were recorded anywhere.
+- R-N3's Front Matter Title plugin install (MANUAL, per machine) — not confirmed either way.
+- R-N3's "three real sessions land with readable titles" spot-check — not specifically verified,
+  though every session since has gone through the same code path.
+
+Open:
+- [ ] Confirm Front Matter Title is installed and configured in Obsidian on home-pc.
+- [ ] No eval baseline exists for this step; treat the next eval run as the first data point.
+
 ---
 
 ## Phase H — the harness's own realm
@@ -211,6 +241,51 @@ untrusted notes) and R-H5 (a repo built from a folder that holds credentials).
 - **Done when.** `projects/{claude,memory,projects,remote}` are gone; `harness/agentic-harness` holds
   the moved notes; ingest reports only `metadata-updated` for them and 0 deleted; eval is unchanged.
 
+### Phase H-a record — L3, 2026-09-27
+
+Code: PR #23 (merged `35a450b`): R-H1 realm, R-H2 routing, R-H3 `move-to-realm`, three review passes.
+
+**Gate waived.** Stack said "go L3 (skip the nightly log)": the three `committed -> pulled ->
+pushed` nights never ran (see the Phase P record). A manual `sync-realms --push` just before the
+move gave `committed -> pulled -> pushed` for both realms.
+
+What the live vault held, and the spec did not know: `projects/memory` (26) and `projects/projects`
+(37) were **bb2dash** work, filed by cwds inside Claude Code's own folders
+(`~/.claude/projects/C--Users-estac-projects-bb2dash/{memory,<session>/subagents/…}`). R-H2 therefore
+decodes those folders and scratchpads before any rule reads the cwd, for every project, and
+`~/projects` itself is routed to `misc` (Stack's call).
+
+What ran, 17:02–17:20 EDT, from `main` at `35a450b`:
+
+- Main checkout pulled to `35a450b` (the nightly runs scripts and ingest from it).
+- `uv run ingest eval` before: hit@3 0.92 (57/62), MRR 0.78, negatives 5/5.
+- `~/.harness/machine.env`: `HARNESS_REALMS=projects:push,classes:push,harness:push` (first, so no
+  unlisted realm is ever on disk).
+- `gh repo create emstacho-su/vault-harness --private`; `init-realm --realm harness --remote …`
+  (baseline = the three policy files, `675cb91`); `git push -u origin main` by hand.
+- Doctor: `realm harness  git checkout, origin …/vault-harness.git`.
+- `move-to-realm --dry-run`: 332 moves (260 to `harness/agentic-harness`, 71 to `projects/bb2dash`,
+  1 to `projects/misc`), 4 hubs to archive, 0 conflicts; read by Stack
+  (`~/.claude-archive/2026-09-27-move-to-realm-dry-run.txt`). `--apply`: moved 332, archived 4,
+  failed 0. The five source collections are gone.
+- `install.mjs`: 5 files, settings unchanged; backup `~/.claude/hooks/backup-2026-09-27T21-13-29-405Z`.
+- `sync-realms --push`: `projects` and `harness` `committed -> pulled -> pushed`.
+- Full ingest with `--prune`: 262 `metadata-updated`, 637 unchanged, 0 chunks written. Pruned 5 in
+  `projects`: the 4 archived hubs (`claude`, `memory`, `projects`, `remote`), which the move takes
+  out of the vault by design, and `projects/vault/index.md`, deleted by the 17:53 sync that same day
+  and never pruned because that run's ingest failed on DNS. No moved note was deleted.
+- Eval after: hit@3 0.92 (57/62), MRR 0.78, negatives 5/5, the same five failing cases. Label check
+  lists seven cases whose answers now sit in `harness/agentic-harness`, `projects/bb2dash` or
+  `projects/misc`; relabelling them is Q-b's (golden.yaml says so).
+- `rename-hubs --check`: 1,049 up links, 0 broken hub links, 127 pending worker links.
+- The installed hook routes `~/agentic-harness`, a `-wt-` worktree, `~/.claude`, the harness Claude
+  memory folder and a harness scratchpad to `harness/agentic-harness`, and bb2dash (repo and Claude
+  memory folder) to `projects/bb2dash`.
+
+Open: the done-when's three real sessions landing in `harness/agentic-harness/sessions/` (they
+will on their next SessionEnd); ~~the next nightly's `harness: … -> pushed` line~~ — closed
+2026-09-28, see the Phase Q-a record (L5): `harness: committed -> pulled -> pushed`.
+
 ### R-H4 A harness session starts knowing where the project is
 - **Requirement.** A `SessionStart` hook (startup and resume) resolves the collection with the same
   rules as capture and returns `additionalContext` of at most ~1,500 tokens: the collection's
@@ -229,7 +304,8 @@ untrusted notes) and R-H5 (a repo built from a folder that holds credentials).
 
 ### R-H5 `~/.claude` travels too
 - **Requirement.** A private repo `emstacho-su/claude-config` built from an **allowlist**: `CLAUDE.md`,
-  `rules/`, `skills/`, and a `settings.template.json` holding the hooks and permissions but no secret.
+  `rules/`, `skills/`, `skill-vault/` (on-demand skills; added by Stack 2026-09-27), and a
+  `settings.template.json` holding the hooks and permissions but no secret.
   `install.mjs --config --dry-run|--apply` places it on a machine. A **denylist** that is refused even
   if allowlisted: `.credentials.json`, `history.jsonl`, `projects/`, `sessions/`, `file-history/`,
   `paste-cache/`, `shell-snapshots/`, `telemetry/`, `*.log`, `daemon*`. A secret scan with the capture
@@ -254,6 +330,67 @@ untrusted notes) and R-H5 (a repo built from a folder that holds credentials).
   user profile, clean to doctor all-green.
 - **Done when.** That live run succeeds with only the bootstrap and the MANUAL credential step, and the
   dev-VM runbook in `docs/portable.md` is rewritten around it.
+
+### Phase H-b record — L2, 2026-09-28
+
+Code: PR #29 (merged `896f8e4`): R-H4 SessionStart brief, R-H5 `claude-config` export, R-H6
+bootstrap.
+
+**Real install.** An accidental early run of `node hooks/install.mjs` (no flags) turned out to
+already match this step's intent: it backed up the previous hook copy
+(`~/.claude/hooks/backup-2026-09-28T01-36-07-066Z`) and deployed 4 files (`lib/entry-point.mjs`
+new; `lib/redact.mjs`, `session-capture.mjs`, `session-start.mjs` updated), all verified
+byte-identical to the merged source. `settings.json` was untouched (SessionEnd/SubagentStop/
+SessionStart were already registered). Diffed against the backup: the changes are exactly the
+reviewed H-b hardening — `redact.mjs`'s fail-closed-per-rule handling (a throwing rule becomes its
+own `<rule>:error` finding instead of being silently skipped) and an `isEntryPoint()` refactor in
+`session-capture.mjs`/`session-start.mjs` for testability, plus a single-answer guard in
+`session-start.mjs`. No scope beyond that. Kept.
+
+**`claude-config` repo.** Created private (`gh repo create emstacho-su/claude-config --private`),
+cloned locally. `node hooks/export-config.mjs --list-findings` reported 16 secret-scan findings
+(`skills/synced/` allowlisted, so the full count) in 285 files. Read every flagged line: 3 are this
+repo's own "never do this" / mock-test examples (`"sk-proj-xxxxx"`, `"password": "test"`,
+`PropertyMock(return_value="test-key")`); 2 are placeholder API-doc examples (a truncated fake JWT,
+`sk_live_abc123`); 2 are runtime header reads with no literal value at all
+(`.replace('Bearer ', '')`); 5 are the word "tokens" in a synced skill's benchmark-stats code
+(`a_tokens`, `delta_tokens` — LLM token counts, unrelated to credentials); 2 are `qpdf
+--password=secret123`/`--password=mypassword` in a synced PDF skill's CLI examples; 1 is a
+manufacturing gauge-ID regex in a synced skill with no secret-related keyword nearby. All 16 are
+false positives from a deliberately fail-closed scanner; none grant access to anything real.
+Accepted all 16 into `.scan-exceptions.json`. `--dry-run` then `--apply`: 284 new files, 1 refused
+(`skills/humanizer/.git`, correctly denylisted), committed locally; the tool withholds the push as
+its own explicit gate. Pushed: `main` is live at `github.com/emstacho-su/claude-config`.
+
+**Bootstrap trial**, on a scratch profile (`C:/Users/estac/bootstrap-trial-scratch`, a temporary
+`$env:USERPROFILE`/`HARNESS_MACHINE_ENV` override for the child process only — never the real
+profile), per R-H6's done-when:
+
+- Full `-DryRun` against the scratch profile: all 10 steps correctly detected as needed (fresh
+  clone, would-clone all 3 realms and `claude-config`, would-run every tool). One iteration
+  caught a genuinely missing `HARNESS_REALM_REMOTE_BASE` in the scratch machine file and stopped
+  cleanly with an actionable message — correct dry-run behavior, not a bug.
+- Real run: steps 0–3 (preflight, clone, `uv sync` — 41 packages — `npm ci` + `npm run build`)
+  succeeded outright. Step 4 (store) failed once because Docker Desktop wasn't running (an
+  environment precondition, not a bootstrap defect) — clean exit 1, exact message, safe to
+  re-run. After Stack started Docker Desktop, a second real run: step 4 pulled the pinned
+  `pgvector/pgvector:0.8.6-pg17` image, brought up `harness-postgres`, healthy. Step 5 failed once
+  on a missing `DATABASE_URL` in the scratch machine file (my gap, not the script's) — fixed and
+  re-run.
+- Third real run, clean end to end: `embed-check` passed (worst cosine 1.00000); `db migrate`
+  applied all 7 pending migrations from empty in order; step 6 cloned all three private realms;
+  step 7 cloned the freshly-pushed `claude-config` and installed it into a scratch `.claude`
+  (284 files, SHA-256 verified); step 8 installed 33 hook files (byte-identical) and registered
+  the `rag` MCP server; step 9's `doctor --strict` reported **"no problems."**
+  `bootstrap: all steps done`.
+- Cleanup: `docker compose down -v` (container, network and named volume removed), the scratch
+  directory deleted. Nothing left behind that could collide with a real local-store bring-up
+  later.
+
+Open: the MANUAL items bootstrap itself prints (push credential, Obsidian Front Matter Title, a
+realm with no remote yet, registering the nightly job and store backup, the embedder's minimum
+cosine) are runbook items for an actual second machine, not blockers here — this was a same-machine
+scratch trial, not Phase E's VM.
 
 ---
 
@@ -395,6 +532,43 @@ Open:
 - **Tests.** Unit: the loader validates the new fields; per-collection aggregation. Live: first run.
 - **Done when.** Every collection with sessions has three or more cases and the nightly log carries the
   scores.
+
+### Phase Q-a record — L5, 2026-09-28
+
+Code: PR #19 (merged `0f190be`): R-Q1 `ingest verify`, R-Q3 golden-set coverage; R-Q2's dogfood
+negative retired separately (PR #25).
+
+**No waiver needed.** This is the first live step in the sprint to run against a clean automated
+cycle rather than a manual substitute.
+
+What ran, 21:28–21:33 EDT (Stack, via `!`, `scripts/nightly-ingest.ps1`), from `main` at `896f8e4`:
+
+- `uv run ingest eval` before (Stack, standalone run): hit@3 0.92 (57/62), MRR 0.78, negatives
+  1.00 (5/5).
+- realms-pull: `projects: committed -> pulled`, `classes: clean -> pulled`,
+  `harness: committed -> pulled` — all clean.
+- transcripts/state/checkpoints/sweep: all exit 0 (328 transcripts scanned, 16 candidates/11
+  written; 1051 session notes scanned, all left-alone).
+- Full ingest with `--prune`: 958 unchanged, 0 chunks written — no content changed since the
+  manual runs earlier the same evening.
+- `ingest verify`: **clean.** Every check — chunks, embeddings, token-count, vault row counts
+  (`classes` 8/8, `harness` 212/212, `projects` 738/738, 4 legacy rows uncompared, `duplicate-ids`,
+  `re-embed` (50 of 6263 chunks sampled, threshold 0.999) — reported 0 findings. Nothing to fix or
+  explain.
+- `ingest eval --history`: hit@3 0.92 (57/62), MRR 0.78, negatives 5/5 — unchanged from before,
+  same label-check and failed-case lists already on record from H-a/P (seven relabel candidates
+  for Q-b, five known-failing cases). Appended to `ingest/eval/history.jsonl`.
+- realms-push: **`projects: clean -> pulled -> pushed`**, **`harness: committed -> pulled ->
+  pushed`**, `classes: clean -> pulled -> up-to-date`. The first genuine (non-dry-run) push
+  success `nightly-ingest.log` has ever recorded. It closes the "next nightly's
+  `harness: … -> pushed` line" item left open on the Phase H-a record (L3).
+
+This is one clean night toward the *Gates and order* three-night `committed -> pulled -> pushed`
+prerequisite — L1, L3 and L4 all ran earlier on an explicit Stack waiver, not because that gate had
+closed. Two more consecutive clean nights (the scheduled 03:00 runs) would close it properly for
+anything still leaning on the waiver.
+
+Open: none from this step.
 
 ### R-Q4 The location matrix
 - **Requirement.** `scripts/location-matrix.ps1` runs `claude -p` with a fixed question from each of:
