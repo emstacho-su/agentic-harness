@@ -11,6 +11,7 @@
     uv run ingest embed-check         [--json] [--threshold 0.999] [--record [--force]]
     uv run ingest verify              --path C:/Users/you/vault [--sample 50] [--seed N] [--json]
     uv run ingest report retrievals   [--json] [--since 14d] [--limit 20]
+    uv run ingest curate inventory    --path C:/Users/you/vault [--collection X] [--json] [--no-git]
     uv run ingest --health
 
 A session note's ``retrievals:`` frontmatter is projected into
@@ -32,6 +33,7 @@ from pathlib import Path
 
 from .chunking import MarkdownChunker
 from .db_cli import SUBCOMMAND as DB_SUBCOMMAND, run_db
+from .curate.cli import SUBCOMMAND as CURATE_SUBCOMMAND, run_curate
 from .config import (
     CHUNKING,
     EMBEDDING,
@@ -69,6 +71,7 @@ SUBCOMMANDS = {
     EMBED_CHECK_SUBCOMMAND: run_embed_check,
     VERIFY_SUBCOMMAND: run_verify,
     REPORT_SUBCOMMAND: run_report,
+    CURATE_SUBCOMMAND: run_curate,
 }
 
 

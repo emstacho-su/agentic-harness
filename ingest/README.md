@@ -404,6 +404,66 @@ given in one `error:` line on stderr.
 
 ---
 
+## Curator (`curate`)
+
+```bash
+uv run ingest curate inventory --path C:/Users/estac/vault                     # read-only, R-C1
+uv run ingest curate extract --path C:/Users/estac/vault --collection agentic-harness --dry-run
+uv run ingest curate extract --path C:/Users/estac/vault --collection agentic-harness   # R-C2, calls the judge
+uv run ingest curate ledger  --path C:/Users/estac/vault --collection agentic-harness   # R-C3, writes ledger.md
+```
+
+The read-only half of Phase C in `docs/memory-sprint-requirements.md`. Python does
+every read and write; the LLM is a pure function behind the `Judge` protocol
+(`curate/judge.py`): text and a JSON schema in, validated JSON out. The backend,
+`curate/claude_cli.py`, runs `claude -p` with no tools, no MCP servers, no hooks,
+safe mode and no session persistence, from an empty temp folder, so a judge call
+is never captured as a session. It strips `ANTHROPIC_API_KEY` from the child's
+environment, so calls use the subscription login. Tests use `FakeJudge` and
+never call a model.
+
+| Stage | Reads | Writes | Exit codes |
+| --- | --- | --- | --- |
+| `inventory` | the vault; `git log` and `gh pr list` unless `--no-git` | nothing | `0` clean, `1` a collection's count differs from its `sessions/*.md`, `2` could not run |
+| `extract` | inventory notes, the `curate.extractions` cache | cache rows, one batch at a time | `0` done, `1` notes failed, `2` could not run, `3` stopped by budget |
+| `ledger` | cached extractions, git facts, `curate.issues`/`issue_events` | issues, members, events, `<realm>/<collection>/ledger.md` | as `extract` |
+
+- **Inventory:** each collection's timeline in date order, with subagents nested
+  under their main session. It includes the `sdk-*` review-worker notes that
+  ingest skips, and leaves out hubs, `captured_by: curator` notes and class
+  `materials/`.
+- **Hub profile:** each hub may carry `kind: project | class` (the default comes
+  from the realm), `plan_sources:`, `repo:` (owner/name) and `repo_path:`. Set
+  `repo_path` explicitly: a path derived from session `cwd`s can land on a
+  worktree or scratchpad.
+- **Extraction:** several notes go in one judge call, each fenced by a per-call
+  nonce and marked as untrusted data. Every evidence quote must be an exact
+  substring of its note (only CRLF→LF is normalised) and at least 12 characters,
+  or the item is rejected with a reason.
+- **Extraction cache:** results are cached by (note id, content hash, extractor
+  version). The version carries a fingerprint of the schema and prompts, so
+  editing either one invalidates the cache. `--max-calls` and `--max-tokens`
+  stop a run before it crosses a limit, and keep the batches already written.
+  `--dry-run` prints the batches and estimated tokens.
+- **Ledger clustering:** each new issue is compared with the collection's
+  existing issues by bge cosine (at least 0.85, best three), and a judge call
+  confirms a match or none. Verdicts are cached. Ids are
+  `ISSUE-<collection>-NNN` and never renumber.
+- **Ledger events:** events are append-only facts: a note's claim, a `fix:`
+  commit touching the issue's files, or a fix reference resolving to a commit on
+  main or a merged PR. State (`open`, `claimed-fixed`, `verified`, `regressed`)
+  is replayed from them in effective-time order. A fix closes a validity
+  interval; a recurrence opens a new one.
+- **`curate/writer.py`** is the curator's only file writer. It writes
+  allowlisted names only (`ledger`, `status`, `history`,
+  `curation/<date>.md`), never leaves the vault, never overwrites a note it did
+  not write, and skips the write when only `generated_at` would change.
+
+Schema: `db/migrations/20260927200342_curate_schema.sql` (schema `curate`, RLS on,
+no policies). The first live run is step L7 of `docs/memory-sprint-orchestration.md`.
+
+---
+
 ## Tests
 
 ```bash
@@ -441,6 +501,7 @@ ingest/
     verify*.py          read-only store audit: types, checks, SQL, CLI
     envfile.py          minimal .env reader
     cli.py              argument parsing and reporting
+    curate/             the read-only curator: inventory, judge, extract, ledger, writer
     loaders/
       obsidian.py
       claude_mem.py
