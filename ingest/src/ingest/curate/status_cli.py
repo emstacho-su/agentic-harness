@@ -14,10 +14,11 @@ report. ``--dry-run`` writes no file; the store is never written by this stage.
 The report prints ids, paths and counts only: claim texts, titles and commit
 subjects are note- or repo-derived and stay in status.md.
 
-Exit codes: 0 done; 1 findings (a requirement is contradicted, or a plan source
-is missing or unreadable); 2 could not run (bad arguments or vault, a hub that
-cannot be read, the store unreachable even for a dry run, a status.md the
-curator may not overwrite or cannot write). Never 3: there is no budget.
+Exit codes: 0 done; 1 findings (a requirement is contradicted, a plan source is
+missing or unreadable, or two plan sources give the same requirement id
+different titles); 2 could not run (bad arguments or vault, a hub that cannot
+be read, the store unreachable even for a dry run, a status.md the curator may
+not overwrite or cannot write). Never 3: there is no budget.
 """
 
 from __future__ import annotations
@@ -136,7 +137,7 @@ def _write(root: str, status: CollectionStatus, notes: dict[str, tuple[str, str]
 def exit_code(results: tuple[CollectionStatus, ...], *, refused: bool) -> int:
     if refused:
         return EXIT_UNAVAILABLE
-    if any(result.problems or _contradicted(result) for result in results):
+    if any(result.problems or result.id_collisions or _contradicted(result) for result in results):
         return EXIT_FINDINGS
     return EXIT_DONE
 
@@ -162,13 +163,18 @@ def status_text(results, writes, dry_run: bool, code: int) -> str:
         states = ", ".join(f"{state} {result.counts.get(state, 0)}" for state in STATES)
         lines.append(
             f"{result.folder}: requirements {len(result.requirements)} ({states}); "
-            f"plan sources found {len(result.sources)}, missing {len(result.problems)}; "
-            f"notes {result.notes}, extracted {result.extracted}"
+            f"plan sources found {len(result.sources)}, missing {len(result.problems)}, "
+            f"id collisions {len(result.id_collisions)}; notes {result.notes}, extracted {result.extracted}"
         )
         contradicted = _contradicted(result)
         if contradicted:
             lines.append("    contradicted: " + ", ".join(contradicted))
         lines.extend(f"    plan source problem: {p.given} ({p.reason})" for p in result.problems)
+        lines.extend(
+            f"    id collision: {c.id} kept from {c.kept_source} ({c.kept_title}); "
+            f"also in {c.other_source} ({c.other_title})"
+            for c in result.id_collisions
+        )
         lines.append(f"    status: {result.folder}/status.md {_outcome(write)}")
     lines.append(f"{STAGE}: {len(results)} collection(s), exit {code}")
     return "\n".join(lines)
@@ -196,6 +202,11 @@ def _collection_json(result: CollectionStatus, write: Write) -> dict[str, Any]:
             "found": len(result.sources),
             "missing": len(result.problems),
             "problems": [{"given": p.given, "reason": p.reason} for p in result.problems],
+            "id_collisions": [
+                {"id": c.id, "kept_source": c.kept_source, "kept_title": c.kept_title,
+                 "other_source": c.other_source, "other_title": c.other_title}
+                for c in result.id_collisions
+            ],
         },
         "status": {"path": f"{result.folder}/status.md", "written": isinstance(write, WriteResult) and write.written,
                    "outcome": _outcome(write)},

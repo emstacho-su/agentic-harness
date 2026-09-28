@@ -166,7 +166,7 @@ def test_a_run_writes_status_md_and_reports(vault: Path, capsys) -> None:
     assert "| R-A1 Build the parser | claimed done |" in body
     assert "| R-A2 Write the store | in progress | in-progress: store half written" in body
     assert (f"projects/demo: requirements 2 (not started 0, in progress 1, claimed done 1, verified 0, "
-            f"contradicted 0); plan sources found 1, missing 0; notes 2, extracted 1") in out
+            f"contradicted 0); plan sources found 1, missing 0, id collisions 0; notes 2, extracted 1") in out
     assert "    status: projects/demo/status.md written" in out
     assert out.strip().splitlines()[-1] == "status: 1 collection(s), exit 0"
     assert "store half written" not in out  # claim texts are note-derived; the report prints ids and counts
@@ -211,7 +211,7 @@ def test_the_json_report(vault: Path, capsys) -> None:
         "folder": "projects/demo", "collection": "demo", "notes": 2, "extracted": 1, "requirements": 2,
         "states": {"not started": 1, "in progress": 0, "claimed done": 0, "verified": 0, "contradicted": 1},
         "contradicted": ["R-A1"],
-        "plan_sources": {"found": 1, "missing": 0, "problems": []},
+        "plan_sources": {"found": 1, "missing": 0, "problems": [], "id_collisions": []},
         "status": {"path": "projects/demo/status.md", "written": True, "outcome": "written"},
     }
     assert "parser broke" not in out
@@ -257,6 +257,19 @@ def test_a_missing_plan_source_exits_one(tmp_path: Path, plan_file: Path, capsys
     assert "plan sources found 1, missing 1" in out
     assert f"    plan source problem: {(tmp_path / 'gone.md').as_posix()} (not found)" in out
     assert "gone.md: not found" in status_path(vault).read_text(encoding="utf-8")
+
+
+def test_an_id_collision_across_plan_sources_exits_one(tmp_path: Path, plan_file: Path, capsys) -> None:
+    other = tmp_path / "repo" / "docs" / "other.md"
+    other.write_text("# Other\n\n### R-A2 Store again\n- [x] store shipped\n", encoding="utf-8")
+    vault = make_vault(tmp_path, [plan_file.as_posix(), other.as_posix()])
+    code, out, _ = run(vault, ["--collection", "demo"], capsys, store=InMemoryCurateStore())
+    assert code == 1
+    assert "id collisions 1" in out
+    assert f"    id collision: R-A2 kept from {plan_file.as_posix()} (Write the store); " \
+           f"also in {other.as_posix()} (Store again)" in out
+    body = status_path(vault).read_text(encoding="utf-8")
+    assert "**R-A2** is defined in both" in body and "Write the store" in body and "Store again" in body
 
 
 def test_the_fixture_vault_demo_has_a_missing_plan_source(tmp_path: Path, capsys) -> None:

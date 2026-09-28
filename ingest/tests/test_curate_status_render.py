@@ -8,7 +8,15 @@ from __future__ import annotations
 import re
 
 from ingest.curate.plan import PlanSourceProblem
-from ingest.curate.status import STATES, BriefItem, Claim, CollectionStatus, Evidence, RequirementStatus
+from ingest.curate.status import (
+    STATES,
+    BriefItem,
+    Claim,
+    CollectionStatus,
+    Evidence,
+    RequirementIdCollision,
+    RequirementStatus,
+)
 from ingest.curate.status_render import status_body, status_frontmatter
 
 NOTES = {"session-a": ("projects/demo/sessions/aaaa1111.md", "2026-09-01T10:00:00+00:00"),
@@ -23,11 +31,12 @@ def req(rid: str, state: str, *, title: str = "", phase: str | None = "Phase A â
                              claims=(claim,) if claim else ())
 
 
-def status(requirements=(), briefs=(), problems=(), sources=("docs/plan.md",)) -> CollectionStatus:
+def status(requirements=(), briefs=(), problems=(), sources=("docs/plan.md",), id_collisions=()) -> CollectionStatus:
     counts = {state: sum(1 for r in requirements if r.state == state) for state in STATES}
     return CollectionStatus(collection="demo", realm_folder="projects", folder="projects/demo",
                             requirements=tuple(requirements), brief_items=tuple(briefs), problems=tuple(problems),
-                            counts=counts, sources=tuple(sources), notes=2, extracted=2)
+                            counts=counts, sources=tuple(sources), notes=2, extracted=2,
+                            id_collisions=tuple(id_collisions))
 
 
 def full() -> CollectionStatus:
@@ -131,6 +140,31 @@ def test_plan_sources_say_found_or_why_not() -> None:
     section = body.split("## Plan sources", 1)[1]
     assert "- docs/plan.md: found" in section
     assert "- C:/gone/requirements.md: not found" in section
+
+
+def test_an_id_collision_is_visible_in_plan_sources() -> None:
+    collision = RequirementIdCollision(id="R-C1", kept_source="docs/plan.md", kept_title="Inventory",
+                                       other_source="docs/other.md", other_title="Line endings")
+    body = status_body(status(id_collisions=[collision]), NOTES)
+    section = body.split("## Plan sources", 1)[1]
+    assert "R-C1" in section and "Inventory" in section and "Line endings" in section
+    assert "docs/plan.md" in section and "docs/other.md" in section
+
+
+def test_a_same_document_id_collision_reads_as_two_headings_not_two_sources() -> None:
+    collision = RequirementIdCollision(id="R-A2", kept_source="docs/plan.md", kept_title="First",
+                                       other_source="docs/plan.md", other_title="Second")
+    body = status_body(status(id_collisions=[collision]), NOTES)
+    section = body.split("## Plan sources", 1)[1]
+    assert "has two headings with different titles in docs/plan.md" in section
+    assert "is defined in both" not in section
+
+
+def test_an_id_collision_title_is_escaped() -> None:
+    collision = RequirementIdCollision(id="R-C1", kept_source="docs/plan.md", kept_title="<b>bold</b>",
+                                       other_source="docs/other.md", other_title="[[x]]")
+    body = status_body(status(id_collisions=[collision]), NOTES)
+    assert "<b>" not in body and "[[x]]" not in body
 
 
 def test_a_hostile_claim_is_escaped_in_the_table_and_the_open_items() -> None:
