@@ -187,8 +187,11 @@ test('resolution: home is projects/estac when that folder exists, and gets no po
 test('resolution: a scratchpad is decoded back to the repository it was made for', async (t) => {
   const sandbox = withSandbox(t);
   addHarnessRealm(sandbox.vaultRoot);
-  const tmp = `${sandbox.root}/tmp`;
-  const encoded = encodeClaudeProjectName(`${sandbox.root}/repos/agentic-harness`);
+  // Expanded, as Claude Code writes it: on a Windows CI runner os.tmpdir() is an 8.3 short
+  // path (RUNNER~1), and an encoded name built from that matches no directory listing.
+  const root = fs.realpathSync.native(sandbox.root).replace(/\\/g, '/');
+  const tmp = `${root}/tmp`;
+  const encoded = encodeClaudeProjectName(`${root}/repos/agentic-harness`);
   const cwd = `${tmp}/claude/${encoded}/${uuid(9)}/scratchpad`;
   fs.mkdirSync(cwd, { recursive: true });
   const result = await brief(sandbox, cwd, { tmp });
