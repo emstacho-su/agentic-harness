@@ -56,7 +56,9 @@ const PHASE_IN_PLANNING_PATH = 'docs/planning/';
 /** The repo whose branch segments and aliases name phases (H-1 rules (i) and (ii)). */
 const SEGMENT_RULE_REPO = 'emstacho-su/bb2dash';
 const BRANCH_TYPE_PREFIX = /^(?:feat|fix|chore|docs)\/(.+)$/;
-const PHASE_SEGMENT = /^([0-9]{1,2})([a-z]?)$/;
+const PHASE_SEGMENT = /^([1-9][0-9]?)([a-z]?)$/;
+/** A `YYYY-MM-DD` run in a branch name: a date, never phase segments. */
+const DATE_RUN = /(?:^|-)[0-9]{4}-[0-9]{2}-[0-9]{2}(?=-|$)/g;
 
 /**
  * `phase-7`, `phase-12b`, or `''` (brief 101 H-1).
@@ -123,7 +125,7 @@ function branchPhases(branch, bb2dash) {
   if (!bb2dash) return found;
   const name = branch.match(BRANCH_TYPE_PREFIX)?.[1] ?? '';
   if (!name) return found;
-  for (const segment of name.split('-')) {
+  for (const segment of name.replace(DATE_RUN, '').split('-')) {
     const match = segment.match(PHASE_SEGMENT);
     const tag = match ? phaseTag(match[1], match[2]) : '';
     if (tag) found.push(tag);

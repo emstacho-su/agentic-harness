@@ -136,3 +136,27 @@ test('a planning path counts only under docs/planning/', () => {
   assert.equal(derivePhase({ repo: BB2DASH, branch: 'main', docsTouched: ['docs/PHASE7_notes.md'] }), '');
   assert.equal(derivePhase({ repo: BB2DASH, branch: 'main', docsTouched: ['C:/x/docs/planning/50_PHASE7_retrieval.md'] }), 'phase-7');
 });
+
+// ------------------------------------------------ dates are not phase segments
+
+test('a date in a bb2dash branch names no phase (code review, PR #36)', () => {
+  for (const branch of [
+    'docs/inbox-decisions-2026-10-10',
+    'docs/inbox-decisions-2026-09-09',
+    'docs/inbox-decisions-2026-09-29',
+  ]) {
+    assert.equal(derivePhase({ repo: BB2DASH, branch }), '', branch);
+  }
+});
+
+test('a zero-padded segment is not a phase segment', () => {
+  assert.equal(derivePhase({ repo: BB2DASH, branch: 'feat/thing-09' }), '');
+  assert.equal(derivePhase({ repo: BB2DASH, branch: 'feat/thing-9' }), 'phase-9');
+});
+
+test('a date beside a real phase segment leaves the phase', () => {
+  assert.equal(
+    derivePhase({ repo: BB2DASH, branch: 'docs/phase-notes-16-2026-10-10' }),
+    'phase-16',
+  );
+});
