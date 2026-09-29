@@ -55,7 +55,7 @@ agent: claude-code
 agent_type: ''
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.3.0'
+generator: 'session-capture.mjs 2.4.0'
 tools_used:
   Edit: 5
   Write: 4
@@ -66,6 +66,12 @@ related: []
 machine: ''
 retrievals: []
 retrieved: []
+hook_tags:
+  - 'phase-7'
+  - 'db'
+  - 'gui'
+  - 'phase-brief'
+  - 'pr'
 ---
 
 # 2026-09-11 · bb2dash · Start phase 7 retrieval polish. Add

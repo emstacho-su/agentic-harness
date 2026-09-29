@@ -122,9 +122,17 @@ test('a manual tag survives, and unclassified yields to any real tag', () => {
   assert.deepEqual(mergeTags(['db'], ['db']), ['db'], 'no duplicates');
 });
 
-test('the manual tag cap is the hook, not the merge', () => {
-  const manual = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
-  assert.equal(mergeTags(manual, ['db']).length, 9, 'manual tags are uncapped');
+test('hand tags are uncapped: the cap applies to hook_tags, never to what Stack typed', () => {
+  const hand = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+  assert.equal(mergeTags(hand, ['db']).length, 9, 'eight hand tags plus one hook tag');
+
+  // The same nine through a merge: the old hook tag is replaced, the eight hand tags stay.
+  const merged = mergeFields(
+    { ...BASE, tags: [...hand, 'gui'], hook_tags: ['gui'] },
+    { ...BASE, tags: ['db'], hook_tags: ['db'] },
+  );
+  assert.deepEqual(merged.tags, [...hand, 'db']);
+  assert.deepEqual(merged.hook_tags, ['db']);
 });
 
 test('a merge returns a new object and leaves both inputs alone', () => {
@@ -225,8 +233,10 @@ test('retrieved is a list capped at MAX_RETRIEVED', () => {
 
 test('a note written before retrievals existed merges cleanly and gains empty lists', () => {
   const golden = fs.readFileSync(path.join(GOLDEN_DIR, 'plain-main.md'), 'utf8');
-  // The same note as GENERATOR 2.2.0 wrote it: no retrieval keys at all.
+  // The same note as GENERATOR 2.2.0 wrote it: no retrieval keys at all, and no
+  // hook_tags (2.4.0), whose items run from its key to the closing `---`.
   const old = golden
+    .replace(/\nhook_tags:(?: \[\])?\n(?: {2}- .*\n)*/, '\n')
     .split('\n')
     .filter((line) => !/^(retrievals|retrieved):/.test(line))
     .join('\n')
@@ -234,14 +244,17 @@ test('a note written before retrievals existed merges cleanly and gains empty li
   const parsed = parseFrontmatter(old);
   assert.equal(parsed.ok, true, parsed.error);
   assert.equal('retrievals' in parsed.fields, false);
+  assert.equal('hook_tags' in parsed.fields, false);
 
   const next = { ...parsed.fields, generator: 'session-capture.mjs 2.3.0', retrievals: [], retrieved: [] };
   const merged = mergeFields(parsed.fields, next);
   assert.deepEqual(merged.retrievals, []);
   assert.deepEqual(merged.retrieved, []);
+  assert.deepEqual(merged.hook_tags, [], 'a note without hook_tags gains an empty list');
+  assert.deepEqual(merged.tags, parsed.fields.tags, 'and keeps every tag, all of them hand tags now');
 
   const text = serializeFrontmatter(merged);
-  assert.ok(text.includes('\nretrievals: []\nretrieved: []\n---'), 'appended after machine, as the last fields');
+  assert.ok(text.includes('\nretrievals: []\nretrieved: []\nhook_tags: []\n---'), 'appended after machine, in order');
   const round = parseFrontmatter(`${text}\n${parsed.body}`);
   assert.equal(round.ok, true, round.error);
   assert.deepEqual(round.fields, merged);

@@ -69,7 +69,7 @@ export const FIELD_SPEC = Object.freeze([
   ['files_modified', LIST], ['prompt_count', PLAIN], ['command_count', PLAIN], ['agent', PLAIN],
   ['agent_type', QUOTED], ['origin', QUOTED], ['captured_by', QUOTED], ['generator', QUOTED],
   ['tools_used', MAP], ['up', QUOTED], ['related', LIST], ['machine', QUOTED],
-  ['retrievals', RECORDS], ['retrieved', LIST],
+  ['retrievals', RECORDS], ['retrieved', LIST], ['hook_tags', LIST],
 ]);
 
 const EMITTABLE_KEY = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
@@ -347,6 +347,8 @@ export function buildNote({ repo, body, collection = '', sessionId = '', now = n
     // No transcript reaches the checkpoint, so no searches are known.
     retrievals: [],
     retrieved: [],
+    // No classifier runs here: every tag on a checkpoint note is a hand tag.
+    hook_tags: [],
   };
 
   const text =
