@@ -29,6 +29,7 @@ import {
 import { enqueueIngest, inBatches } from './lib/enqueue-ingest.mjs';
 import { createLogger } from './lib/logger.mjs';
 import { loadMachineEnv } from './lib/machine-env.mjs';
+import { installExtraRulesFrom } from './lib/redact-extra.mjs';
 
 export const LOG_ENV_VAR = 'HARNESS_CHECKPOINT_LOG';
 export const EXIT_OK = 0;
@@ -85,6 +86,8 @@ export function parseArgs(argv, env = process.env, home = os.homedir()) {
 
 export function run(argv, { env = process.env, out = console.log, err = console.error } = {}) {
   env = loadMachineEnv(env, os.homedir(), err);
+  // This machine's extra redaction rules (R-106), before any note is written.
+  installExtraRulesFrom(env, err);
   const parsed = parseArgs(argv, env);
   if (!parsed.ok) {
     err(`error: ${parsed.error}\n${USAGE}`);

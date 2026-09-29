@@ -31,6 +31,7 @@ import {
 import { enqueueIngest, inBatches } from './lib/enqueue-ingest.mjs';
 import { createLogger } from './lib/logger.mjs';
 import { loadMachineEnv } from './lib/machine-env.mjs';
+import { installExtraRulesFrom } from './lib/redact-extra.mjs';
 import { defaultStateDir } from './lib/session-start.mjs';
 import { runSweep } from './lib/sweep.mjs';
 import { isSafeFilenameSegment } from './lib/text.mjs';
@@ -117,6 +118,8 @@ function safeSession(raw) {
 /** The CLI body. Returns the exit code; `main` below is the only caller that exits. */
 export function run(argv, { env = process.env, out = console.log, err = console.error } = {}) {
   env = loadMachineEnv(env, os.homedir(), err);
+  // This machine's extra redaction rules (R-106), before any note is written.
+  installExtraRulesFrom(env, err);
   const parsed = parseArgs(argv, env);
   if (!parsed.ok) {
     err(`error: ${parsed.error}\n${USAGE}`);
