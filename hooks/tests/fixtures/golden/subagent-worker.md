@@ -46,7 +46,7 @@ agent: claude-code
 agent_type: 'general-purpose'
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.3.0'
+generator: 'session-capture.mjs 2.4.0'
 tools_used:
   Bash: 1
   Edit: 1
@@ -56,6 +56,11 @@ related: []
 machine: ''
 retrievals: []
 retrieved: []
+hook_tags:
+  - 'phase-7'
+  - 'gui'
+  - 'retrieval'
+  - 'validation'
 ---
 
 # 2026-09-16 · bb2dash · general-purpose · Add the superseded-file filter to the

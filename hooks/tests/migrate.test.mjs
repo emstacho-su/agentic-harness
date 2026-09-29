@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { GENERATOR_VERSION } from '../lib/constants.mjs';
 import { parseFrontmatter, serializeFrontmatter } from '../lib/frontmatter.mjs';
 import { COLLECTION_OVERRIDES, migrateNote, planNote, rewriteBody } from '../lib/migrate.mjs';
 import { makeRepoResolver } from '../lib/paths.mjs';
@@ -191,7 +192,7 @@ test('a migrated note gains schema v2 and loses its scratchpad paths', () => {
     assert.deepEqual(fields.docs_touched, ['docs/architecture.md', 'docs/retrieval.md']);
     assert.ok(fields.files_modified.every((file) => !file.includes('scratchpad')));
     assert.ok(fields.tags.length > 0 && fields.tags.length <= 5);
-    assert.match(fields.generator, /2\.3\.0 \(migrated\)/);
+    assert.equal(fields.generator, `session-capture.mjs ${GENERATOR_VERSION} (migrated)`);
     assert.deepEqual(emptied, ['parent_session', 'child_sessions', 'artifacts']);
   } finally {
     sandbox.cleanup();
