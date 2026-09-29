@@ -12,8 +12,11 @@
  * Facts come from git and the arguments; the model writes only the body. The
  * note is a schema-v2 session note with every field present, `captured_by:
  * skill` and `origin: cloud`, written to `<repo>/.harness/sessions/<id>.md`.
- * Stdout is one JSON line: { ok, path, id, session_id, collection } or
- * { ok: false, error }. Exit 0 on a note, 2 on bad input.
+ * The body and every git-derived string pass through `redact()` (a byte copy of
+ * hooks/lib/redact.mjs, installed beside this file) before anything is written,
+ * because the note is committed and a secret in git history needs rotation.
+ * Stdout is one JSON line: { ok, path, id, session_id, collection, redactions }
+ * or { ok: false, error }. Exit 0 on a note, 2 on bad input.
  */
 
 import crypto from 'node:crypto';
@@ -22,6 +25,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { findSecretValues, redact, redactLiterals } from './redact.mjs';
 
 export const GENERATOR = 'checkpoint 1.0.0';
 export const SCHEMA_VERSION = 2;
@@ -231,6 +236,52 @@ export function gitFacts(repo, { base = '' } = {}) {
   return { repoFullName, branch: branch === 'HEAD' ? '' : branch, base: ref, commits, files };
 }
 
+// ------------------------------------------------------------- redaction
+
+/** Every marker the rules leave: `[REDACTED]`, `[REDACTED-JWT]`, `Basic [REDACTED]`, `[REDACTED:<id>]`. */
+const REDACTION_MARKER = /\[REDACTED[^\]\s]*\]/g;
+
+/** How many secrets redaction removed: the markers in `after` that were not already in `before`. */
+export function countRedactions(before, after) {
+  const count = (text) => (String(text ?? '').match(REDACTION_MARKER) ?? []).length;
+  return Math.max(0, count(after) - count(before));
+}
+
+function redactString(value) {
+  const text = String(value ?? '');
+  if (text === '') return { text, count: 0 };
+  const clean = redact(text);
+  return { text: clean, count: countRedactions(text, clean) };
+}
+
+/**
+ * The body, redacted by shape and then literally: a password seen once in a
+ * connection string and again in prose is removed from both, as the hook does.
+ */
+export function redactBody(body) {
+  const text = String(body ?? '');
+  const clean = redactLiterals(redact(text), findSecretValues(text));
+  return { text: clean, count: countRedactions(text, clean) };
+}
+
+/** Every string `gitFacts` returns, redacted. A branch or file name can carry a pasted key. */
+export function redactGitFacts(facts) {
+  let count = 0;
+  const one = (value) => {
+    const result = redactString(value);
+    count += result.count;
+    return result.text;
+  };
+  const redacted = {
+    repoFullName: one(facts.repoFullName),
+    branch: one(facts.branch),
+    base: one(facts.base),
+    commits: facts.commits.map(one),
+    files: facts.files.map(one),
+  };
+  return { facts: redacted, count };
+}
+
 // ------------------------------------------------------------ session id
 
 function claimFromJwt(token) {
@@ -289,7 +340,11 @@ export function buildNote({ repo, body, collection = '', sessionId = '', now = n
   const checked = validateBody(body);
   if (!checked.ok) return { ok: false, error: checked.error };
 
-  const facts = gitFacts(repo, { base });
+  // Redacted before anything is derived from them, so no field, no body line
+  // and no collection name can carry what the rules find.
+  const scrubbed = redactGitFacts(gitFacts(repo, { base }));
+  const facts = scrubbed.facts;
+  const bodyText = redactBody(checked.text);
   const id = resolveSessionId({ explicit: sessionId, env });
   const requested = slugify(collection);
   const fromRepo = slugify(facts.repoFullName.split('/')[1] ?? '');
@@ -332,7 +387,7 @@ export function buildNote({ repo, body, collection = '', sessionId = '', now = n
     docs_touched: facts.files.filter((file) => /^docs\/|\.md$/.test(file)),
     artifacts: [],
     files_modified: facts.files,
-    prompt_count: countRequests(checked.text),
+    prompt_count: countRequests(bodyText.text),
     command_count: 0,
     agent: 'claude-code',
     agent_type: '',
@@ -356,9 +411,9 @@ export function buildNote({ repo, body, collection = '', sessionId = '', now = n
     `Cloud session on \`${facts.repoFullName || 'unknown repository'}\`` +
     `${facts.branch ? ` (branch \`${facts.branch}\`)` : ''}, checkpointed by the \`/checkpoint\` skill ` +
     `on ${date}. The frontmatter is from git; the sections below are Claude's own account of the session.\n\n` +
-    `${checked.text}\n`;
+    `${bodyText.text}\n`;
 
-  return { ok: true, id: fields.id, sessionId: id, collection: finalCollection, fields, text };
+  return { ok: true, id: fields.id, sessionId: id, collection: finalCollection, fields, text, redactions: scrubbed.count + bodyText.count };
 }
 
 // ------------------------------------------------------------------- cli
@@ -419,7 +474,7 @@ export function main(argv, env = process.env) {
 
   return {
     code: 0,
-    output: { ok: true, path: notePath.replace(/\\/g, '/'), id: note.id, session_id: note.sessionId, collection: note.collection },
+    output: { ok: true, path: notePath.replace(/\\/g, '/'), id: note.id, session_id: note.sessionId, collection: note.collection, redactions: note.redactions },
   };
 }
 

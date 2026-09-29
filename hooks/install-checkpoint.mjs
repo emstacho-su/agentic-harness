@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const SOURCE_DIR = path.resolve(HERE, '..', 'skills', 'checkpoint');
 export const TARGET_RELATIVE = path.join('.claude', 'skills', 'checkpoint');
-export const PAYLOAD = Object.freeze(['SKILL.md', 'build-note.mjs']);
+export const PAYLOAD = Object.freeze(['SKILL.md', 'build-note.mjs', 'redact.mjs']);
 export const GITIGNORE_LINE = '.harness/checkpoint-body.md';
 
 const EXIT_OK = 0;
