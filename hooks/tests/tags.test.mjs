@@ -15,7 +15,7 @@ import test from 'node:test';
 
 import { MAX_HOOK_TAGS } from '../lib/constants.mjs';
 import { parseFrontmatter } from '../lib/frontmatter.mjs';
-import { classify, derivePhase } from '../lib/tags.mjs';
+import { classify, derivePhase, withPhaseTag } from '../lib/tags.mjs';
 import { PHASE_TAG_PATTERN, UNCLASSIFIED } from '../lib/vocabulary.mjs';
 import { GOLDEN_DIR } from './helpers/sandbox.mjs';
 import { SCENARIOS } from './helpers/scenarios.mjs';
@@ -233,4 +233,14 @@ for (const [branch, expected, extra = {}] of H2_ROWS) {
 
 test('the phase family these tests accept is the one the vocabulary declares', () => {
   assert.equal(String(PHASE_FAMILY), String(PHASE_TAG_PATTERN));
+});
+
+test('withPhaseTag puts the phase in slot one, replaces any other, and keeps the cap', () => {
+  assert.deepEqual(withPhaseTag(['db', 'gui'], 'phase-12b'), ['phase-12b', 'db', 'gui']);
+  assert.deepEqual(withPhaseTag(['phase-7', 'db'], 'phase-9'), ['phase-9', 'db']);
+  assert.deepEqual(withPhaseTag(['phase-7', 'db'], ''), ['db']);
+  assert.deepEqual(withPhaseTag([UNCLASSIFIED], 'phase-7'), ['phase-7']);
+  assert.deepEqual(withPhaseTag([UNCLASSIFIED], ''), [UNCLASSIFIED]);
+  assert.deepEqual(withPhaseTag(['phase-7'], ''), [UNCLASSIFIED]);
+  assert.deepEqual(withPhaseTag(['a', 'b', 'c', 'd', 'e'], 'phase-1'), ['phase-1', 'a', 'b', 'c', 'd']);
 });

@@ -93,15 +93,17 @@ export function derivePhase({ branch = '', docsTouched = [], prTitles = [], repo
 }
 
 /**
- * The first phase slot filled by `phase`, as `classify` would have filled it:
- * a phase learned after classifying (a worker inheriting its parent's) takes
- * slot one, and the cap drops the last tag, never a hand tag (this list is
- * hook-applied only). `unclassified` gives way to it.
+ * A classifier result with its phase slot set to `phase`, as `classify` would
+ * have filled it: a phase learned after classifying (a worker inheriting its
+ * parent's, the back-fill's re-derived one) takes slot one, any other phase tag
+ * goes, and the cap drops the last tag, never a hand tag (this list is
+ * hook-applied only). `unclassified` gives way to any real tag and stands
+ * alone when nothing is left.
  */
 export function withPhaseTag(tags, phase) {
-  const list = listOf(tags).filter((tag) => tag !== UNCLASSIFIED && !PHASE_TAG_PATTERN.test(tag));
-  if (!phase) return [...listOf(tags)];
-  return [phase, ...list].slice(0, MAX_HOOK_TAGS);
+  const rest = listOf(tags).filter((tag) => tag !== UNCLASSIFIED && !PHASE_TAG_PATTERN.test(tag));
+  const ordered = phase ? [phase, ...rest] : rest;
+  return ordered.length ? ordered.slice(0, MAX_HOOK_TAGS) : [UNCLASSIFIED];
 }
 
 function listOf(value) {
