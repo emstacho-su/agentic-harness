@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { MACHINE_NAME_PATTERN, MACHINE_NAME_VAR } from './constants.mjs';
+import { MACHINE_NAME_PATTERN, MACHINE_NAME_VAR, VAULT_ENV_VAR } from './constants.mjs';
 
 /** Overrides the file's location — the tests use it; a VM may too. */
 export const MACHINE_ENV_VAR = 'HARNESS_MACHINE_ENV';
@@ -111,4 +111,101 @@ export function loadMachineEnv(env = process.env, home = os.homedir(), report = 
     return { ...env };
   }
   return { ...values, ...env };
+}
+
+// ------------------------------------------------------------ resolved config
+
+/** The ingest project and the realm list, as the machine file names them. */
+export const INGEST_PROJECT_VAR = 'HARNESS_INGEST_PROJECT';
+export const REALMS_VAR = 'HARNESS_REALMS';
+
+/**
+ * A realm name, and the policies a realm may carry. The same rules as
+ * `realm-sync.mjs` `parseRealmPolicies` (a test holds them equal); repeated
+ * here because this module is deployed with the hook and must not pull the
+ * sync's git code into the hook's import graph.
+ */
+const REALM_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const REALM_POLICIES = Object.freeze(['push', 'local']);
+const REALM_MARKER_FILE = '.realm';
+
+/**
+ * `projects:push,classes:local` → [{name, policy}], any number of entries.
+ * Unlike the sync, a bad entry is reported and left out rather than thrown:
+ * a reader of the config should still see the realms that are well formed.
+ */
+function readRealms(text, report) {
+  const realms = [];
+  const seen = new Set();
+  for (const raw of String(text ?? '').split(',')) {
+    const entry = raw.trim();
+    if (!entry) continue;
+    const at = entry.indexOf(':');
+    const name = at === -1 ? '' : entry.slice(0, at).trim();
+    const policy = at === -1 ? '' : entry.slice(at + 1).trim();
+    if (!REALM_NAME_PATTERN.test(name) || !REALM_POLICIES.includes(policy)) {
+      report(`${REALMS_VAR}: '${entry.slice(0, 80)}' is not <realm>:<push|local>; left out`);
+      continue;
+    }
+    if (seen.has(name)) {
+      report(`${REALMS_VAR}: realm '${name}' is listed twice; the first entry is kept`);
+      continue;
+    }
+    seen.add(name);
+    realms.push(Object.freeze({ name, policy }));
+  }
+  return Object.freeze(realms);
+}
+
+/**
+ * Does `<vault>/<name>/.realm` read `<name>`? `{ realm, marker, ok, problem }`,
+ * `marker` being the path it read, so a refusal can name it.
+ */
+function checkRealm(vault, name) {
+  const realm = String(name ?? '');
+  if (!REALM_NAME_PATTERN.test(realm)) {
+    return Object.freeze({ realm, marker: '', ok: false, problem: `'${realm.slice(0, 64)}' is not a realm name` });
+  }
+  if (!vault) return Object.freeze({ realm, marker: '', ok: false, problem: `${VAULT_ENV_VAR} is not set` });
+  const marker = path.join(vault, realm, REALM_MARKER_FILE);
+  let content;
+  try {
+    content = fs.readFileSync(marker, 'utf8').trim();
+  } catch (err) {
+    const why = err?.code === 'ENOENT' ? 'no marker' : `marker unreadable (${err?.code || 'error'})`;
+    return Object.freeze({ realm, marker, ok: false, problem: `${why} at ${marker}` });
+  }
+  if (content !== realm) {
+    return Object.freeze({ realm, marker, ok: false, problem: `${marker} reads '${content.slice(0, 64)}', not '${realm}'` });
+  }
+  return Object.freeze({ realm, marker, ok: true, problem: '' });
+}
+
+/**
+ * Where this machine keeps things: the machine file read, its name, the vault,
+ * the ingest project and the realms it holds (P-110). Built on
+ * `loadMachineEnv`, so the shell wins over `$HARNESS_MACHINE_ENV` or
+ * `~/.harness/machine.env`. There is no OneDrive fallback: an unset vault is
+ * `''`, and the caller refuses it.
+ *
+ * With `requireRealm`, `realmCheck` says whether `<vault>/<name>/.realm` reads
+ * that name; otherwise it is null. Nothing else from the machine file is
+ * returned (it may carry an email or other values no caller needs to print).
+ *
+ * @returns {Readonly<{machineFile: string, machine: string, vault: string,
+ *   ingestProject: string, realms: readonly {name: string, policy: string}[],
+ *   realmCheck: null | Readonly<{realm: string, marker: string, ok: boolean, problem: string}>}>}
+ */
+export function resolveHarnessConfig({ env = process.env, home = os.homedir(), report = () => {}, requireRealm } = {}) {
+  const machineFile = env?.[MACHINE_ENV_VAR] || path.join(home, ...MACHINE_ENV_SEGMENTS);
+  const merged = loadMachineEnv(env ?? {}, home, report);
+  const vault = String(merged[VAULT_ENV_VAR] ?? '').trim();
+  return Object.freeze({
+    machineFile,
+    machine: machineName(merged),
+    vault,
+    ingestProject: String(merged[INGEST_PROJECT_VAR] ?? '').trim(),
+    realms: readRealms(merged[REALMS_VAR], report),
+    realmCheck: requireRealm === undefined ? null : checkRealm(vault, requireRealm),
+  });
 }

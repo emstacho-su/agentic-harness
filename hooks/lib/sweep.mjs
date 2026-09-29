@@ -20,6 +20,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { capture } from './capture.mjs';
+import { routeSession } from './collection.mjs';
+import { acquireRealmLock, describeHolder, holderAgeMinutes, lockPathFor, REALM_LOCK_STALE_MS, releaseRealmLock } from './realm-lock.mjs';
+import { realmRootFor } from './realm-sync.mjs';
 import { defaultStateDir } from './session-start.mjs';
 import {
   AREAS,
@@ -290,7 +293,8 @@ export function runSweep({
   const results = dryRun
     ? []
     : selected.map((candidate) => {
-        const result = sweepOne({ candidate, vaultRoot, projectsRoot, runGit, excludes, log, stateDir });
+        const result = underRealmLocks({ candidate, vaultRoot, excludes, log }, () =>
+          sweepOne({ candidate, vaultRoot, projectsRoot, runGit, excludes, log, stateDir }));
         log(`${result.action} ${result.sessionId} ${result.detail}`);
         for (const child of result.children) {
           log(`  ${child.action} ${result.sessionId}--${child.agentId} ${child.detail}`);
@@ -298,7 +302,7 @@ export function runSweep({
         return result;
       });
 
-  const isWrite = (action) => action !== 'skip' && action !== 'error';
+  const isWrite = (action) => action !== 'skip' && action !== 'error' && action !== ACTION_DEFERRED;
   return {
     dryRun,
     noted: noted.size,
@@ -310,9 +314,90 @@ export function runSweep({
     written: results.filter((result) => isWrite(result.action)).length,
     skipped: results.filter((result) => result.action === 'skip').length,
     errors: results.filter((result) => result.action === 'error').length,
+    deferred: results.filter((result) => result.action === ACTION_DEFERRED).length,
     childNotes: results.reduce((sum, result) => sum + result.children.filter((c) => isWrite(c.action)).length, 0),
     touchedPaths: results.flatMap((result) => result.touchedPaths),
     results,
+  };
+}
+
+// -------------------------------------------------------------- realm lock
+
+/** A candidate bound for a realm the sync holds: filed on the next run, not a failure. */
+export const ACTION_DEFERRED = 'deferred';
+/** The owner the sweep writes into a realm lock, so the sync's log can name who holds it. */
+export const SWEEP_LOCK_OWNER = 'transcript sweep';
+
+/**
+ * Run one candidate's capture under the lock of every realm it may write to
+ * (R-100, H-10), the way the checkpoint collector does: a realm whose lock is
+ * held (by the nightly sync, mid stage → commit → pull → push) is left for the
+ * next run, and every lock taken here is given back before the next candidate,
+ * so a long backlog never holds a realm for longer than one session's capture.
+ *
+ * The realm is the one the session's own cwd routes to, decided by the same
+ * rules the capture uses. A transcript whose head names no cwd cannot be routed
+ * before it is read, so it takes every realm's lock. A vault that is not a
+ * realm checkout has no lock, and the capture runs as before. An excluded cwd
+ * is skipped by `sweepOne` without a lock.
+ */
+function underRealmLocks({ candidate, vaultRoot, excludes, log }, work) {
+  const head = readTranscriptHead(candidate.transcriptPath);
+  const projectDirName = path.basename(path.dirname(candidate.transcriptPath));
+  if (excludedBy(head.cwd, excludes, projectDirName)) return work();
+
+  const taken = [];
+  try {
+    for (const { root, name } of realmsFor(head.cwd, vaultRoot)) {
+      const acquired = acquireRealmLock(root, { owner: SWEEP_LOCK_OWNER, pid: process.pid, now: new Date() });
+      if (!acquired.ok) return deferredResult(candidate, name, acquired, log);
+      if (acquired.takenOver) {
+        log(`realm ${name}: took over a stale lock from ${describeHolder(acquired.takenOver)} (${holderAgeMinutes(acquired.takenOver)} min old)`);
+      }
+      taken.push({ name, lock: { lockPath: acquired.lockPath, token: acquired.token } });
+    }
+    return work();
+  } finally {
+    for (const { name, lock } of taken) {
+      const released = releaseRealmLock(lock);
+      if (!released.ok) log(`realm ${name}: lock not released (${released.error}); it goes stale in ${REALM_LOCK_STALE_MS / 60_000} min`);
+    }
+  }
+}
+
+/** The lockable realm roots a session from `cwd` may write to, deduplicated, in AREAS order. */
+function realmsFor(cwd, vaultRoot) {
+  let areas = AREAS;
+  if (cwd) {
+    try {
+      areas = [routeSession({ cwd, vaultRoot }).area];
+    } catch {
+      areas = AREAS; // Unroutable: every realm, as for a head with no cwd.
+    }
+  }
+  const seen = new Set();
+  const realms = [];
+  for (const area of areas) {
+    const root = realmRootFor(vaultRoot, area);
+    if (!root || !lockPathFor(root) || seen.has(root)) continue;
+    seen.add(root);
+    realms.push({ root, name: area });
+  }
+  return realms;
+}
+
+function deferredResult(candidate, name, acquired, log) {
+  const why = acquired.reason === 'held'
+    ? `realm ${name} is locked by ${describeHolder(acquired.holder)}`
+    : `realm ${name}: lock error (${acquired.error})`;
+  log(`${why}; its notes wait for the next run`);
+  return {
+    sessionId: candidate.sessionId,
+    transcriptPath: candidate.transcriptPath,
+    action: ACTION_DEFERRED,
+    detail: why,
+    touchedPaths: [],
+    children: [],
   };
 }
 

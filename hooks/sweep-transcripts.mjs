@@ -14,6 +14,10 @@
  * Runs from the main checkout, not from ~/.claude/hooks: it is a maintenance
  * command with a console, not a hook with a deadline.
  *
+ * Each capture runs under the lock of the realm it writes to (R-100): a realm
+ * the nightly sync holds is left for the next run, and those deferrals alone
+ * still exit 0, as the checkpoint collector's do.
+ *
  * Exit codes: 0 clean, 1 if any candidate raised (it should not), 2 bad usage.
  */
 
@@ -31,6 +35,7 @@ import {
 import { enqueueIngest, inBatches } from './lib/enqueue-ingest.mjs';
 import { createLogger } from './lib/logger.mjs';
 import { loadMachineEnv } from './lib/machine-env.mjs';
+import { installExtraRulesFrom } from './lib/redact-extra.mjs';
 import { defaultStateDir } from './lib/session-start.mjs';
 import { runSweep } from './lib/sweep.mjs';
 import { isSafeFilenameSegment } from './lib/text.mjs';
@@ -117,6 +122,8 @@ function safeSession(raw) {
 /** The CLI body. Returns the exit code; `main` below is the only caller that exits. */
 export function run(argv, { env = process.env, out = console.log, err = console.error } = {}) {
   env = loadMachineEnv(env, os.homedir(), err);
+  // This machine's extra redaction rules (R-106), before any note is written.
+  installExtraRulesFrom(env, err);
   const parsed = parseArgs(argv, env);
   if (!parsed.ok) {
     err(`error: ${parsed.error}\n${USAGE}`);
@@ -161,7 +168,7 @@ export function run(argv, { env = process.env, out = console.log, err = console.
   const line =
     `transcripts=${summary.scanned} noted=${summary.skippedNoted} active=${summary.skippedActive} ` +
     `candidates=${summary.candidates.length} selected=${summary.selected} ` +
-    `written=${summary.written} childNotes=${summary.childNotes} skipped=${summary.skipped} errors=${summary.errors}`;
+    `written=${summary.written} childNotes=${summary.childNotes} skipped=${summary.skipped} deferred=${summary.deferred} errors=${summary.errors}`;
   out(`sweep ${mode}: ${line}`);
   log(`=== sweep finished (${mode}) ${line}`);
 
