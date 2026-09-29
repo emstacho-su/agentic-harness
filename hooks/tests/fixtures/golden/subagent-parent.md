@@ -52,7 +52,7 @@ agent: claude-code
 agent_type: ''
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.3.0'
+generator: 'session-capture.mjs 2.4.0'
 tools_used:
   Edit: 3
   Agent: 2
@@ -64,6 +64,12 @@ related: []
 machine: ''
 retrievals: []
 retrieved: []
+hook_tags:
+  - 'phase-7'
+  - 'gui'
+  - 'db'
+  - 'phase-brief'
+  - 'validation'
 ---
 
 # 2026-09-16 · bb2dash · Spawn two workers: one to finish

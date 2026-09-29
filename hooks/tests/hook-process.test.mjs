@@ -255,3 +255,60 @@ test('the W-H2 seam is still a single obvious place in main()', () => {
   );
   assert.match(source, /ingest-enqueue skipped: over budget/);
 });
+
+// ------------------------------------------------ per-machine redaction (H-6)
+
+test("the hook installs the machine's extra redaction rules before it captures", () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installTranscript(sandbox, 'plain-main', SESSION_ID);
+    const rulesFile = path.join(sandbox.root, 'redact-extra.json');
+    fs.writeFileSync(rulesFile, JSON.stringify({ rules: [{ name: 'codename', pattern: 'retrieval polish', flags: 'i' }] }), 'utf8');
+
+    const { status } = runHook(
+      sandbox,
+      {
+        session_id: SESSION_ID,
+        transcript_path: transcriptPath,
+        cwd: `${sandbox.root}/repos/bb2dash`,
+        hook_event_name: 'SessionEnd',
+        reason: 'clear',
+      },
+      { HARNESS_REDACT_EXTRA: rulesFile, HARNESS_MACHINE_ENV: path.join(sandbox.root, 'no-machine.env') },
+    );
+
+    assert.equal(status, 0);
+    const note = fs.readFileSync(path.join(sandbox.vaultRoot, 'projects/bb2dash/sessions', `${SESSION_ID}.md`), 'utf8');
+    assert.ok(note.includes('[REDACTED:codename]'), 'the extra rule reached the note');
+    assert.ok(!/retrieval polish/i.test(note));
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('a broken extras file is logged, and the note is still written with the built-in rules', () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installTranscript(sandbox, 'plain-main', SESSION_ID);
+    const rulesFile = path.join(sandbox.root, 'redact-extra.json');
+    fs.writeFileSync(rulesFile, '{ "rules": [', 'utf8');
+
+    const { status, log } = runHook(
+      sandbox,
+      {
+        session_id: SESSION_ID,
+        transcript_path: transcriptPath,
+        cwd: `${sandbox.root}/repos/bb2dash`,
+        hook_event_name: 'SessionEnd',
+        reason: 'clear',
+      },
+      { HARNESS_REDACT_EXTRA: rulesFile, HARNESS_MACHINE_ENV: path.join(sandbox.root, 'no-machine.env') },
+    );
+
+    assert.equal(status, 0);
+    assert.match(log, /redact-extra: .*not valid JSON/);
+    assert.ok(fs.existsSync(path.join(sandbox.vaultRoot, 'projects/bb2dash/sessions', `${SESSION_ID}.md`)));
+  } finally {
+    sandbox.cleanup();
+  }
+});

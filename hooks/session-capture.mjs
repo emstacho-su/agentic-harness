@@ -45,6 +45,7 @@ import {
 } from './lib/constants.mjs';
 import { createLogger } from './lib/logger.mjs';
 import { loadMachineEnv } from './lib/machine-env.mjs';
+import { installExtraRulesFrom } from './lib/redact-extra.mjs';
 import { enqueueIngest } from './lib/enqueue-ingest.mjs';
 import { isEntryPoint } from './lib/entry-point.mjs';
 import { parseHookInput, readStdin } from './lib/stdin.mjs';
@@ -56,12 +57,19 @@ const DEADLINE_AT = STARTED_AT_MS + BUDGET_MS;
 // detached ingest it spawns. Read after the clock starts, so its cost is in
 // the logged milliseconds, and inside its own guard: a machine file that
 // somehow throws must not cost the note. Problems are logged once the logger exists.
+// The machine's extra redaction rules (R-106) are installed here too, after the
+// machine file that may name them and before anything is read from a transcript.
 function loadEnvironment() {
   const problems = [];
   try {
     Object.assign(process.env, loadMachineEnv(process.env, os.homedir(), (message) => problems.push(message)));
   } catch (err) {
     problems.push(`machine.env: ${err?.message || err}`);
+  }
+  try {
+    installExtraRulesFrom(process.env, (message) => problems.push(message));
+  } catch (err) {
+    problems.push(`redact-extra: ${err?.message || err}`);
   }
   return problems;
 }

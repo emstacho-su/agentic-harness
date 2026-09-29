@@ -43,7 +43,7 @@ agent: claude-code
 agent_type: 'feature-dev:code-reviewer'
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.3.0'
+generator: 'session-capture.mjs 2.4.0'
 tools_used:
   Edit: 1
   Read: 1
@@ -52,6 +52,9 @@ related: []
 machine: ''
 retrievals: []
 retrieved: []
+hook_tags:
+  - 'phase-7'
+  - 'db'
 ---
 
 # 2026-09-16 · bb2dash · feature-dev:code-reviewer · Review the migration

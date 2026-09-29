@@ -21,11 +21,17 @@ function fakeRepo(gitignore = null) {
 
 const hash = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
-test('installs both payload files byte-identical and appends the gitignore line once', () => {
+test('the payload is the skill, the note builder and the redaction it imports (H-7)', () => {
+  assert.deepEqual([...PAYLOAD], ['SKILL.md', 'build-note.mjs', 'redact.mjs']);
+  // build-note.mjs imports it relatively, so a copy without it cannot run.
+  assert.match(fs.readFileSync(path.join(SOURCE_DIR, 'build-note.mjs'), 'utf8'), /from '\.\/redact\.mjs'/);
+});
+
+test('installs every payload file byte-identical and appends the gitignore line once', () => {
   const repo = fakeRepo('node_modules/\n');
   try {
     const first = installCheckpoint({ repo: repo.root });
-    assert.deepEqual(first.files.map((f) => f.action), ['create', 'create']);
+    assert.deepEqual(first.files.map((f) => f.action), ['create', 'create', 'create']);
     assert.equal(first.gitignore, 'append');
     for (const name of PAYLOAD) {
       assert.equal(hash(path.join(repo.root, TARGET_RELATIVE, name)), hash(path.join(SOURCE_DIR, name)));
@@ -33,7 +39,7 @@ test('installs both payload files byte-identical and appends the gitignore line 
     assert.equal(fs.readFileSync(path.join(repo.root, '.gitignore'), 'utf8'), `node_modules/\n${GITIGNORE_LINE}\n`);
 
     const second = installCheckpoint({ repo: repo.root });
-    assert.deepEqual(second.files.map((f) => f.action), ['unchanged', 'unchanged']);
+    assert.deepEqual(second.files.map((f) => f.action), ['unchanged', 'unchanged', 'unchanged']);
     assert.equal(second.gitignore, 'unchanged');
   } finally {
     repo.cleanup();

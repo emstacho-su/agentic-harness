@@ -13,6 +13,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -20,6 +21,8 @@ import test from 'node:test';
 import { capture } from '../lib/capture.mjs';
 import { BUDGET_MS } from '../lib/constants.mjs';
 import { resolveRepo } from '../lib/repo.mjs';
+import { installExtraRules } from '../lib/redact.mjs';
+import { EXTRA_RULES_ENV_VAR, loadExtraRules } from '../lib/redact-extra.mjs';
 import { TRANSCRIPTS_DIR, createSandbox, toPosix } from './helpers/sandbox.mjs';
 import { installLargeTranscript } from './helpers/large-transcript.mjs';
 
@@ -31,7 +34,11 @@ const MAIN_BYTES = 6 * 1024 * 1024;
 const SUBAGENT_COUNT = 24;
 const SUBAGENT_BYTES = 512 * 1024;
 
-test('the hook stays inside its budget on the largest transcript', () => {
+/**
+ * Capture the largest transcript against the real repository and return the
+ * wall-clock milliseconds. `label` goes into the printed line only.
+ */
+function captureLargest(label) {
   const sandbox = createSandbox();
   try {
     const repo = resolveRepo(REPO_ROOT);
@@ -69,16 +76,56 @@ test('the hook stays inside its budget on the largest transcript', () => {
     assert.equal(outcome.written, true, `expected a note, got ${outcome.action}: ${outcome.skip}`);
     assert.ok(
       elapsed < BUDGET_MS,
-      `capture took ${elapsed} ms over ${(totalBytes / 1024 / 1024).toFixed(1)} MB; budget is ${BUDGET_MS} ms`,
+      `capture${label} took ${elapsed} ms over ${(totalBytes / 1024 / 1024).toFixed(1)} MB; budget is ${BUDGET_MS} ms`,
     );
 
     // Printed so the number lands in CI output and in the PR evidence.
     console.log(
-      `    budget: ${elapsed} ms for ${(totalBytes / 1024 / 1024).toFixed(1)} MB ` +
+      `    budget${label}: ${elapsed} ms for ${(totalBytes / 1024 / 1024).toFixed(1)} MB ` +
         `(${SUBAGENT_COUNT} subagent transcripts)`,
     );
+    return elapsed;
   } finally {
     sandbox.cleanup();
+  }
+}
+
+test('the hook stays inside its budget on the largest transcript', () => {
+  captureLargest('');
+});
+
+/**
+ * Twenty per-machine rules (R-106, P-112) of the kind a work machine would
+ * carry: hostnames, ticket prefixes, a customer list, case-insensitive. Every
+ * one is invented.
+ */
+const EXTRA_RULE_COUNT = 20;
+function extraRulesFile(dir) {
+  const rules = Array.from({ length: EXTRA_RULE_COUNT }, (_, i) => ({
+    name: `work-${i}`,
+    pattern: i % 2 === 0
+      ? String.raw`\b(?:intranet|build|wiki)-${i}\.corp\.example\b`
+      : String.raw`\b(?:ACME|GLOBEX|INITECH)-${i}[0-9]{3,}\b`,
+    flags: 'i',
+  }));
+  const file = path.join(dir, 'redact-extra.json');
+  fs.writeFileSync(file, JSON.stringify({ rules }), 'utf8');
+  return file;
+}
+
+test('the hook stays inside its budget with a 20-rule extras file installed', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'budget-extra-'));
+  const problems = [];
+  const installed = installExtraRules(
+    loadExtraRules({ [EXTRA_RULES_ENV_VAR]: extraRulesFile(dir) }, (line) => problems.push(line)),
+  );
+  try {
+    assert.deepEqual(problems, []);
+    assert.equal(installed, EXTRA_RULE_COUNT);
+    captureLargest(` with ${EXTRA_RULE_COUNT} extra rules`);
+  } finally {
+    installExtraRules([]);
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

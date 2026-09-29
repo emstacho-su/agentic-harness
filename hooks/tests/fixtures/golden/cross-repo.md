@@ -51,7 +51,7 @@ agent: claude-code
 agent_type: ''
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.3.0'
+generator: 'session-capture.mjs 2.4.0'
 tools_used:
   Edit: 3
   Bash: 1
@@ -60,6 +60,12 @@ related: []
 machine: ''
 retrievals: []
 retrieved: []
+hook_tags:
+  - 'phase-7'
+  - 'ingest'
+  - 'docs'
+  - 'validation'
+  - 'planning'
 ---
 
 # 2026-09-12 · bb2dash · From the bb2dash checkout, fix the

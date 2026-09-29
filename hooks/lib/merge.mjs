@@ -6,7 +6,10 @@
  * quietly undo that. So every write is a merge of what the hook just derived
  * into what is already there, under three rules:
  *
- *   1. **Lists grow.** A tag, commit or PR in the note stays in the note.
+ *   1. **Lists grow.** A commit or PR in the note stays in the note. Tags are
+ *      the one exception: the tags the hook raised last time (`hook_tags`) are
+ *      replaced by this render's, so the five-tag cap holds per note (H-3);
+ *      every other tag is a hand tag and stays.
  *   2. **Scalars only improve.** A derived value replaces an empty one; it
  *      never replaces a value with an empty.
  *   3. **`status` ratchets.** active -> concluded -> superseded, one way. A
@@ -154,8 +157,16 @@ export function mergeFields(existing, next) {
   merged.title = preferNonEmpty(existing.title, next.title);
   merged.status = STATUS_RANK[Math.max(statusRank(existing.status), statusRank(next.status))];
   // `tags` is not in LIST_CAPS: manual tags are uncapped, and mergeTags owns
-  // the union and the `unclassified` rule outright.
-  merged.tags = mergeTags(existing.tags, next.tags);
+  // the hook-tag replace and the `unclassified` rule outright. A render that
+  // carries no hook_tags (an older caller) leaves the old ones, and unions.
+  const rendered = asList(next.hook_tags);
+  if (rendered.length > 0) {
+    merged.hook_tags = [...rendered];
+    merged.tags = mergeTags(existing.tags, rendered, existing.hook_tags);
+  } else {
+    merged.hook_tags = asList(existing.hook_tags);
+    merged.tags = mergeTags(existing.tags, next.tags);
+  }
 
   // Monotone facts. `preferNonEmpty` would let a tail-truncated transcript move
   // these backwards, so each takes the side that can only be more complete.
@@ -171,11 +182,18 @@ export function mergeFields(existing, next) {
 }
 
 /**
- * Union of both tag lists, with one exception: `unclassified` is bookkeeping,
- * not a term, so it drops the moment any real tag exists on either side.
+ * The note's hand tags plus this render's hook tags.
+ *
+ * Hand tags are `existingTags` minus `previousHookTags` (the tags the hook
+ * raised on the render before); they are never removed or capped. A note with
+ * no `hook_tags` passes none, so every tag it carries counts as hand and
+ * nothing is lost. One exception: `unclassified` is bookkeeping, not a term,
+ * so it drops the moment any real tag exists on either side.
  */
-export function mergeTags(existingTags, nextTags) {
-  const union = uniqueCapped([...asList(existingTags), ...asList(nextTags)], null);
+export function mergeTags(existingTags, nextTags, previousHookTags = []) {
+  const stale = new Set(asList(previousHookTags));
+  const hand = asList(existingTags).filter((tag) => !stale.has(tag));
+  const union = uniqueCapped([...hand, ...asList(nextTags)], null);
   const real = union.filter((tag) => tag !== UNCLASSIFIED);
   return real.length > 0 ? real : [UNCLASSIFIED];
 }

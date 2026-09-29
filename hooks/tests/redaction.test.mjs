@@ -18,7 +18,8 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { MAX_COMMAND_CHARS, MAX_SECRET_SCAN_CHARS } from '../lib/constants.mjs';
-import { findSecretValues, looksRedacted, redact, redactLiterals } from '../lib/redact.mjs';
+import { findSecretValues, installExtraRules, looksRedacted, redact, redactLiterals } from '../lib/redact.mjs';
+import { EXTRA_RULES_ENV_VAR, loadExtraRules } from '../lib/redact-extra.mjs';
 import { createAccumulator, extractTools, knownSecrets } from '../lib/transcript.mjs';
 import { GOLDEN_DIR, createSandbox, readNote } from './helpers/sandbox.mjs';
 import { SCENARIOS, runScenario } from './helpers/scenarios.mjs';
@@ -50,6 +51,49 @@ test('a note rendered from a credential-seeded transcript carries no secret', ()
     assert.ok(note.includes('aws-0-us-east-1.pooler.supabase.com'));
     assert.ok(note.includes('[REDACTED-JWT]'));
   } finally {
+    sandbox.cleanup();
+  }
+});
+
+test("a machine's extra rules reach a prompt, a command and the Outcome, after the built-ins", () => {
+  // R-106: each rule matches text the built-in rules leave in the credentials
+  // fixture, one per section of the note. The last matches only the marker a
+  // built-in rule leaves behind, so it fires only if the built-ins ran first.
+  const sandbox = createSandbox();
+  const rulesFile = path.join(sandbox.root, 'redact-extra.json');
+  fs.writeFileSync(rulesFile, JSON.stringify({
+    rules: [
+      { name: 'pooler-ref', pattern: 'hqkytnyiiuxovnnyixye' },
+      { name: 'api-host', pattern: 'example\\.supabase\\.co' },
+      { name: 'closing', pattern: 'belong in \\.env' },
+      { name: 'after-builtins', pattern: '\\[REDACTED-KEY\\]' },
+    ],
+  }), 'utf8');
+  const problems = [];
+  installExtraRules(loadExtraRules({ [EXTRA_RULES_ENV_VAR]: rulesFile }, (line) => problems.push(line)));
+  try {
+    assert.deepEqual(problems, []);
+    const outcome = runScenario(sandbox, CREDENTIAL_SCENARIO);
+    assert.equal(outcome.written, true);
+    const note = readNote(sandbox, CREDENTIAL_SCENARIO.note);
+    const section = (heading) => note.split(`## ${heading}`)[1].split('\n## ')[0];
+
+    const asked = section('What I asked for');
+    assert.ok(asked.includes('postgres.[REDACTED:pooler-ref]:[REDACTED]@'), asked);
+    assert.ok(asked.includes('the service key [REDACTED:after-builtins]'), asked);
+    assert.ok(section('Commands run').includes('https://[REDACTED:api-host]/rest/'));
+    assert.ok(section('Outcome').includes('Credentials [REDACTED:closing]; nothing was committed'));
+    for (const plain of ['hqkytnyiiuxovnnyixye', 'example.supabase.co', 'belong in .env']) {
+      assert.ok(!note.includes(plain), `${plain} survived`);
+    }
+    // Every built-in secret is still gone. (`looksRedacted` is not the check
+    // here: its connection-string probe reads the `:` in this test's own
+    // `[REDACTED:pooler-ref]` marker, in the user part, as a password separator.)
+    for (const secret of ['Sup3rSecretPassw0rd', 'hunter2hunter2', 'eyJ']) {
+      assert.ok(!note.includes(secret), `${secret} survived`);
+    }
+  } finally {
+    installExtraRules([]);
     sandbox.cleanup();
   }
 });

@@ -207,7 +207,7 @@ test('the field order is the frozen contract W-H2 builds against', () => {
     'parent_session', 'child_sessions', 'commits', 'prs', 'memory_files',
     'plan_file', 'docs_touched', 'artifacts', 'files_modified', 'prompt_count',
     'command_count', 'agent', 'agent_type', 'origin', 'captured_by', 'generator',
-    'tools_used', 'up', 'related', 'machine', 'retrievals', 'retrieved',
+    'tools_used', 'up', 'related', 'machine', 'retrievals', 'retrieved', 'hook_tags',
   ]);
 });
 
