@@ -108,12 +108,10 @@ server refuses a `DATABASE_URL` naming the bb2dash project.
 | Vault | Out of OneDrive into git realms (`docs/vault-migration-requirements.md`) | Moved into realms 2026-09-23 (Phase C); R-D1 done 2026-09-24. Open: the three-night push check (R-B1) and the credential-less push test (R-B4), then E (the VM) and F (smoke test, deleting the old copies) |
 | Memory sprint | Hub names, `harness` realm, SessionStart brief, retrieval provenance, store audit, curator (`docs/memory-sprint-requirements.md`) | In progress; the board is `docs/memory-sprint-status.md` |
 
-Test counts above are from runs on 2026-09-29 on `feat/v2-closure-docs` (harness `main`
-at `9cffe90` plus Phase 20's worker branches): `uv run pytest -o addopts="" -q` in `ingest/`
-and `npm ci && npm run typecheck && npm test` in `mcp-server/`. `npm test` in `hooks/`: 1,017 tests, 1,012 passed,
-3 skipped, 2 failed, both pending the Phase 20 integration (brief 101, task 16): the `worktree`
-golden, which is regenerated there, and `install-checkpoint.test.mjs`'s check that this repo's own
-`.claude/skills/checkpoint/` equals `skills/checkpoint/`, which needs the payload reinstalled.
+Test counts above are from runs on 2026-09-29 on `feat/v2-closure` (harness `main` at
+`9cffe90` plus Phase 20, integrated): `uv run pytest -o addopts="" -q` in `ingest/` (1,706
+passed, 3 skipped) and `npm ci && npm run typecheck && npm test` in `mcp-server/` (196 passed).
+`npm test` in `hooks/`: 1,083 tests, 1,080 passed, 3 skipped, 0 failed.
 
 What is verifiable right now, against the live project:
 
