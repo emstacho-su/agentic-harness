@@ -140,11 +140,21 @@ function compileRule(entry, seen) {
   } catch {
     return fail(name, 'pattern is not a valid regular expression');
   }
-  // A rule that matches nothing at all would write its marker between every
-  // character of every note.
-  if (new RegExp(pattern, flags).test('')) return fail(name, 'pattern matches the empty string');
+  // A rule that can match nothing at all (`x*`, `\b`, a lookahead) would write
+  // its marker between characters or at every word boundary of every note, so
+  // any zero-length match on a probe text refuses it.
+  if (matchesZeroLength(pattern, flags)) return fail(name, 'pattern matches the empty string');
 
   return { ok: true, rule: Object.freeze({ name, re, to: () => marker }) };
+}
+
+/** Probe texts: empty, word characters, spaces, punctuation and line breaks. */
+const ZERO_LENGTH_PROBES = Object.freeze(['', 'abc def', 'A1_ x-y.z\n2\r\nq']);
+
+function matchesZeroLength(pattern, flags) {
+  return ZERO_LENGTH_PROBES.some((probe) =>
+    [...probe.matchAll(new RegExp(pattern, `${flags}g`))].some((match) => match[0] === ''),
+  );
 }
 
 function validFlags(flags) {
