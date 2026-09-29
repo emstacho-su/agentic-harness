@@ -27,7 +27,7 @@ through one MCP server and one SQL function.
 ```mermaid
 flowchart LR
     hook["SessionEnd hook"] --> vault
-    vault["Obsidian vault<br/>markdown, folder = collection"] --> ing
+    vault["Obsidian vault<br/>git realms, folder = collection"] --> ing
     cmem["claude-mem export<br/>1,305 documents"] --> ing
 
     ing["ingest/<br/>parse - chunk - embed - upsert"]
@@ -38,7 +38,7 @@ flowchart LR
     mcp --> search["rag.search()<br/>vector + full-text, RRF<br/>0.70 cosine floor"]
 
     ing ==>|"DATABASE_URL"| db
-    search --> db[("harness-memory<br/>Supabase Postgres 17<br/>pgvector 0.8.2, schema rag<br/>1,319 docs / 2,312 chunks")]
+    search --> db[("harness-memory<br/>Supabase Postgres 17<br/>pgvector 0.8.2, schema rag")]
 
     classDef unbuilt stroke-dasharray: 5 5
     class hermes unbuilt
@@ -49,6 +49,15 @@ Dashed = designed, not built. Everything else is live.
 - **Storage** — its own Supabase project, `harness-memory`. Two tables:
   `rag.documents` (one row per source artifact, tagged with a `collection`) and
   `rag.chunks` (embedded slices, 384-dim vector plus a generated `tsvector`).
+  A machine that cannot reach Supabase runs the same schema in an optional local
+  store, Docker pgvector from `db/docker-compose.yml`
+  ([db/README.md](./db/README.md#the-optional-local-store)).
+- **Vault** — the folder `HARNESS_VAULT` names in the machine file,
+  `~/.harness/machine.env` (`C:/Users/stack/vault` on stack-laptop), outside
+  OneDrive. Its top-level folders are git **realms** with private remotes, the
+  ones listed in `HARNESS_REALMS`; the nightly job commits, merge-pulls and pushes
+  them (`hooks/sync-realms.mjs`) when its task is registered with `-RealmSync Apply`
+  (stack-laptop's runs `DryRun`, checked 2026-09-29). See [docs/portable.md](./docs/portable.md).
 - **Embeddings** — `BAAI/bge-small-en-v1.5` run locally through `fastembed` on
   both the ingestion side (Python) and the query side (Node). 384 dimensions,
   cosine distance, HNSW index. No API key, no per-token cost, nothing leaves
@@ -58,7 +67,7 @@ Dashed = designed, not built. Everything else is live.
   Rank Fusion, caps chunks per document, and applies a cosine relevance floor so
   an off-topic question returns nothing instead of its nearest junk.
 - **Capture** — a `SessionEnd` hook writes each finished session to
-  `vault/<projects|classes>/<collection>/sessions/<session_id>.md` as redacted
+  `<vault>/<realm>/<collection>/sessions/<session_id>.md` as redacted
   markdown: one note per session, keyed on the repository rather than the folder,
   carrying its branch, commits, PRs, phase, tags and resume chain. Rewrites merge
   into what is already there, so a tag typed by hand survives. The next ingest
@@ -85,28 +94,40 @@ server refuses a `DATABASE_URL` naming the bb2dash project.
 
 | Phase | What | State |
 | --- | --- | --- |
-| 0 | Archive the old harness | ✅ Done — 839 files, 210 MB, `~/.claude-archive/2026-09-09/` |
+| 0 | Archive the old harness | ✅ Done — 839 files, 210 MB, `~/.claude-archive/2026-09-09/` on the machine the reset ran on (not on stack-laptop) |
 | 1 | Export claude-mem history | ✅ Done — 4 JSON files + verified 56 MB snapshot |
 | 2 | Teardown and rebuild the harness | ✅ Done — 71→12 skills, 58→0 agents, 60→0 commands, 22→1 hooks, 220→0 permission rules |
-| 3 | pgvector schema | ✅ Done — migrations applied to `harness-memory` and mirrored in `db/migrations/` |
-| 4 | Vault + ingestion pipeline | ✅ Done — 1,319 documents / 2,312 chunks / 27 collections; vault open in Obsidian with Fall 2026 class folders and bb2dash materials; 261 tests |
-| 5 | Retrieval MCP server | ✅ Done — registered with Claude Code as `rag`; 117 tests; verified against the live store |
+| 3 | pgvector schema | ✅ Done — migrations applied to `harness-memory` and mirrored in `db/migrations/` (9 files) |
+| 4 | Vault + ingestion pipeline | ✅ Done — 1,319 documents / 2,312 chunks / 27 collections at the time (2026-09-09); vault open in Obsidian with Fall 2026 class folders and bb2dash materials. `ingest/`: 1,706 passed, 3 skipped |
+| 5 | Retrieval MCP server | ✅ Done — registered with Claude Code as `rag`; verified against the live store. `mcp-server/`: 196 tests in 11 files, all passing |
 | 6 | Dev cycle | ✅ Done — user-level `~/.claude/CLAUDE.md` rewritten with required gates |
 | 7 | Second agent on the same store | ⏸ Deferred. Schema is already agent-neutral |
 | 8 | Self-evolution loop | ⏸ Deferred |
 | 9 | Docs + diagrams | ✅ This |
+| V-2 | Session capture v2: one note per session, schema v2, tags, resume chains, sweep, `/checkpoint` | Built 2026-09-16; its acceptance walk and closure are bb2dash Phase 20 (brief 101), in progress. `hooks/`: see the test line below |
+| Vault | Out of OneDrive into git realms (`docs/vault-migration-requirements.md`) | Moved into realms 2026-09-23 (Phase C); R-D1 done 2026-09-24. Open: the three-night push check (R-B1) and the credential-less push test (R-B4), then E (the VM) and F (smoke test, deleting the old copies) |
+| Memory sprint | Hub names, `harness` realm, SessionStart brief, retrieval provenance, store audit, curator (`docs/memory-sprint-requirements.md`) | In progress; the board is `docs/memory-sprint-status.md` |
+
+Test counts above are from runs on 2026-09-29 on `feat/v2-closure-docs` (harness `main`
+at `9cffe90` plus Phase 20's worker branches): `uv run pytest -o addopts="" -q` in `ingest/`
+and `npm ci && npm run typecheck && npm test` in `mcp-server/`. `npm test` in `hooks/`: 1,017 tests, 1,012 passed,
+3 skipped, 2 failed, both pending the Phase 20 integration (brief 101, task 16): the `worktree`
+golden, which is regenerated there, and `install-checkpoint.test.mjs`'s check that this repo's own
+`.claude/skills/checkpoint/` equals `skills/checkpoint/`, which needs the payload reinstalled.
 
 What is verifiable right now, against the live project:
 
-- `rag.documents` holds 1,319 rows across 27 collections; `rag.chunks` holds
-  2,312, every one with a 384-dim embedding and a generated `tsv`.
+- `rag.documents` held 1,319 rows across 27 collections and `rag.chunks` 2,312
+  on 2026-09-09, every chunk with a 384-dim embedding and a generated `tsv`; the
+  counts move nightly (`select source, count(*) from rag.documents group by 1`).
 - `rag.search()` returns real results with real cosine similarities: relevant
   hits on this corpus score 0.79–0.87, unrelated queries 0.48–0.66, and the
   0.70 floor turns "banana bread recipe" into an honest empty result.
 - The `SessionEnd` hook has been observed firing unprompted; its note was
   ingested on the next run as the store's first `source='obsidian'` document.
 - `npm test` in `mcp-server/`, `uv run pytest` in `ingest/` and `npm test` in
-  `hooks/` all pass, and CI runs them on every push. All three mock the database,
+  `hooks/` are the three suites; CI runs them on every push to `main` and on pull
+  requests. All three mock the database,
   the model and the network, so they need no credentials.
 
 ---
@@ -118,26 +139,35 @@ agentic-harness/
 ├── README.md            you are here
 ├── CONTEXT.md           shared context every agent on this project reads first
 ├── .env.example         connection variables — copy to .env, never commit .env
+├── .github/workflows/   CI: the three test suites on Windows and Ubuntu
+├── .harness/            /checkpoint notes committed by cloud sessions, collected into the vault
 ├── certs/prod-ca.crt    Supabase's public root CA, pinned by both clients
 ├── docs/
 │   ├── README.md        documentation index
 │   ├── architecture.md  system design and the decisions behind it
 │   ├── harness-reset.md what was deleted in Phase 2 and why
-│   ├── ingestion.md     parse → chunk → embed → upsert, vault layout, session capture
+│   ├── ingestion.md     parse → chunk → embed → upsert, vault layout, session capture, the nightly
 │   ├── embeddings.md    tokenization → 384-dim vectors → HNSW, runtime parity
 │   ├── retrieval.md     hybrid search, RRF, the relevance floor, the contract
-│   └── tags.md          the controlled tag vocabulary for session notes
+│   ├── tags.md          the controlled tag vocabulary for session notes
+│   ├── portable.md      realms, the machine file, the local store, the runbooks
+│   ├── vault-migration-requirements.md   the vault's move into realms: requirements and gates
+│   └── memory-sprint-*.md                the memory sprint: requirements, orchestration, status
 ├── db/
-│   ├── README.md        project ref, connection gotchas, access model, migration mirror
+│   ├── README.md        project ref, connection gotchas, access model, migration mirror, local store
+│   ├── docker-compose.yml  the optional local store (Docker pgvector)
 │   └── migrations/      SQL mirroring what is applied to harness-memory
-├── hooks/               the SessionEnd capture hook, its tests and the installer
+├── hooks/               session capture and start hooks, sweeps, realm sync, their tests and installers
 ├── ingest/              Python ingestion pipeline (uv)
-└── mcp-server/          Node/TS stdio MCP retrieval server
+├── mcp-server/          Node/TS stdio MCP retrieval server
+├── scripts/             the nightly job, the checkpoint collector and weekly curator tasks, bootstrap, store backup
+└── skills/checkpoint/   the /checkpoint skill for cloud sessions, installed into each repo
 ```
 
-The repo lives at `C:/Users/estac/agentic-harness`, deliberately **outside
-OneDrive**. `.git` and OneDrive sync corrupt each other. The vault lives *inside*
-OneDrive, because plain markdown syncs fine.
+The repo lives at `~/agentic-harness` (`C:/Users/stack/agentic-harness` on
+stack-laptop), deliberately **outside OneDrive**: `.git` and OneDrive sync corrupt
+each other. The vault is outside OneDrive too, since 2026-09-23: its realms are
+git repositories, and git moves them between machines.
 
 ---
 
@@ -150,7 +180,8 @@ OneDrive, because plain markdown syncs fine.
 | Supabase project with pgvector | `harness-memory` (`hqkytnyiiuxovnnyixye`), pgvector 0.8.2 |
 | `uv` | 0.9.26+; it manages Python itself (`uv python install 3.12`) |
 | Node | ≥ 20.11 (developed on 24.13.0) |
-| Docker | Not needed. Nothing here has a daemon |
+| Docker | Optional. Only the local store needs it (`db/docker-compose.yml`); a machine on Supabase does not |
+| Machine file | `~/.harness/machine.env`: `HARNESS_MACHINE`, `HARNESS_VAULT`, `HARNESS_REALMS` and the rest ([docs/portable.md](./docs/portable.md)) |
 
 ### 1. Configure credentials
 
@@ -180,8 +211,8 @@ files here are the mirror, not the mechanism.
 
 ```bash
 cd ingest && uv sync && uv run pytest
-uv run ingest --source claude-mem --path C:/Users/estac/.claude-archive/2026-09-09/claude-mem-export
-uv run ingest --source obsidian   --path "C:/Users/estac/OneDrive - Syracuse University/vault"
+uv run ingest --source claude-mem --path C:/Users/you/.claude-archive/2026-09-09/claude-mem-export   # one-time, done 2026-09-09
+uv run ingest --source obsidian   --path "C:/Users/you/vault"
 ```
 
 Re-run the vault ingest whenever you like; `content_hash` skips every unchanged
@@ -212,10 +243,10 @@ JSON=$(node -e '
 const env=Object.fromEntries(require("fs").readFileSync(".env","utf8").split(/\r?\n/)
   .filter(l=>/^[A-Z_]+=/.test(l)).map(l=>{const i=l.indexOf("=");return[l.slice(0,i),l.slice(i+1).trim()]}));
 process.stdout.write(JSON.stringify({type:"stdio",command:"C:/Program Files/nodejs/node.exe",
-  args:["C:/Users/estac/agentic-harness/mcp-server/dist/index.js"],
+  args:["C:/Users/you/agentic-harness/mcp-server/dist/index.js"],
   env:{DATABASE_URL:env.DATABASE_URL,
-       DATABASE_CA_CERT:"C:/Users/estac/agentic-harness/certs/prod-ca.crt",
-       FASTEMBED_CACHE_DIR:"C:/Users/estac/agentic-harness/mcp-server/.fastembed-cache"}}))')
+       DATABASE_CA_CERT:"C:/Users/you/agentic-harness/certs/prod-ca.crt",
+       FASTEMBED_CACHE_DIR:"C:/Users/you/agentic-harness/mcp-server/.fastembed-cache"}}))')
 claude mcp add-json rag "$JSON" -s user
 claude mcp list        # rag: ✔ Connected
 ```

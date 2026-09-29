@@ -44,13 +44,16 @@ string or an empty list**, never absent and never guessed.
 | --- | --- |
 | Identity | `id`, `title`, `type`, `schema_version`, `session_id`, `date` |
 | Location | `collection`, `collection_source`, `cwd`, `cwds_seen` |
+| Time | `started_at`, `ended_at`, `duration_minutes` |
 | Lifecycle | `status`, `concluded_at`, `end_reason`, `supersedes`, `resumed_from` |
 | Git | `repo`, `branch`, `worktree`, `repos_touched`, `commits`, `prs` |
-| Context | `phase`, `tags`, `parent_session`, `child_sessions` |
+| Context | `phase`, `tags`, `hook_tags` (the tags the hook raised on its latest render; any other tag in `tags` is a hand tag), `parent_session`, `child_sessions` |
+| Worker | `agent` (always `claude-code`), `agent_type` (the subagent's type; empty on a session note) |
 | Work | `memory_files`, `plan_file`, `docs_touched`, `artifacts`, `files_modified` |
-| Volume | `duration_minutes`, `prompt_count`, `command_count`, `tools_used` |
+| Volume | `prompt_count`, `command_count`, `tools_used` |
+| Retrieval | `retrievals` (each search the session ran, with its results), `retrieved` (the vault notes those searches returned) |
 | Links | `up`, `related` (Obsidian wikilinks, derived afresh on every write) |
-| Provenance | `origin` (the transcript's `entrypoint`: `cli`, `claude-desktop`, `sdk-py`, `sdk-cli`, or empty), `captured_by` (`hook`, `sweep` or `migration`) |
+| Provenance | `origin` (the transcript's `entrypoint`: `cli`, `claude-desktop`, `sdk-py`, `sdk-cli`, or empty), `captured_by` (`hook`, `sweep`, `skill` or `migration`), `generator` (the writer and its version), `machine` (`HARNESS_MACHINE` from the machine file) |
 
 `id` is `session-<session_id>`, which is the `external_id` ingest keys on. It
 never changes, so a note that moves does not strand its row.
@@ -223,8 +226,11 @@ removed. A session the classifier cannot place gets exactly
 `tags: [unclassified]` and shows up in:
 
 ```bash
-node hooks/untagged-sessions.mjs --vault "C:/Users/estac/OneDrive - Syracuse University/vault"
+node hooks/untagged-sessions.mjs
 ```
+
+It reads the vault from `HARNESS_VAULT` (the shell, then the machine file
+`~/.harness/machine.env`); `--vault <path>` names another.
 
 ## Running it
 

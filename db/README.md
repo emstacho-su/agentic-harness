@@ -27,6 +27,29 @@ Both are 384-dimensional, so a query vector from one model runs against the othe
 `DATABASE_URL` containing the bb2dash ref; nothing else stands between you and that mistake, so
 keep the two projects' credentials in separate `.env` files (bb2dash's live in its own repo).
 
+## The optional local store
+
+Supabase is the store. A machine that cannot, or should not, reach it runs its own from
+`db/docker-compose.yml`: Postgres 17 with pgvector, pinned to the exact image
+`pgvector/pgvector:0.8.6-pg17`, in the container `harness-postgres`, on
+`127.0.0.1:5433` (not 5432, so it never collides with an installed Postgres), with the data in
+the named volume `harness-postgres-data`. The same migrations build the same `rag` schema:
+
+```bash
+cd db && docker compose up -d
+cd ../ingest && DATABASE_URL=postgresql://harness:harness@localhost:5433/harness \
+                DATABASE_SSL=disable uv run ingest db migrate
+```
+
+`DATABASE_SSL=disable` is accepted for a local Postgres only. Before a machine's first ingest
+into it, `uv run ingest embed-check` confirms its embedder matches the committed reference
+vectors. Everything in the volume is rebuilt from the vault by one full ingest, so losing it
+costs minutes, not notes; the backup is a dump (`scripts/backup-store.ps1` or `.sh`,
+`pg_dump -Fc` through `docker exec`), never a copy of the volume. The reasons behind the pin,
+`maintenance_work_mem`, `shm_size` and the named volume are in the compose file's header and in
+[../docs/portable.md](../docs/portable.md), *Local store*. Docker is needed only for this; a
+machine on Supabase does not need it.
+
 ## Why its own project
 
 The store started life on 2026-09-09 as a `rag` schema inside `bb2dash`, because the Supabase
@@ -59,6 +82,8 @@ verbatim from that table.
 | `20260921223446_rag_search_question_tolerant_text.sql` | The text arm also admits a chunk matching at least half the query's lexemes (minimum two) whose cosine is within 0.08 of `min_similarity`, so a natural-language question gets keyword support instead of an all-terms-or-nothing match. Signature unchanged |
 | `20260921223612_rag_search_strict_matches_first.sql` | Inside the text arm, chunks matching every term rank ahead of partial matches. Fixes two golden cases the previous migration pushed out of the top 3 |
 | `20260924201225_rag_retrieval_events.sql` | Table `rag.retrieval_events`: one row per result of each search a session made, projected by ingest from the session notes' `retrievals:` frontmatter. Unique `nulls not distinct` key on the note and the retrieval's position, RLS enabled. Applied with `uv run ingest db migrate` (see below) |
+| `20260927200342_curate_schema.sql` | The curator's own schema: the extraction cache and the issue ledger (R-C2, R-C3). Read-only towards the vault and `rag`. Applied with `uv run ingest db migrate` |
+| `20260927214500_curate_status_scores.sql` | The curator's C-b state: the history cache, note scores and the curation report's proposals and decisions (R-C5..R-C7). Add-only. Applied with `uv run ingest db migrate` |
 
 ### `rag.retrieval_events` (retrieval provenance, R-P2)
 
@@ -140,10 +165,13 @@ from supabase_migrations.schema_migrations
 order by version;
 ```
 
-Every row should have a matching `<version>_<name>.sql` in `migrations/`, and the six files
-above are the complete list as of 2026-09-21. `20260924201225_rag_retrieval_events.sql` and later
-are applied with `uv run ingest db migrate`, which records them in `rag_meta.schema_migrations`
-rather than in `supabase_migrations.schema_migrations`.
+Every row should have a matching `<version>_<name>.sql` in `migrations/`: the six files from
+`20260909175037` through `20260921223612` went through `apply_migration`.
+`20260924201225_rag_retrieval_events.sql` and later are applied with `uv run ingest db migrate`,
+which records them in its own ledger, `rag_meta.schema_migrations`, and not in
+`supabase_migrations.schema_migrations`. That ledger lists every file: its first run, on
+2026-09-24, seeded it with the six already applied. `uv run ingest db migrate --dry-run` reports
+what is applied and what is pending.
 
 "Mirror" means byte-identical, and that is checkable. `apply_migration` stores the query it was
 given verbatim — one array element, comments and all — so the file and the row must hash the
@@ -165,7 +193,7 @@ copy would not match.
 ### Verifying a filter is index-served, not scanned
 
 `filter_metadata` is only worth having if Postgres reaches it through
-`documents_metadata_idx` rather than reading all 1,324 documents. `EXPLAIN` on either arm of
+`documents_metadata_idx` rather than reading every row of `rag.documents`. `EXPLAIN` on either arm of
 `rag.search` should show a bitmap index scan:
 
 ```

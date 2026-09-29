@@ -91,10 +91,11 @@ unrelated layout.
 - **Tests.** Unit: scripted git asserts the exact sequence and that no `rebase`, `--force`
   or `stash` argument ever appears. Real git: A and B both commit to the same file; B's pull
   aborts, B's commit and tree survive, `.git/MERGE_HEAD` is absent afterwards.
-- **Done when.** Both tests pass. The nightly check, one `committed -> pulled -> pushed`
-  line per realm in this machine's log for three consecutive nights, is made after R-C3 and
-  before Phase D (decision 4). The arrow is ASCII because the PowerShell job decodes node's
-  output as the OEM code page.
+- **Done when.** Both tests pass. The nightly check, one realm-push line per realm in
+  this machine's log for three consecutive nights whose last step is `pushed` or
+  `up-to-date` (`committed -> pulled -> pushed`, or `up-to-date` in place of `pushed` for
+  a realm with nothing to send), is made after R-C3 and before Phase D (decision 4). The
+  arrow is ASCII because the PowerShell job decodes node's output as the OEM code page.
 
 ### R-B2 Stage explicit paths, never `-A`
 - **Requirement.** The commit step stages `-- ':(glob)**/*.md' ':(glob).obsidian/*.json'
@@ -379,7 +380,7 @@ unrelated layout.
 | --- | --- | --- |
 | A | B | R-A1–A4 done in code and tests, on `main` |
 | B | C | R-B1–B4 done in code, unit and real-git tests, on `main`; the three-night nightly check moves after Phase C (decision 4, 2026-09-23) |
-| C | D | R-C1 identical copy, R-C2 remotes, R-C3 doctor clean, R-C4 rehearsed; then, before D, the checks Phase B deferred: three `committed -> pulled -> pushed` nights (R-B1) and the credential-less push test (R-B4) |
+| C | D | R-C1 identical copy, R-C2 remotes, R-C3 doctor clean, R-C4 rehearsed; then, before D, the checks Phase B deferred: three nights whose realm-push lines end `pushed` or `up-to-date` (R-B1) and the credential-less push test (R-B4) |
 | D | E | R-D1 query returns 0 (done 2026-09-24), eval unchanged, R-D2 references committed; R-D3 live round trip on the VM in E |
 | E | F | R-E1 green on the VM, R-E2 round trip |
 | F | — | R-F1 script exit 0; R-F2 after 21 days |
@@ -442,9 +443,20 @@ unrelated layout.
    account's repositories) never has to be worked around. Obsidian Sync is not used: the
    realms do that job, and two syncers on one folder is the OneDrive problem again.
 
+8. (2026-09-29, bb2dash Phase 20; recorded in bb2dash DECISIONS by brief 101's task 28)
+   The Obsidian Git plugin is declined. `sync-realms.mjs` is the one writer
+   of realm history; a note edited by hand in Obsidian is committed and pushed by the next
+   sync like any other change, and a second committer on the same folders is the "two
+   syncers on one folder" problem of decision 7 again. R-B1's nightly check reads
+   "pushed or up-to-date": a realm with nothing to commit logs `up-to-date`, which is a
+   clean night, not a missed one.
+
 Follow-ups, not in Phase B:
-- `session-capture.mjs` and `sweep-transcripts.mjs` write into realms without taking the
-  lock.
+- ~~`session-capture.mjs` and `sweep-transcripts.mjs` write into realms without taking the
+  lock.~~ Struck 2026-09-29: moved into bb2dash brief 101 (Phase 20, H-10, R-100), where
+  the transcript sweep takes the realm lock per realm and leaves a locked realm's notes for
+  its next run, and the hook, which must never wait on session exit, writes each note to a
+  temporary file in the same folder and renames it into place.
 - `commit.gpgsign` is not overridden by the sync; a machine that signs commits needs its
   key usable without a prompt.
 
