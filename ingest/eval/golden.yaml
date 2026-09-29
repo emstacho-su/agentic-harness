@@ -91,8 +91,8 @@ cases:
     expect:
       - session-031d51be-6a6f-4d8f-b141-6b9bb7b2e0b3
       - session-240d0141-4b89-4936-8bbb-468d06c073b1
-    # The first session is filed under `memory`, the second under `bb2dash`.
-    collection: memory
+    # Both sessions are filed under `bb2dash` (the `memory` folder was re-filed there in unit N).
+    collection: bb2dash
     realm: projects
   - id: gradebook-phase
     query: gradebook mirror and grades screens for bb2dash
@@ -108,7 +108,7 @@ cases:
     query: capturing sessions from the desktop app and the web with their relationships
     expect: ["session-cp-7d2c52ab-be91-47aa-a148-5325de5849b9"]
     collection: agentic-harness
-    realm: projects
+    realm: harness
 
   # -- vault notes ----------------------------------------------------------------
   - id: ist323-index
@@ -124,12 +124,12 @@ cases:
     query: how does the nightly reconcile job work
     expect_contains: ["nightly reconcile", "nightly-ingest"]
     collection: agentic-harness
-    realm: projects
+    realm: harness
   - id: claude-mem-retired
     query: why was claude-mem retired and what replaced it
     expect_contains: ["claude-mem was retired", "retired claude-mem", "retiring claude-mem", "replaces claude-mem"]
     collection: agentic-harness
-    realm: projects
+    realm: harness
 
   # -- coverage, 2026-09-24 (R-Q3): agentic-harness --------------------------------
   # The harness realm does not exist yet (unit H-a). agentic-harness, projects and
@@ -143,13 +143,13 @@ cases:
     query: what times of day does the scheduled job that collects cloud checkpoint notes run
     expect: ["session-5b32b609-c718-44e4-b797-598e4ed9fe30", "session-cp-7d2c52ab-be91-47aa-a148-5325de5849b9", "session-20c43c73-577a-4d20-bc8b-9a8a84767177"]
     collection: agentic-harness
-    realm: projects
+    realm: harness
   # Prompts 8-15: the infosec internship laptop blocks node by group policy; move to a VM and make the harness portable.
   - id: ah-internship-laptop
     query: could the harness run on my infosec internship laptop where group policy blocks node
     expect: ["session-132a0a63-97a3-48f9-946b-2272d33e4171"]
     collection: agentic-harness
-    realm: projects
+    realm: harness
   # The 2026-09-24 dogfood query, kept as asked. It was the negative case
   # neg-retrieval-provenance until unit P went live at L4 (2026-09-27); retired then (R-Q2).
   # Answers, all read 2026-09-27: the unit P orchestrator session (sessions record their
@@ -165,7 +165,7 @@ cases:
     query: which chunks were retrieved by a session, retrieval logging, provenance
     expect: ["session-121c6e49-aac3-4c95-820e-4ba0a217c8e5", "session-121c6e49-aac3-4c95-820e-4ba0a217c8e5--a3043b66f7fb60027", "session-121c6e49-aac3-4c95-820e-4ba0a217c8e5--aeb854f405ab3b939"]
     collection: agentic-harness
-    realm: projects
+    realm: harness
 
   # -- coverage, 2026-09-24 (R-Q3): bb2dash ------------------------------------------
   # Outcome: Supabase is the source of truth; the desktop app is an Electron shell loading the same deployed URL.
@@ -186,7 +186,7 @@ cases:
   - id: memory-real-sync-setting
     query: the desktop Sync button only does dry runs, what setting makes it run a real sync
     expect: ["session-17eb4995-2504-4d28-b240-5a912de4cfdc"]
-    collection: memory
+    collection: bb2dash
     realm: projects
   # Prompt 2, answer 1: launch at login is out of the Phase 12 Electron shell.
   # misses today (rank 5): the answer is a bare "1)launch at login out" reply to numbered
@@ -197,13 +197,13 @@ cases:
   - id: memory-launch-at-login
     query: did we decide to have the bb2dash desktop app start automatically when Windows logs in
     expect: ["session-e5240482-ac40-4b5b-85f1-f87c565104f2"]
-    collection: memory
+    collection: bb2dash
     realm: projects
   # Outcome: closing the window only hid the app to the tray; the old copy was force-stopped to free the worktree folder.
   - id: memory-tray-worktree
     query: why couldn't the electron worktree be deleted even after I closed the app window
     expect: ["session-17eb4995-2504-4d28-b240-5a912de4cfdc"]
-    collection: memory
+    collection: bb2dash
     realm: projects
 
   # -- coverage, 2026-09-24 (R-Q3): portfolio-website --------------------------------
@@ -228,13 +228,13 @@ cases:
   - id: projects-grading-validation-stubbed
     query: why did we put the grading rules validation off until later
     expect: ["session-b453d876-aaef-424b-8ade-aba7f88c689a"]
-    collection: projects
+    collection: misc
     realm: projects
   # Prompt 1: every computed figure is labelled as a model; IST.471 shows not-computable.
   - id: projects-not-computable-course
     query: which of my courses can't get a computed grade from the grade model
     expect: ["session-b453d876-aaef-424b-8ade-aba7f88c689a"]
-    collection: projects
+    collection: misc
     realm: projects
   # Outcome: the deployed calendar-push code matches main, so nothing needs deploying.
   # misses today (rank 8): three sprint-2 workflow analysts in this same collection
@@ -248,7 +248,7 @@ cases:
   - id: projects-calendar-push-deployed
     query: does the deployed calendar push function need redeploying
     expect: ["session-b453d876-aaef-424b-8ade-aba7f88c689a"]
-    collection: projects
+    collection: misc
     realm: projects
 
   # -- coverage, 2026-09-24 (R-Q3): quant-edge-tracker -------------------------------
