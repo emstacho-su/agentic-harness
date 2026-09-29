@@ -1,0 +1,1049 @@
+{
+  "k": 3,
+  "hit_rate": 0.9193548387096774,
+  "mrr": 0.7801075268817205,
+  "negative_pass_rate": 1.0,
+  "per_collection": [
+    {
+      "realm": "-",
+      "collection": "ai-news-agent",
+      "cases": 5,
+      "hit_rate": 1.0,
+      "mrr": 0.9
+    },
+    {
+      "realm": "-",
+      "collection": "estac",
+      "cases": 2,
+      "hit_rate": 1.0,
+      "mrr": 0.75
+    },
+    {
+      "realm": "-",
+      "collection": "quant-edge-tracker",
+      "cases": 5,
+      "hit_rate": 1.0,
+      "mrr": 0.6333333333333333
+    },
+    {
+      "realm": "classes",
+      "collection": "ecn304",
+      "cases": 3,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "realm": "classes",
+      "collection": "geo103",
+      "cases": 3,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "realm": "classes",
+      "collection": "ist323",
+      "cases": 3,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "realm": "classes",
+      "collection": "ist335",
+      "cases": 1,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "realm": "classes",
+      "collection": "ist352",
+      "cases": 3,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "realm": "classes",
+      "collection": "ist466",
+      "cases": 3,
+      "hit_rate": 1.0,
+      "mrr": 0.7777777777777778
+    },
+    {
+      "realm": "classes",
+      "collection": "ist471",
+      "cases": 3,
+      "hit_rate": 1.0,
+      "mrr": 0.6666666666666666
+    },
+    {
+      "realm": "harness",
+      "collection": "agentic-harness",
+      "cases": 6,
+      "hit_rate": 0.6666666666666666,
+      "mrr": 0.5
+    },
+    {
+      "realm": "projects",
+      "collection": "bb2dash",
+      "cases": 7,
+      "hit_rate": 0.8571428571428571,
+      "mrr": 0.7380952380952381
+    },
+    {
+      "realm": "projects",
+      "collection": "bb2dash-inbox-decisions",
+      "cases": 3,
+      "hit_rate": 1.0,
+      "mrr": 0.8333333333333334
+    },
+    {
+      "realm": "projects",
+      "collection": "estac",
+      "cases": 3,
+      "hit_rate": 1.0,
+      "mrr": 0.8333333333333334
+    },
+    {
+      "realm": "projects",
+      "collection": "misc",
+      "cases": 3,
+      "hit_rate": 0.3333333333333333,
+      "mrr": 0.39999999999999997
+    },
+    {
+      "realm": "projects",
+      "collection": "portfolio-website",
+      "cases": 3,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "realm": "projects",
+      "collection": "quant-edge-tracker",
+      "cases": 3,
+      "hit_rate": 1.0,
+      "mrr": 0.6666666666666666
+    },
+    {
+      "realm": "projects",
+      "collection": "wa2-revision",
+      "cases": 3,
+      "hit_rate": 1.0,
+      "mrr": 0.8333333333333334
+    }
+  ],
+  "cases": [
+    {
+      "id": "bankroll-balance-chains",
+      "negative": false,
+      "collection": "quant-edge-tracker",
+      "realm": null,
+      "rank": 3,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "prompt:160",
+        "prompt:160",
+        "summary:109"
+      ]
+    },
+    {
+      "id": "reconciliation-drift",
+      "negative": false,
+      "collection": "quant-edge-tracker",
+      "realm": null,
+      "rank": 3,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "summary:108",
+        "summary:109",
+        "448"
+      ]
+    },
+    {
+      "id": "missing-bets-fix",
+      "negative": false,
+      "collection": "quant-edge-tracker",
+      "realm": null,
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "314",
+        "308",
+        "445"
+      ]
+    },
+    {
+      "id": "betting-schema",
+      "negative": false,
+      "collection": "quant-edge-tracker",
+      "realm": null,
+      "rank": 2,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "302",
+        "440",
+        "300"
+      ]
+    },
+    {
+      "id": "animation-config-conflict",
+      "negative": false,
+      "collection": "quant-edge-tracker",
+      "realm": null,
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "342",
+        "prompt:543",
+        "prompt:524"
+      ]
+    },
+    {
+      "id": "container-id-error",
+      "negative": false,
+      "collection": "ai-news-agent",
+      "realm": null,
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "110",
+        "113",
+        "112"
+      ]
+    },
+    {
+      "id": "routines-billing",
+      "negative": false,
+      "collection": "ai-news-agent",
+      "realm": null,
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "252",
+        "287",
+        "summary:93"
+      ]
+    },
+    {
+      "id": "v1-routines-blockers",
+      "negative": false,
+      "collection": "ai-news-agent",
+      "realm": null,
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "276",
+        "prompt:671",
+        "260"
+      ]
+    },
+    {
+      "id": "first-briefing",
+      "negative": false,
+      "collection": "ai-news-agent",
+      "realm": null,
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "246",
+        "115",
+        "58"
+      ]
+    },
+    {
+      "id": "vercel-dependencies",
+      "negative": false,
+      "collection": "ai-news-agent",
+      "realm": null,
+      "rank": 2,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "summary:71",
+        "summary:120",
+        "summary:121"
+      ]
+    },
+    {
+      "id": "harness-health-check",
+      "negative": false,
+      "collection": "estac",
+      "realm": null,
+      "rank": 2,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "summary:12",
+        "66",
+        "50"
+      ]
+    },
+    {
+      "id": "nextjs-survey",
+      "negative": false,
+      "collection": "estac",
+      "realm": null,
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "84",
+        "88",
+        "summary:20"
+      ]
+    },
+    {
+      "id": "navbar-redesign",
+      "negative": false,
+      "collection": "quant-edge-tracker",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-918369a9-5cd6-4c0c-8391-cea3d5a453d3",
+        "prompt:539",
+        "session-918369a9-5cd6-4c0c-8391-cea3d5a453d3"
+      ]
+    },
+    {
+      "id": "hero-grid",
+      "negative": false,
+      "collection": "portfolio-website",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-8448de7e-0cb8-447f-9e68-72bc3d89ad38",
+        "prompt:549",
+        "135"
+      ]
+    },
+    {
+      "id": "planner-calendar-phase",
+      "negative": false,
+      "collection": "bb2dash",
+      "realm": "projects",
+      "rank": 2,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-c6b39327-b50c-4c97-a75e-8ab5e2c843b3--a5e11dac09799d7bc",
+        "session-031d51be-6a6f-4d8f-b141-6b9bb7b2e0b3",
+        "session-031d51be-6a6f-4d8f-b141-6b9bb7b2e0b3"
+      ]
+    },
+    {
+      "id": "gradebook-phase",
+      "negative": false,
+      "collection": "bb2dash",
+      "realm": "projects",
+      "rank": 2,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-b453d876-aaef-424b-8ade-aba7f88c689a--a724a41e577d16ab8",
+        "session-b453d876-aaef-424b-8ade-aba7f88c689a--a7328416f6668e18c",
+        "session-c6b39327-b50c-4c97-a75e-8ab5e2c843b3--a48df9fb75955b7ef"
+      ]
+    },
+    {
+      "id": "capture-web-and-desktop",
+      "negative": false,
+      "collection": "agentic-harness",
+      "realm": "harness",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-cp-7d2c52ab-be91-47aa-a148-5325de5849b9",
+        "session-979397c7-6f54-442a-b383-3a60a69dffd7--a7e578641493504e6",
+        "session-5b32b609-c718-44e4-b797-598e4ed9fe30"
+      ]
+    },
+    {
+      "id": "ist323-index",
+      "negative": false,
+      "collection": "ist323",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "1e822b6f-1495-4d0f-bd73-84fa9f08aea3",
+        "51dd41b9-ff25-4061-995b-f7519d536bc6",
+        "session-39511d48-a528-4a5a-906e-d3687c92136c--a648e2bae5aaafcfc"
+      ]
+    },
+    {
+      "id": "nightly-reconcile",
+      "negative": false,
+      "collection": "agentic-harness",
+      "realm": "harness",
+      "rank": 2,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-20c43c73-577a-4d20-bc8b-9a8a84767177",
+        "session-e0a2ae00-8a0c-43dc-a93c-b7e093c61beb--a2eecb0517595af08",
+        "session-39511d48-a528-4a5a-906e-d3687c92136c--a3482305f3d27f80a"
+      ]
+    },
+    {
+      "id": "claude-mem-retired",
+      "negative": false,
+      "collection": "agentic-harness",
+      "realm": "harness",
+      "rank": null,
+      "passed": false,
+      "mislabelled": false,
+      "returned": [
+        "prompt:592",
+        "47",
+        "74"
+      ]
+    },
+    {
+      "id": "ah-checkpoint-collect-times",
+      "negative": false,
+      "collection": "agentic-harness",
+      "realm": "harness",
+      "rank": 2,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "238",
+        "session-5b32b609-c718-44e4-b797-598e4ed9fe30",
+        "206"
+      ]
+    },
+    {
+      "id": "ah-internship-laptop",
+      "negative": false,
+      "collection": "agentic-harness",
+      "realm": "harness",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-132a0a63-97a3-48f9-946b-2272d33e4171",
+        "session-132a0a63-97a3-48f9-946b-2272d33e4171",
+        "session-b46dd7f8-419f-4146-bfda-c9c1af6cb0ed--a5b32680173ef81e5"
+      ]
+    },
+    {
+      "id": "ah-retrieval-provenance",
+      "negative": false,
+      "collection": "agentic-harness",
+      "realm": "harness",
+      "rank": null,
+      "passed": false,
+      "mislabelled": false,
+      "returned": [
+        "session-7ff708bd-07b5-4790-8f60-3cc37044e902--ae0cc17eaf151140a",
+        "session-ed149251-e38d-4f4b-a65d-3b3972806132--a51c076086ee9d7aa",
+        "session-0e3b3d00-157a-4323-ae9e-c481e5042e88"
+      ]
+    },
+    {
+      "id": "bb2dash-source-of-truth",
+      "negative": false,
+      "collection": "bb2dash",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-c6b39327-b50c-4c97-a75e-8ab5e2c843b3",
+        "session-c6b39327-b50c-4c97-a75e-8ab5e2c843b3",
+        "session-031d51be-6a6f-4d8f-b141-6b9bb7b2e0b3"
+      ]
+    },
+    {
+      "id": "bb2dash-sprint2-migrations",
+      "negative": false,
+      "collection": "bb2dash",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-3a1f9923-4831-44f0-b2d9-9573ad43fc78",
+        "session-979397c7-6f54-442a-b383-3a60a69dffd7",
+        "session-1a7da47f-1fde-45d7-bab7-e8b6ac28ac95--a491c16bc6e0d816e"
+      ]
+    },
+    {
+      "id": "memory-real-sync-setting",
+      "negative": false,
+      "collection": "bb2dash",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-17eb4995-2504-4d28-b240-5a912de4cfdc",
+        "prompt:663",
+        "session-20c43c73-577a-4d20-bc8b-9a8a84767177--a97a427cf5756b25e"
+      ]
+    },
+    {
+      "id": "memory-launch-at-login",
+      "negative": false,
+      "collection": "bb2dash",
+      "realm": "projects",
+      "rank": 6,
+      "passed": false,
+      "mislabelled": false,
+      "returned": [
+        "session-17eb4995-2504-4d28-b240-5a912de4cfdc",
+        "session-7fcf4f98-3676-4269-a3f2-c39ad112c9db",
+        "session-17eb4995-2504-4d28-b240-5a912de4cfdc--a305843dc956f35e4"
+      ]
+    },
+    {
+      "id": "memory-tray-worktree",
+      "negative": false,
+      "collection": "bb2dash",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-17eb4995-2504-4d28-b240-5a912de4cfdc",
+        "session-c6b39327-b50c-4c97-a75e-8ab5e2c843b3",
+        "session-17eb4995-2504-4d28-b240-5a912de4cfdc"
+      ]
+    },
+    {
+      "id": "portfolio-thermo-defaults",
+      "negative": false,
+      "collection": "portfolio-website",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-8448de7e-0cb8-447f-9e68-72bc3d89ad38",
+        "prompt:549",
+        "prompt:549"
+      ]
+    },
+    {
+      "id": "portfolio-master-ff",
+      "negative": false,
+      "collection": "portfolio-website",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-8448de7e-0cb8-447f-9e68-72bc3d89ad38",
+        "prompt:386",
+        "prompt:83"
+      ]
+    },
+    {
+      "id": "projects-grading-validation-stubbed",
+      "negative": false,
+      "collection": "misc",
+      "realm": "projects",
+      "rank": null,
+      "passed": false,
+      "mislabelled": false,
+      "returned": [
+        "prompt:299",
+        "session-b453d876-aaef-424b-8ade-aba7f88c689a--a7328416f6668e18c",
+        "session-979397c7-6f54-442a-b383-3a60a69dffd7--af29eef62c66a2c66"
+      ]
+    },
+    {
+      "id": "projects-not-computable-course",
+      "negative": false,
+      "collection": "misc",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-b453d876-aaef-424b-8ade-aba7f88c689a",
+        "session-c6b39327-b50c-4c97-a75e-8ab5e2c843b3",
+        "session-c392aa36-bcb8-4a94-aca1-1173f48513b9"
+      ]
+    },
+    {
+      "id": "projects-calendar-push-deployed",
+      "negative": false,
+      "collection": "misc",
+      "realm": "projects",
+      "rank": 5,
+      "passed": false,
+      "mislabelled": false,
+      "returned": [
+        "session-979397c7-6f54-442a-b383-3a60a69dffd7--a500d90362365a04e",
+        "session-b453d876-aaef-424b-8ade-aba7f88c689a--a8861630cbbd046d0",
+        "session-979397c7-6f54-442a-b383-3a60a69dffd7--a3f6f42db14d3b799"
+      ]
+    },
+    {
+      "id": "qet-bundle-size",
+      "negative": false,
+      "collection": "quant-edge-tracker",
+      "realm": "projects",
+      "rank": 2,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "summary:127",
+        "session-918369a9-5cd6-4c0c-8391-cea3d5a453d3",
+        "summary:127"
+      ]
+    },
+    {
+      "id": "qet-live-losing-color",
+      "negative": false,
+      "collection": "quant-edge-tracker",
+      "realm": "projects",
+      "rank": 2,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "prompt:528",
+        "session-3d5a75d2-f529-417c-b81a-57dce310b59d",
+        "prompt:709"
+      ]
+    },
+    {
+      "id": "wa2-reverse-outline",
+      "negative": false,
+      "collection": "wa2-revision",
+      "realm": "projects",
+      "rank": 2,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "prompt:337",
+        "session-e23aa6b4-1248-4fb9-a77b-4fe865ecc280",
+        "prompt:10"
+      ]
+    },
+    {
+      "id": "wa2-course",
+      "negative": false,
+      "collection": "wa2-revision",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-e23aa6b4-1248-4fb9-a77b-4fe865ecc280",
+        "a67bcb2b-fb30-4ade-b0f6-9f533f994138",
+        "prompt:34"
+      ]
+    },
+    {
+      "id": "wa2-no-files-changed",
+      "negative": false,
+      "collection": "wa2-revision",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-e23aa6b4-1248-4fb9-a77b-4fe865ecc280",
+        "session-e23aa6b4-1248-4fb9-a77b-4fe865ecc280",
+        "session-6a51f205-95d3-4497-8e99-50c1c2cbb601"
+      ]
+    },
+    {
+      "id": "estac-fbi-deck-edits",
+      "negative": false,
+      "collection": "estac",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-22581e0d-35e4-4269-9717-bc20edd76ccf",
+        "session-46310334-055b-4bfe-92b2-45713c7b37a4",
+        "session-46310334-055b-4bfe-92b2-45713c7b37a4"
+      ]
+    },
+    {
+      "id": "estac-speaker-notes-slides",
+      "negative": false,
+      "collection": "estac",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-22581e0d-35e4-4269-9717-bc20edd76ccf",
+        "session-22581e0d-35e4-4269-9717-bc20edd76ccf",
+        "prompt:81"
+      ]
+    },
+    {
+      "id": "estac-bb-sync-download-bytes",
+      "negative": false,
+      "collection": "estac",
+      "realm": "projects",
+      "rank": 2,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-dbf28680-ce49-4caf-bba1-b9436c345a54",
+        "session-57e2339c-2b4f-49c7-8d24-98966e58d0ed",
+        "session-6a51f205-95d3-4497-8e99-50c1c2cbb601"
+      ]
+    },
+    {
+      "id": "ist466-fbi-ask",
+      "negative": false,
+      "collection": "ist466",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-46310334-055b-4bfe-92b2-45713c7b37a4",
+        "session-46310334-055b-4bfe-92b2-45713c7b37a4",
+        "session-46310334-055b-4bfe-92b2-45713c7b37a4"
+      ]
+    },
+    {
+      "id": "ist466-slide-limit",
+      "negative": false,
+      "collection": "ist466",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-46310334-055b-4bfe-92b2-45713c7b37a4",
+        "prompt:80",
+        "bb2dash-inbox-decision-35"
+      ]
+    },
+    {
+      "id": "ist466-course-id",
+      "negative": false,
+      "collection": "ist466",
+      "realm": "classes",
+      "rank": 3,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-0a55dcf3-6d2b-48a4-8ca6-bcec032221f7--a4a4598463ab27bf1",
+        "session-dbf28680-ce49-4caf-bba1-b9436c345a54--a6793f39f3a7e4237",
+        "9e7d7623-bfaf-4ee7-a694-b2384b8c0a0f"
+      ]
+    },
+    {
+      "id": "inbox-ecn304-quiz2-duplicate",
+      "negative": false,
+      "collection": "bb2dash-inbox-decisions",
+      "realm": "projects",
+      "rank": 2,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "bb2dash-inbox-decision-434",
+        "bb2dash-inbox-decision-528",
+        "session-03c5822f-47cf-4aff-a881-b2c678a06ca8"
+      ]
+    },
+    {
+      "id": "inbox-ist466-group-records",
+      "negative": false,
+      "collection": "bb2dash-inbox-decisions",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "bb2dash-inbox-decision-535",
+        "prompt:343",
+        "prompt:378"
+      ]
+    },
+    {
+      "id": "inbox-ist323-presentation-points",
+      "negative": false,
+      "collection": "bb2dash-inbox-decisions",
+      "realm": "projects",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "bb2dash-inbox-decision-138",
+        "session-c392aa36-bcb8-4a94-aca1-1173f48513b9",
+        "prompt:75"
+      ]
+    },
+    {
+      "id": "ist323-term",
+      "negative": false,
+      "collection": "ist323",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "1e822b6f-1495-4d0f-bd73-84fa9f08aea3",
+        "session-1c5cf03a-df9c-4ed8-805b-e67379e8b85f--ad88b583aea35c8b1"
+      ]
+    },
+    {
+      "id": "ist323-course-id",
+      "negative": false,
+      "collection": "ist323",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "1e822b6f-1495-4d0f-bd73-84fa9f08aea3",
+        "session-dbf28680-ce49-4caf-bba1-b9436c345a54--a6793f39f3a7e4237",
+        "session-0a55dcf3-6d2b-48a4-8ca6-bcec032221f7--a4a4598463ab27bf1"
+      ]
+    },
+    {
+      "id": "ist352-topic",
+      "negative": false,
+      "collection": "ist352",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "51dd41b9-ff25-4061-995b-f7519d536bc6",
+        "session-dbf28680-ce49-4caf-bba1-b9436c345a54--a4d86eadcc11cf4b6",
+        "1e822b6f-1495-4d0f-bd73-84fa9f08aea3"
+      ]
+    },
+    {
+      "id": "ist352-term",
+      "negative": false,
+      "collection": "ist352",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "51dd41b9-ff25-4061-995b-f7519d536bc6",
+        "bb2dash-inbox-decision-166",
+        "1f61a8c7-6772-4242-951e-fe10fb3ee982"
+      ]
+    },
+    {
+      "id": "ist352-course-id",
+      "negative": false,
+      "collection": "ist352",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "51dd41b9-ff25-4061-995b-f7519d536bc6",
+        "1e822b6f-1495-4d0f-bd73-84fa9f08aea3",
+        "9e7d7623-bfaf-4ee7-a694-b2384b8c0a0f"
+      ]
+    },
+    {
+      "id": "ist471-topic",
+      "negative": false,
+      "collection": "ist471",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "e98e55e1-4b94-40e3-8f63-86181b43c533",
+        "1e822b6f-1495-4d0f-bd73-84fa9f08aea3",
+        "9e7d7623-bfaf-4ee7-a694-b2384b8c0a0f"
+      ]
+    },
+    {
+      "id": "ist471-term",
+      "negative": false,
+      "collection": "ist471",
+      "realm": "classes",
+      "rank": 2,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "bb2dash-inbox-decision-14",
+        "e98e55e1-4b94-40e3-8f63-86181b43c533",
+        "session-c392aa36-bcb8-4a94-aca1-1173f48513b9"
+      ]
+    },
+    {
+      "id": "ist471-course-id",
+      "negative": false,
+      "collection": "ist471",
+      "realm": "classes",
+      "rank": 2,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "session-dbf28680-ce49-4caf-bba1-b9436c345a54--a6793f39f3a7e4237",
+        "e98e55e1-4b94-40e3-8f63-86181b43c533",
+        "session-0a55dcf3-6d2b-48a4-8ca6-bcec032221f7--a4a4598463ab27bf1"
+      ]
+    },
+    {
+      "id": "ecn304-topic",
+      "negative": false,
+      "collection": "ecn304",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "054da1c6-9405-4db7-9dee-41a32283641e",
+        "bb2dash-inbox-decision-132",
+        "session-c6b39327-b50c-4c97-a75e-8ab5e2c843b3"
+      ]
+    },
+    {
+      "id": "ecn304-term",
+      "negative": false,
+      "collection": "ecn304",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "054da1c6-9405-4db7-9dee-41a32283641e"
+      ]
+    },
+    {
+      "id": "ecn304-course-id",
+      "negative": false,
+      "collection": "ecn304",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "054da1c6-9405-4db7-9dee-41a32283641e",
+        "session-614f6ba0-6ce5-4643-bb0a-f67c57e19f4b--ab8a5886e7fa30fc3",
+        "session-0a55dcf3-6d2b-48a4-8ca6-bcec032221f7--a64a370b8ad08b14b"
+      ]
+    },
+    {
+      "id": "geo103-topic",
+      "negative": false,
+      "collection": "geo103",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "fdb623a7-f60b-41bd-9c61-4b7e5ceafdc2",
+        "bb2dash-inbox-decision-328",
+        "session-39511d48-a528-4a5a-906e-d3687c92136c--a648e2bae5aaafcfc"
+      ]
+    },
+    {
+      "id": "geo103-term",
+      "negative": false,
+      "collection": "geo103",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "fdb623a7-f60b-41bd-9c61-4b7e5ceafdc2"
+      ]
+    },
+    {
+      "id": "geo103-course-ids",
+      "negative": false,
+      "collection": "geo103",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "fdb623a7-f60b-41bd-9c61-4b7e5ceafdc2",
+        "1e822b6f-1495-4d0f-bd73-84fa9f08aea3",
+        "session-39511d48-a528-4a5a-906e-d3687c92136c--a648e2bae5aaafcfc"
+      ]
+    },
+    {
+      "id": "ist335-term",
+      "negative": false,
+      "collection": "ist335",
+      "realm": "classes",
+      "rank": 1,
+      "passed": true,
+      "mislabelled": false,
+      "returned": [
+        "1f61a8c7-6772-4242-951e-fe10fb3ee982",
+        "bb2dash-inbox-decision-164",
+        "bb2dash-inbox-decision-165"
+      ]
+    },
+    {
+      "id": "neg-sourdough",
+      "negative": true,
+      "collection": null,
+      "realm": null,
+      "rank": null,
+      "passed": true,
+      "mislabelled": false,
+      "returned": []
+    },
+    {
+      "id": "neg-bicycle",
+      "negative": true,
+      "collection": null,
+      "realm": null,
+      "rank": null,
+      "passed": true,
+      "mislabelled": false,
+      "returned": []
+    },
+    {
+      "id": "neg-vitamin-d",
+      "negative": true,
+      "collection": null,
+      "realm": null,
+      "rank": null,
+      "passed": true,
+      "mislabelled": false,
+      "returned": []
+    },
+    {
+      "id": "neg-flights",
+      "negative": true,
+      "collection": null,
+      "realm": null,
+      "rank": null,
+      "passed": true,
+      "mislabelled": false,
+      "returned": []
+    },
+    {
+      "id": "neg-guitar",
+      "negative": true,
+      "collection": null,
+      "realm": null,
+      "rank": null,
+      "passed": true,
+      "mislabelled": false,
+      "returned": []
+    }
+  ]
+}
