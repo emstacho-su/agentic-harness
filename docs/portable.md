@@ -624,7 +624,7 @@ Claude Code sessions in that window.
 
     Then the checks Phase B deferred (decision 4 in `vault-migration-requirements.md`) run
     here, before Phase D: three consecutive nights with one
-    `committed -> pulled -> pushed` line per realm in the log (R-B1), and the
+    `committed -> pulled -> pushed` (or `up-to-date`) line per realm in the log (R-B1), and the
     credential-less push test (R-B4: remove the stored credential, run
     `node hooks/sync-realms.mjs --push`, see exit 2 with a `credential` line within 30 s,
     restore it, see a push). The full re-ingest and the one-time `--prune-legacy` are
@@ -681,7 +681,7 @@ hit@3 0.95, MRR 0.775, 5/5 before and after, `returned` identical. Details in R-
 The harness's own history gets a third realm, `harness/<collection>/`, beside `projects` and
 `classes` (spec `docs/memory-sprint-requirements.md`, R-H1). It needs no new mechanism: the hook,
 sweep, ingest and doctor treat it as they treat the other two. Run it only after the three
-`committed -> pulled -> pushed` nights and Stack's "go L3", never between 02:45 and 04:30.
+`committed -> pulled -> pushed` (or `up-to-date`) nights and Stack's "go L3", never between 02:45 and 04:30.
 
 1. Stack edits `~/.harness/machine.env` **first**:
    `HARNESS_REALMS=projects:push,classes:push,harness:push`. A realm listed but not yet on
