@@ -2,7 +2,7 @@
 name: checkpoint
 description: Save this session as a vault note when it is worth keeping. Use in a claude.ai/code (cloud) session, where no transcript reaches the user's machine, to file the session under a project (default, from the git remote) or a class (pass the course id, e.g. /checkpoint ist323). Writes .harness/sessions/<id>.md, commits it and pushes; the nightly harness job collects it into the Obsidian vault and the RAG store.
 argument-hint: "[collection]  e.g. ist323, or empty for the repository's project"
-allowed-tools: Bash(git *), Bash(node *), Bash(python3 *), Bash(uuidgen *), Bash(mkdir *), Bash(ls *), Bash(cat *), Read, Write
+allowed-tools: Bash(git *), Bash(node *), Bash(mkdir *), Bash(ls *), Bash(cat *), Read, Write
 ---
 
 # /checkpoint — keep this session
@@ -48,59 +48,7 @@ node .claude/skills/checkpoint/build-note.mjs --body .harness/checkpoint-body.md
 It prints one JSON line. On `ok: true` note the `path` and `id`. On `ok: false` fix what it
 names (usually a missing heading) and run it again.
 
-**If `node` is not available** in this environment: write the note yourself at
-`.harness/sessions/<id>.md` where `<id>` is `cp-` followed by a fresh UUID
-(`python3 -c "import uuid; print('cp-' + str(uuid.uuid4()))"` or `cp-$(uuidgen)`). The `cp-`
-prefix is required: it keeps this note from colliding with the transcript-based note the user's
-machine may write later for the same session. Copy this frontmatter exactly, filling only the
-marked fields, then append the body from step 1 under a `# Session <date> — <collection>` heading:
-
-```yaml
----
-id: 'session-<id>'
-title: 'Session <YYYY-MM-DD> — <collection>'
-type: session
-schema_version: 2
-collection: '<collection: the argument, else the repository name in lowercase>'
-collection_source: '<argument if one was given, else git>'
-session_id: '<id>'
-date: <YYYY-MM-DD>
-started_at: ''
-ended_at: '<now, ISO 8601 UTC>'
-duration_minutes: 0
-status: 'concluded'
-concluded_at: '<now, ISO 8601 UTC>'
-end_reason: 'other'
-repo: '<owner/name from git remote get-url origin>'
-branch: '<git rev-parse --abbrev-ref HEAD>'
-worktree: ''
-repos_touched:
-  - '<name>'
-cwd: ''
-cwds_seen: []
-phase: ''
-tags: []
-supersedes: []
-resumed_from: ''
-parent_session: ''
-child_sessions: []
-commits: []
-prs: []
-memory_files: []
-plan_file: ''
-docs_touched: []
-artifacts: []
-files_modified: []
-prompt_count: <number of items under "What I asked for">
-command_count: 0
-agent: claude-code
-agent_type: ''
-origin: 'cloud'
-captured_by: 'skill'
-generator: 'checkpoint 1.0.0 (hand-built)'
-tools_used: {}
----
-```
+This skill requires `node`; without it, stop and report that no checkpoint was written.
 
 ## 3. Commit and push
 
