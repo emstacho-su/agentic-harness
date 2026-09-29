@@ -431,3 +431,22 @@ test('a retired folder whose hub is still the legacy index.md is removed too (re
     sandbox.cleanup();
   }
 });
+
+test('a migrated bb2dash note reads the bb2dash phase rules, not its PR titles (code review, PR #36)', () => {
+  const sandbox = createSandbox();
+  try {
+    installV1Notes(sandbox);
+    const note = loadNote(sandbox, 'bb2dash-retrieval', '2026-09-10-0e3b3d00.md');
+    const plan = { ...planNote({ note, resolveRepoFor: () => null }), repoFullName: 'emstacho-su/bb2dash' };
+    const { fields } = migrateNote({
+      note,
+      plan,
+      backfill: { commits: [], prs: [], branch: 'feat/grades-10a', prTitles: ['Phase 99 wrong'], notes: [] },
+      repoFor: makeRepoResolver(),
+    });
+    assert.equal(fields.repo, 'emstacho-su/bb2dash');
+    assert.equal(fields.phase, 'phase-10a');
+  } finally {
+    sandbox.cleanup();
+  }
+});

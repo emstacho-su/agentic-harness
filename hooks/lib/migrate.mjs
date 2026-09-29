@@ -153,16 +153,17 @@ export function migrateNote({ note, plan, backfill, repoFor }) {
     maxRepos: MAX_REPOS_TOUCHED,
   });
 
+  const repoFullName = plan.repoFullName || repoFullNameOf(old, repoFor);
   const branch = backfill.branch || '';
   const { tags, phase } = classify({
     files: paths.files,
     docsTouched: paths.docsTouched,
     branch,
     prTitles: backfill.prTitles ?? [],
+    repo: repoFullName,
   });
 
   const endedAt = String(old.ended_at ?? '');
-  const repoFullName = plan.repoFullName || repoFullNameOf(old, repoFor);
 
   const fields = {
     id: noteId(sessionId),
