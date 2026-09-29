@@ -11,9 +11,9 @@ the database with what is on disk. It runs three ways: by hand, one note at a
 time from the session-capture hook, and nightly from Task Scheduler.
 
 ```bash
-cd C:/Users/estac/agentic-harness/ingest
-uv run ingest --source claude-mem --path C:/Users/estac/.claude-archive/2026-09-09/claude-mem-export   # one-time import
-uv run ingest --source obsidian   --path "C:/Users/estac/OneDrive - Syracuse University/vault"      # re-run any time; unchanged notes cost nothing
+cd C:/Users/you/agentic-harness/ingest
+uv run ingest --source claude-mem --path C:/Users/you/.claude-archive/2026-09-09/claude-mem-export     # one-time import, done 2026-09-09
+uv run ingest --source obsidian   --path "C:/Users/you/vault"                                       # re-run any time; unchanged notes cost nothing
 uv run ingest --source obsidian   --path "<vault>" --only projects/bb2dash/sessions/<id>.md         # named notes, what the hook runs (repeatable)
 uv run ingest sweep-concluded     --path "<vault>" --dry-run                                        # conclude stale sessions
 uv run ingest --health                                                                              # is the nightly reconcile still running?
@@ -225,9 +225,10 @@ happening".
 
 ## Source 1 — claude-mem history
 
-Exported in Phase 1 to
-`C:/Users/estac/.claude-archive/2026-09-09/claude-mem-export/`. This is a
-one-time historical import; claude-mem is retired and produces no new rows.
+Exported in Phase 1 to `~/.claude-archive/2026-09-09/claude-mem-export/` on the
+machine that ran it, and imported once on 2026-09-09. This is a one-time
+historical import into `harness-memory`; claude-mem is retired and produces no
+new rows.
 
 | File | Rows | Ingested | `external_id` | Body |
 | --- | ---: | ---: | --- | --- |
@@ -268,30 +269,43 @@ unique across all 103. The enrichment index keys on both.
 
 ## Source 2 — the Obsidian vault
 
-`C:/Users/estac/OneDrive - Syracuse University/vault/`. Plain markdown on
-OneDrive syncs cleanly; **binary indexes must never live there** — that
-combination has previously caused file-lock failures on this machine, which is
-one of the reasons the vector index is in Postgres and the git repo lives outside
-OneDrive.
+The vault is the folder the machine file names in `HARNESS_VAULT`
+(`~/.harness/machine.env`; `C:/Users/stack/vault` on stack-laptop). It is outside
+OneDrive: it left OneDrive on 2026-09-23 (`docs/vault-migration-requirements.md`,
+Phase C). Its top-level folders are **realms**, each its own git repository with
+a private remote and a committed `.realm` file holding its name. The machine
+file's `HARNESS_REALMS` lists the realms this machine may hold and whether each
+may leave it (`projects:push,classes:push,harness:push` on stack-laptop); a
+realm on disk that it does not name stops the run, and a note outside every realm
+is skipped. The realms travel between machines through git, committed,
+merge-pulled and pushed by `hooks/sync-realms.mjs` (see
+[The nightly reconcile](#the-nightly-reconcile)). The Obsidian Git plugin is not
+used: the realm sync is the only writer of realm history, and a hand edit in
+Obsidian rides the next sync. **Binary indexes never live in the vault**; the
+vector index is in Postgres.
 
 ### The folder is the collection
 
 ```
 vault/
-  projects/
-    agentic-harness/     agentic-harness.md     sessions/  notes/  decisions/
-    bb2dash/                                    sessions/
-    ev-trainer/          ev-trainer.md          sessions/  notes/  decisions/
-    quant-edge-tracker/  quant-edge-tracker.md  sessions/  notes/  decisions/
-    misc/                misc.md                sessions/  notes/  decisions/
-  classes/
+  projects/              realm (git): one folder per repository
+    bb2dash/             bb2dash.md             sessions/  decisions/
+    quant-edge-tracker/  quant-edge-tracker.md  sessions/
+    misc/                misc.md                sessions/
+    …
+  classes/               realm (git): one folder per course
     ist323/  ist352/  ist466/  ist471/  ecn304/  geo103/     (Fall 2026)
-                         <course>.md            sessions/  notes/  materials/
-    ist335/              ist335.md              sessions/  notes/
-  daily/                 one note per day, from templates/daily.md
-  templates/             skipped by the loader
-  .obsidian/             skipped by the loader
+                         <course>.md            sessions/  materials/
+    ist335/              ist335.md                                   (prior term)
+    attachments/         the realm's binary files
+  harness/               realm (git): this repository's own sessions
+    agentic-harness/     agentic-harness.md     sessions/
+  .obsidian/             at the vault root, outside every realm, never tracked; skipped by the loader
 ```
+
+Every collection folder has its hub note; `sessions/`, `decisions/`, `notes/`
+and `materials/` exist once something is written into them. A vault-root
+`templates/` folder, where a vault has one, is skipped like `.obsidian/`.
 
 The second path segment (`agentic-harness`, `ist335`) becomes
 `documents.collection` **verbatim**. Folder casing is collection casing, and
@@ -334,8 +348,8 @@ opted-out note the same as a deleted one.
 
 ```bash
 cd ingest
-uv run export-materials --env-file C:/Users/estac/projects/bb2dash/.env \
-    --vault "C:/Users/estac/OneDrive - Syracuse University/vault" [--dry-run] [--course IST.323]
+uv run export-materials --env-file C:/Users/you/projects/bb2dash/.env \
+    --vault "C:/Users/you/vault" [--dry-run] [--course IST.323]
 ```
 
 The exporter reads `bb_files` + `bb_file_text` from the **bb2dash** project over
@@ -426,7 +440,7 @@ the path `~/.claude/settings.json` registers.
    remote of the cwd — through a worktree to its main repository — else the
    folder name, flagged `collection_source: folder`.
 3. Writes **one note per session**,
-   `vault/<projects|classes>/<collection>/sessions/<session_id>.md`, named by the
+   `<vault>/<realm>/<collection>/sessions/<session_id>.md`, named by the
    full session id and rewritten on every `SessionEnd`.
 4. Copies only user prompts, tool *inputs* and the session's closing assistant
    message (`## Outcome`, verbatim, capped), all run through redaction (env
@@ -535,7 +549,7 @@ are uncapped and never removed. A session the classifier cannot place gets
 exactly `tags: [unclassified]` and appears in the weekly review list:
 
 ```bash
-node hooks/untagged-sessions.mjs --vault "C:/Users/estac/OneDrive - Syracuse University/vault"
+node hooks/untagged-sessions.mjs      # the vault from HARNESS_VAULT; --vault <path> names another
 ```
 
 ### The one-time migration
@@ -645,7 +659,7 @@ Full detail is in [../hooks/README.md](../hooks/README.md).
 ## The nightly reconcile
 
 The per-note run covers the common case. The nightly job covers everything it
-missed — a session ended while OneDrive was offline, a note edited by hand, a
+missed — a session whose own ingest was skipped or failed, a note edited by hand, a
 machine that was asleep — and it is the only thing that concludes stale
 sessions.
 
@@ -663,9 +677,18 @@ resolve at 03:00. `-StartWhenAvailable` is the setting that matters on a laptop:
 the machine is usually asleep at 03:00, and without it a missed run is simply
 lost.
 
-The script's steps, in this order:
+The script runs nine steps, in this order. Each is named in the log by the
+label its closing line uses, `=== nightly reconcile finished (realms-pull N,
+transcripts N, …, realms-push N) ===`, which carries every step's exit code:
 
-0. **`node hooks/sweep-transcripts.mjs --min-idle-hours 6`** — the transcript
+realms-pull → transcripts → state → checkpoints → sweep → ingest → verify → eval → realms-push
+
+- **realms-pull** — `node hooks/sync-realms.mjs --pull --vault <vault>`: in
+  every realm in `HARNESS_REALMS`, stage, commit and merge-pull, so the night
+  starts from what the other machines pushed. A conflicting merge is aborted
+  with the local commit kept, and a realm whose lock is held is skipped; either
+  is exit 2, logged, and never fatal.
+- **transcripts** — `node hooks/sweep-transcripts.mjs --min-idle-hours 6`, the transcript
    sweep. Every transcript under `~/.claude/projects/` that has no note in the
    vault and has been idle six hours goes through the hook's own capture code
    and comes out as a note with `captured_by: sweep`. This is what catches the
@@ -673,7 +696,10 @@ The script's steps, in this order:
    killed with their terminal, desktop sessions from before the hook, and cloud
    sessions pulled down with `claude --teleport`. See
    [../hooks/README.md](../hooks/README.md#the-nightly-transcript-sweep).
-0b. **`node hooks/collect-checkpoints.mjs`** — the notes cloud sessions left in
+- **state** — `node hooks/sweep-state.mjs --max-age-days 7`: removes the
+  SessionStart records under `~/.harness/state/session-start/` older than a
+  week. Capture reads them and deletes nothing, so this keeps the folder small.
+- **checkpoints** — `node hooks/collect-checkpoints.mjs`, the notes cloud sessions left in
    git. A cloud session has no transcript here and runs no local hook, so when
    one is worth keeping Stack runs `/checkpoint` (or `/checkpoint <course>`)
    inside it; the skill commits a schema-v2 note under `.harness/sessions/` and
@@ -684,13 +710,27 @@ The script's steps, in this order:
    The same collector also runs on its own at 12:00 and 18:00
    (`scripts/register-checkpoint-collect.ps1`), with `--ingest`, so a daytime
    checkpoint is searchable the same afternoon.
-1. **`ingest sweep-concluded --apply`** — see below.
-2. **`ingest --source obsidian --path <vault>`** — a full walk, which picks up
-   the notes both sweeps just wrote or edited in the same night.
-3. **`ingest verify --path <vault>`** — the read-only store audit, over the
-   store the ingest just left. See [below](#the-store-audit-and-the-nightly-eval).
-4. **`ingest eval --history`** — the read-only retrieval eval, which appends
-   one line to `ingest/eval/history.jsonl`.
+- **sweep** — `ingest sweep-concluded --apply`, the 24 h conclude sweep; see below.
+- **ingest** — `ingest --source obsidian --path <vault> --prune`, a full walk,
+  which picks up the notes the sweeps just wrote or edited in the same night;
+  `--prune` is scoped to the realms and refuses on its own after a failed
+  document or an empty load.
+- **verify** — `ingest verify --path <vault>`, the read-only store audit, over the
+  store the ingest just left. See [below](#the-store-audit-and-the-nightly-eval).
+- **eval** — `ingest eval --history`, the read-only retrieval eval, which appends
+  one line to `ingest/eval/history.jsonl`.
+- **realms-push** — `node hooks/sync-realms.mjs --push --vault <vault>`: stage,
+  commit, merge-pull and push every `push` realm. Last, so a machine that failed
+  earlier pushes nothing half-reconciled; a conflicting merge is aborted with the
+  local commit kept, and it pushes next time. Each realm logs one line,
+  `<realm>: <commit> -> <pull> -> <push>`, whose last word is `pushed`, or
+  `up-to-date` when there was nothing to send.
+
+`register-nightly-ingest.ps1 -RealmSync DryRun` registers the task with both
+realm steps in dry-run mode (`--dry-run`: the log reads `would-commit ->
+would-pull -> would-push` and nothing is committed or pushed); `-RealmSync Skip`
+leaves them out. On stack-laptop the task was registered with `-RealmSync DryRun`
+(checked 2026-09-29), so its realms are not yet pushed by the nightly.
 
 A failing sweep of either kind does not abort the ingest: a missing note or a
 stale status is a smaller problem than a stale index. The task's exit code is
@@ -796,7 +836,7 @@ writes `~/.claude/hooks/ingest-state.json`:
   "schema_version": 1,
   "last_success": "2026-09-15T15:12:08.465430+00:00",
   "source": "obsidian",
-  "path": "C:\Users\estac\OneDrive - Syracuse University\vault",
+  "path": "C:\Users\you\vault",
   "documents": 18,
   "chunks_written": 47
 }
