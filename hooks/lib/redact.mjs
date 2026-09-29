@@ -91,8 +91,14 @@ function withoutFirstWord(value) {
  */
 export function redact(text) {
   if (typeof text !== 'string' || text === '') return '';
+  // The built-in rules first, then this machine's own (R-106): an extra rule
+  // sees the text after every built-in marker is in place.
+  return applyRules(applyRules(text, SECRET_RULES), extraRules);
+}
+
+function applyRules(text, rules) {
   let out = text;
-  for (const rule of SECRET_RULES) {
+  for (const rule of rules) {
     try {
       out = out.replace(rule.re, rule.to);
     } catch {
@@ -100,6 +106,43 @@ export function redact(text) {
     }
   }
   return out;
+}
+
+/**
+ * This machine's extra rules (R-106), applied by `redact()` after SECRET_RULES.
+ *
+ * Empty until an entry point installs them. The loading and validation of the
+ * `HARNESS_REDACT_EXTRA` file live in `redact-extra.mjs`, because this file has
+ * no imports and ships as a `/checkpoint` payload file, which never loads extras.
+ */
+let extraRules = Object.freeze([]);
+
+function isCompiledRule(rule) {
+  return Boolean(rule)
+    && rule.re instanceof RegExp
+    && rule.re.global
+    && (typeof rule.to === 'string' || typeof rule.to === 'function');
+}
+
+/**
+ * Replace the installed extra rules. Each must be `{ name, re, to }` with a
+ * global `re`; anything else is left out. Replaces rather than appends, so
+ * installing twice never doubles a rule, and `installExtraRules([])` clears.
+ *
+ * @param {readonly {name: string, re: RegExp, to: string|Function}[]} rules
+ * @returns {number} how many rules are now installed
+ */
+export function installExtraRules(rules) {
+  const accepted = (Array.isArray(rules) ? rules : [])
+    .filter(isCompiledRule)
+    .map((rule) => Object.freeze({ name: String(rule.name ?? ''), re: rule.re, to: rule.to }));
+  extraRules = Object.freeze(accepted);
+  return extraRules.length;
+}
+
+/** The extra rules `redact()` applies now (frozen). */
+export function installedExtraRules() {
+  return extraRules;
 }
 
 /**
