@@ -12,7 +12,16 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { GIT_EMAIL_VAR, MACHINE_ENV_VAR, MACHINE_ENV_SEGMENTS, gitEmail, loadMachineEnv, parseEnvText } from '../lib/machine-env.mjs';
+import {
+  GIT_EMAIL_VAR,
+  MACHINE_ENV_VAR,
+  MACHINE_ENV_SEGMENTS,
+  gitEmail,
+  loadMachineEnv,
+  parseEnvText,
+  resolveHarnessConfig,
+} from '../lib/machine-env.mjs';
+import { parseRealmPolicies } from '../lib/realm-sync.mjs';
 
 function scratchHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'machine-env-'));
@@ -117,6 +126,125 @@ test('gitEmail reads the machine file, and the process environment wins over it'
     fs.writeFileSync(file, 'HARNESS_GIT_EMAIL=file@example.com\n');
     assert.equal(gitEmail(loadMachineEnv({}, home)), 'file@example.com');
     assert.equal(gitEmail(loadMachineEnv({ HARNESS_GIT_EMAIL: 'shell@example.com' }, home)), 'shell@example.com');
+  } finally {
+    cleanup();
+  }
+});
+
+// ------------------------------------------------------ resolveHarnessConfig (H-4)
+
+const NO_MACHINE_FILE = path.join(os.tmpdir(), 'no-such-machine-env-fixture.env');
+
+function homeWithMachineFile(text) {
+  const scratch = scratchHome();
+  const file = path.join(scratch.home, ...MACHINE_ENV_SEGMENTS);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text);
+  return { ...scratch, file };
+}
+
+test('resolveHarnessConfig reads the machine file: vault, ingest project, machine and every realm', () => {
+  const { home, file, cleanup } = homeWithMachineFile([
+    'HARNESS_VAULT=C:/fixture/vault',
+    'HARNESS_INGEST_PROJECT=C:/fixture/agentic-harness/ingest',
+    'HARNESS_MACHINE=stack-laptop',
+    'HARNESS_REALMS=projects:push,classes:push,harness:push',
+    'HARNESS_GIT_EMAIL=someone@example.com',
+  ].join('\n'));
+  try {
+    const config = resolveHarnessConfig({ env: {}, home });
+    assert.deepEqual(Object.keys(config), ['machineFile', 'machine', 'vault', 'ingestProject', 'realms', 'realmCheck']);
+    assert.equal(config.machineFile, file);
+    assert.equal(config.machine, 'stack-laptop');
+    assert.equal(config.vault, 'C:/fixture/vault');
+    assert.equal(config.ingestProject, 'C:/fixture/agentic-harness/ingest');
+    assert.deepEqual(config.realms, [
+      { name: 'projects', policy: 'push' },
+      { name: 'classes', policy: 'push' },
+      { name: 'harness', policy: 'push' },
+    ]);
+    assert.equal(config.realmCheck, null);
+    assert.ok(Object.isFrozen(config));
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolveHarnessConfig: the shell beats the machine file, and any number of realms is read', () => {
+  const { home, cleanup } = homeWithMachineFile('HARNESS_VAULT=C:/from-file\nHARNESS_REALMS=projects:push\n');
+  try {
+    const config = resolveHarnessConfig({
+      env: { HARNESS_VAULT: 'C:/from-shell', HARNESS_REALMS: 'a:local,b:push,c:push,d:local' },
+      home,
+    });
+    assert.equal(config.vault, 'C:/from-shell');
+    assert.deepEqual(config.realms.map((realm) => realm.name), ['a', 'b', 'c', 'd']);
+  } finally {
+    cleanup();
+  }
+});
+
+test(`resolveHarnessConfig honours ${MACHINE_ENV_VAR} and never falls back to OneDrive`, () => {
+  const { home, cleanup } = scratchHome();
+  try {
+    const elsewhere = path.join(home, 'vm.env');
+    fs.writeFileSync(elsewhere, 'HARNESS_INGEST_PROJECT=/srv/ingest\n');
+    const config = resolveHarnessConfig({ env: { [MACHINE_ENV_VAR]: elsewhere }, home });
+    assert.equal(config.machineFile, elsewhere);
+    assert.equal(config.ingestProject, '/srv/ingest');
+    assert.equal(config.vault, '', 'no HARNESS_VAULT means no vault, not the OneDrive default');
+    assert.deepEqual(config.realms, []);
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolveHarnessConfig reports each malformed realm entry and keeps the good ones', () => {
+  const problems = [];
+  const config = resolveHarnessConfig({
+    env: {
+      HARNESS_REALMS: 'projects:push, bad entry, classes:sideways, projects:local, harness:local',
+      [MACHINE_ENV_VAR]: NO_MACHINE_FILE,
+    },
+    home: os.tmpdir(),
+    report: (line) => problems.push(line),
+  });
+  assert.deepEqual(config.realms.map((realm) => realm.name), ['projects', 'harness']);
+  assert.equal(problems.length, 3, problems.join('\n'));
+});
+
+test('its realm parser agrees with the sync on every valid list', () => {
+  for (const text of ['projects:push', 'projects:push,classes:local', ' a:push , b-2:local,c:push ', '']) {
+    const config = resolveHarnessConfig({ env: { HARNESS_REALMS: text, [MACHINE_ENV_VAR]: NO_MACHINE_FILE }, home: os.tmpdir() });
+    assert.deepEqual(config.realms, parseRealmPolicies(text));
+  }
+});
+
+test('requireRealm: a marker that reads the name passes; another name, none, or a bad name fails and names the path', () => {
+  const { home, cleanup } = scratchHome();
+  try {
+    const vault = path.join(home, 'vault');
+    fs.mkdirSync(path.join(vault, 'projects'), { recursive: true });
+    fs.mkdirSync(path.join(vault, 'classes'), { recursive: true });
+    fs.writeFileSync(path.join(vault, 'projects', '.realm'), 'projects\n');
+    fs.writeFileSync(path.join(vault, 'classes', '.realm'), 'projects\n');
+    const env = { HARNESS_VAULT: vault, [MACHINE_ENV_VAR]: NO_MACHINE_FILE };
+
+    const good = resolveHarnessConfig({ env, home, requireRealm: 'projects' }).realmCheck;
+    assert.deepEqual(good, { realm: 'projects', marker: path.join(vault, 'projects', '.realm'), ok: true, problem: '' });
+
+    const bad = resolveHarnessConfig({ env, home, requireRealm: 'classes' }).realmCheck;
+    assert.equal(bad.ok, false);
+    assert.equal(bad.marker, path.join(vault, 'classes', '.realm'));
+    assert.match(bad.problem, /reads 'projects'/);
+
+    const missing = resolveHarnessConfig({ env, home, requireRealm: 'harness' }).realmCheck;
+    assert.equal(missing.ok, false);
+    assert.match(missing.problem, /no marker/);
+
+    const unsafe = resolveHarnessConfig({ env, home, requireRealm: '../projects' }).realmCheck;
+    assert.equal(unsafe.ok, false);
+    assert.match(unsafe.problem, /not a realm name/);
   } finally {
     cleanup();
   }
