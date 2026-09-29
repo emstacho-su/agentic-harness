@@ -59,3 +59,24 @@ test('phaseTag refuses numbers outside the documented range', () => {
   assert.equal(phaseTag(100), '');
   assert.equal(phaseTag('seven'), '');
 });
+
+test('isKnownTag accepts one lowercase letter after the number, and nothing else', () => {
+  assert.equal(isKnownTag('phase-10a'), true);
+  assert.equal(isKnownTag('phase-12b'), true);
+
+  assert.equal(isKnownTag('phase-12B'), false);
+  assert.equal(isKnownTag('phase-12bc'), false);
+  assert.equal(isKnownTag('phase-12-b'), false);
+  assert.equal(isKnownTag('phase-0a'), false);
+  assert.equal(isKnownTag('phase-a'), false);
+});
+
+test('phaseTag takes an optional lowercase letter as its own argument', () => {
+  assert.equal(phaseTag(10, 'a'), 'phase-10a');
+  assert.equal(phaseTag('12', 'b'), 'phase-12b');
+  assert.equal(phaseTag(12, ''), 'phase-12');
+  assert.equal(phaseTag(12, 'B'), '');
+  assert.equal(phaseTag(12, 'bc'), '');
+  assert.equal(phaseTag(0, 'a'), '');
+  assert.equal(phaseTag('12b'), '', 'the letter is never parsed off the number');
+});
