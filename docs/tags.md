@@ -32,12 +32,14 @@ pr
 hotfix
 validation
 # phase
-phase-<n>
+phase-<n>[<l>]
 # sentinel
 unclassified
 ```
 
-`phase-<n>` is a family, not a literal: `phase-7`, `phase-11`. `n` is 1–99.
+`phase-<n>[<l>]` is a family, not a literal: `phase-7`, `phase-11`, `phase-12b`. `n` is 1–99;
+the optional `l` is one lowercase letter, for a phase split into lettered parts
+(`phase-10a`, `phase-10b`).
 
 ---
 
@@ -85,15 +87,41 @@ the hook already reads; tool output is not scanned for tags.
 
 ## The phase tag
 
-`phase-<n>` is derived, in this order, from the first source that yields a
-number:
+The phase is read from three sources, in this order:
 
-1. the branch name — `feat/phase7-retrieval`, `phase-11/sprint`
-2. a touched planning brief — `docs/planning/50_PHASE7_retrieval_polish.md`
+1. the branch name — `feat/phase7-retrieval`, `phase-11/sprint`, `docs/phase12b-merged`;
+2. the title of a pull request from the session's window (the back-fill only:
+   the hook has no network; never for `emstacho-su/bb2dash`, whose titles of
+   #7, #18 and #25 name the wrong phase);
+3. a touched path under `docs/planning/` —
+   `docs/planning/sprint-1-hub/briefs/80c_PHASE12B_page_pass.md` is `phase-12b`.
 
-The same value lands in the `phase:` frontmatter field. When neither source
-yields a number, `phase:` is the empty string and no phase tag is applied. It is
-never guessed from prose.
+In every source the rule is `phase[-_ ]?(\d{1,2}[a-z]?)` not followed by a
+letter or digit, case-insensitive and lowercased. Within one source every
+distinct phase is collected: **one** is the phase; **two or more** is `''` and
+no later source is read (a session spanning phases carries no phase); **none**
+moves on to the next source.
+
+Two more branch rules hold only when the repo is `emstacho-su/bb2dash`, read
+from the name after its `feat/`, `fix/`, `chore/` or `docs/` prefix:
+
+- a hyphen-delimited segment that is exactly 1–2 digits and an optional
+  lowercase letter: `feat/grades-v1-16` is `phase-16`, `fix/page-pass-12b-tail`
+  is `phase-12b` (`v1` is not a segment of digits);
+- the alias table in `hooks/lib/phase-aliases.mjs`, for the slug branches that
+  predate the `<slug>-<NN>` naming, each row citing its PR: `retrieval-polish`
+  is `phase-7` (#6), `course-dimension` is `phase-8` (#8), `sync-loop` is
+  `phase-9` (#10). An alias matches the whole name or a worker branch
+  `<alias>-<stream>`.
+
+Worker branches are `<phase branch>-<stream word>`; the stream is never a bare
+number. A subagent whose own sources yield no phase takes its parent's, from
+the branch of the parent transcript's checkout; one whose own `cwd` yields no
+repo takes the repo of the parent transcript's `cwd`.
+
+The same value lands in the `phase:` frontmatter field. When no source yields
+exactly one phase, `phase:` is the empty string and no phase tag is applied. It
+is never guessed from prose.
 
 ---
 
@@ -123,7 +151,7 @@ exactly like this.
 List them with:
 
 ```bash
-node hooks/untagged-sessions.mjs --vault "C:/Users/estac/OneDrive - Syracuse University/vault"
+node hooks/untagged-sessions.mjs
 ```
 
 It prints every note whose `tags` contain `unclassified`, newest first, with the

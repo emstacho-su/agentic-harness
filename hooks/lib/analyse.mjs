@@ -102,6 +102,7 @@ export function analyseTranscript({
     skills: [...accumulator.skills],
     toolNames: [...accumulator.toolCounts.keys()],
     branch,
+    repo: repo.repoFullName,
   });
 
   const git = deriveCommits({ repo, timing, runGit, deadlineAt });
