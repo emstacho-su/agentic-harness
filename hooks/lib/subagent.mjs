@@ -25,7 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { analyseTranscript } from './analyse.mjs';
-import { deriveCollection } from './collection.mjs';
+import { placeSession } from './collection.mjs';
 import {
   BUDGET_MS,
   CAPTURED_BY_HOOK,
@@ -51,8 +51,8 @@ import {
 } from './note.mjs';
 import { ensureIndex, findNotesByName, persist, readNote, resolveChainHead, vaultAvailable } from './notes-io.mjs';
 import { redact } from './redact.mjs';
-import { resolveRepo } from './repo.mjs';
 import { extractRetrievals, retrievedLinks } from './retrievals.mjs';
+import { derivePhase, withPhaseTag } from './tags.mjs';
 import { isoDate, toPosix, uniqueCapped } from './text.mjs';
 import { extractOrigin, extractOutcome, extractPrompts, extractTools, createAccumulator, firstPromptText, knownSecrets, readEntries } from './transcript.mjs';
 import { TITLE_SEPARATOR, workerTitle } from './title.mjs';
@@ -132,6 +132,7 @@ export function captureSubagent({
     return { written: false, action: 'skip', skip: `existing note unreadable: ${current.error}`, notePath: targetPath, touchedPaths: [], vaultRoot, detail: '' };
   }
 
+  const inherited = inheritFromParent(facts, placement);
   const secrets = knownSecrets(prompts, accumulator);
   const searches = extractRetrievals(entries, { secrets, includeSidechain: true });
 
@@ -161,12 +162,12 @@ export function captureSubagent({
     // A stopped subagent is finished by definition: nothing resumes one.
     status: STATUS_CONCLUDED,
     concludedAt: facts.timing.endedAt,
-    repo: facts.repo.repoFullName,
+    repo: inherited.repo,
     branch: facts.branch,
     worktree: facts.repo.worktree,
     reposTouched: facts.paths.reposTouched,
-    phase: facts.phase,
-    tags: facts.tags,
+    phase: inherited.phase,
+    tags: inherited.tags,
     supersedes: [],
     resumedFrom: '',
     parentSession: input.sessionId,
@@ -284,7 +285,8 @@ const NO_NOTE = Object.freeze({ fields: null, body: '', error: '', stub: false }
  * @returns {{area: string, collection: string, collectionSource: string,
  *            notePath: string, current: object, parentArea: string,
  *            parentCollection: string, parentSessionsDir: string,
- *            parentStartedAt: string, basis: string}}
+ *            parentStartedAt: string, parentRepo: string,
+ *            parentPhase: string, basis: string}}
  */
 function placeWorker({ input, agentId, agentTranscriptPath, facts, vaultRoot, log }) {
   const fromParent = parentPlacement({ input, agentTranscriptPath, vaultRoot });
@@ -299,6 +301,8 @@ function placeWorker({ input, agentId, agentTranscriptPath, facts, vaultRoot, lo
     parentCollection: home.collection,
     parentSessionsDir,
     parentStartedAt: fromParent?.timestamp ?? '',
+    parentRepo: fromParent?.repo ?? '',
+    parentPhase: fromParent?.phase ?? '',
     notePath: path.join(parentSessionsDir, filename),
     basis: fromParent ? PLACED_BY_PARENT : PLACED_BY_OWN_CWD,
   };
@@ -360,9 +364,28 @@ function vaultRelative(vaultRoot, notePath) {
 }
 
 /**
+ * A worker's repo, phase and tags, with what its own transcript could not say
+ * taken from its parent (brief 101 H-1): a worker whose own sources yield no
+ * phase takes the phase its parent's checkout branch yields, and one whose own
+ * `cwd` yields no repo (a workflow agent's Claude Code folder) takes the
+ * repo of the parent transcript's `cwd`. Its own always wins.
+ */
+function inheritFromParent(facts, placement) {
+  const ownPhase = facts.phase;
+  const phase = ownPhase || placement.parentPhase || '';
+  return {
+    repo: facts.repo.repoFullName || placement.parentRepo || '',
+    phase,
+    tags: ownPhase ? facts.tags : withPhaseTag(facts.tags, phase),
+  };
+}
+
+/**
  * The collection the parent session files under, from the `cwd` its own
  * transcript declares, and the `timestamp` its first record carries (`''`
  * when none does); `null` when no parent transcript declares a `cwd`.
+ * With it, the repo that `cwd` resolves to and the phase its checkout's
+ * branch yields (`''` each when there is none), for a worker to inherit.
  *
  * The transcript beside the worker's `subagents/` folder is asked first, then
  * the payload's `transcript_path`, which on `SubagentStop` is the session's.
@@ -377,7 +400,17 @@ export function parentPlacement({ input, agentTranscriptPath, vaultRoot, readHea
   const candidates = [...new Set(named)].filter((candidate) => candidate && candidate !== own);
   for (const candidate of candidates) {
     const { cwd, timestamp = '' } = readHead(candidate);
-    if (cwd) return { ...deriveCollection({ cwd, vaultRoot, repo: resolveRepo(cwd) }), timestamp };
+    if (!cwd) continue;
+    const { placement, repo } = placeSession({ cwd, vaultRoot });
+    const repoFullName = repo?.repoFullName ?? '';
+    return {
+      area: placement.area,
+      collection: placement.collection,
+      collectionSource: placement.collectionSource,
+      timestamp,
+      repo: repoFullName,
+      phase: derivePhase({ branch: repo?.branch ?? '', repo: repoFullName }),
+    };
   }
   return null;
 }

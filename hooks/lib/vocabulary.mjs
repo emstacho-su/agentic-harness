@@ -28,11 +28,11 @@ export const ACTIVITY_TAGS = Object.freeze([
   'validation',
 ]);
 
-/** The phase tag is a family, `phase-7`, not a fixed term. */
-export const PHASE_TAG_PATTERN = /^phase-([1-9][0-9]?)$/;
+/** The phase tag is a family, `phase-7` or `phase-12b`, not a fixed term. */
+export const PHASE_TAG_PATTERN = /^phase-([1-9][0-9]?)([a-z]?)$/;
 
-/** Printed in docs/tags.md as the family's shape. */
-export const PHASE_TAG_TEMPLATE = 'phase-<n>';
+/** Printed in docs/tags.md as the family's shape: `phase-<n>`, or `phase-<n><l>` with a letter. */
+export const PHASE_TAG_TEMPLATE = 'phase-<n>[<l>]';
 
 /** Not a term: "the classifier had nothing to go on". */
 export const UNCLASSIFIED = 'unclassified';
@@ -45,9 +45,19 @@ export function isKnownTag(tag) {
   return KNOWN.has(tag) || PHASE_TAG_PATTERN.test(tag);
 }
 
-/** `phase-7` from `7`, or `''` when the number is out of range. */
-export function phaseTag(number) {
-  const n = Number.parseInt(String(number ?? ''), 10);
-  if (!Number.isInteger(n) || n < 1 || n > 99) return '';
-  return `phase-${n}`;
+const PHASE_NUMBER = /^[0-9]{1,2}$/;
+const PHASE_LETTER = /^[a-z]?$/;
+
+/**
+ * `phase-7` from `7`, `phase-12b` from `(12, 'b')`, or `''` when the number is
+ * out of range or the letter is not one lowercase letter. The letter is its
+ * own argument: `'12b'` as the number is refused, never read as `12`.
+ */
+export function phaseTag(number, letter = '') {
+  const digits = String(number ?? '');
+  const suffix = String(letter ?? '');
+  if (!PHASE_NUMBER.test(digits) || !PHASE_LETTER.test(suffix)) return '';
+  const n = Number.parseInt(digits, 10);
+  if (n < 1 || n > 99) return '';
+  return `phase-${n}${suffix}`;
 }

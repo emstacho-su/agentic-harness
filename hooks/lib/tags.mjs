@@ -13,7 +13,8 @@
  */
 
 import { MAX_HOOK_TAGS } from './constants.mjs';
-import { ACTIVITY_TAGS, AREA_TAGS, UNCLASSIFIED, phaseTag } from './vocabulary.mjs';
+import { aliasPhase } from './phase-aliases.mjs';
+import { ACTIVITY_TAGS, AREA_TAGS, PHASE_TAG_PATTERN, UNCLASSIFIED, phaseTag } from './vocabulary.mjs';
 
 /** Path shape -> area tag. A path may raise more than one. */
 const AREA_RULES = Object.freeze([
@@ -45,47 +46,99 @@ const AREA_SLOTS = 2;
 const ACTIVITY_SLOTS = 2;
 
 const HOTFIX_BRANCH = /^(fix|hotfix)\//;
-const PHASE_IN_BRANCH = /phase[-_ ]?(\d{1,2})\b/i;
-// Anywhere under docs/planning/: briefs are being filed into per-sprint folders.
-const PHASE_IN_PLANNING_PATH = /docs\/planning\/(?:[^/]+\/)*[^/]*phase[-_ ]?(\d{1,2})/i;
-const PHASE_IN_TITLE = /\bphase[-_ ]?(\d{1,2})\b/i;
 const PHASE_BRIEF_PATH = /^docs\/planning\/.*phase/i;
 
+/** `phase7`, `phase-12b`, `PHASE_14`: the one rule every repo shares (H-1). */
+const PHASE_TOKEN = /phase[-_ ]?([0-9]{1,2})([a-z]?)(?![a-z0-9])/gi;
+/** The anchor of a planning path: briefs are filed into per-sprint folders below it. */
+const PHASE_IN_PLANNING_PATH = 'docs/planning/';
+
+/** The repo whose branch segments and aliases name phases (H-1 rules (i) and (ii)). */
+const SEGMENT_RULE_REPO = 'emstacho-su/bb2dash';
+const BRANCH_TYPE_PREFIX = /^(?:feat|fix|chore|docs)\/(.+)$/;
+const PHASE_SEGMENT = /^([0-9]{1,2})([a-z]?)$/;
+
 /**
- * `phase-7`, or `''`.
+ * `phase-7`, `phase-12b`, or `''` (brief 101 H-1).
  *
  * Three sources, in order of how specific each one is: the branch, the title of
- * a pull request from the session's window, then a planning brief the session
- * touched. `prTitles` is empty for the hook — it has no network — and is filled
- * in by the one-time migration, which does.
+ * a pull request from the session's window, then a planning path under
+ * `docs/planning/` the session touched. `prTitles` is empty for the hook — it
+ * has no network — and is filled in by the back-fill, which does. Within one
+ * source every distinct phase is collected: one is the answer; two or more is
+ * `''` and no later source is read, because a session that spans phases
+ * carries none; none moves on to the next source.
+ *
+ * For `emstacho-su/bb2dash` the branch also yields a phase from a segment of
+ * digits (`feat/grades-v1-16`) or from the alias table (`phase-aliases.mjs`),
+ * and PR titles are not read: some of its titles name the wrong phase.
  *
  * Nothing is read from prose. A wrong phase is worse than no phase: the empty
  * field is honest and a filter on it returns nothing, where a wrong one returns
  * the wrong sessions and reads as an answer.
  */
-export function derivePhase({ branch = '', docsTouched = [], prTitles = [] } = {}) {
-  const fromBranch = String(branch).match(PHASE_IN_BRANCH);
-  if (fromBranch) {
-    const tag = phaseTag(fromBranch[1]);
-    if (tag) return tag;
-  }
-
-  for (const title of prTitles) {
-    const match = String(title).match(PHASE_IN_TITLE);
-    if (match) {
-      const tag = phaseTag(match[1]);
-      if (tag) return tag;
-    }
-  }
-
-  for (const doc of docsTouched) {
-    const match = String(doc).match(PHASE_IN_PLANNING_PATH);
-    if (match) {
-      const tag = phaseTag(match[1]);
-      if (tag) return tag;
-    }
+export function derivePhase({ branch = '', docsTouched = [], prTitles = [], repo = '' } = {}) {
+  const bb2dash = String(repo ?? '').toLowerCase() === SEGMENT_RULE_REPO;
+  const sources = [
+    () => branchPhases(String(branch ?? ''), bb2dash),
+    () => (bb2dash ? [] : listOf(prTitles).flatMap((title) => tokenPhases(String(title ?? '')))),
+    () => listOf(docsTouched).flatMap((doc) => planningPhases(String(doc?.path ?? doc ?? ''))),
+  ];
+  for (const source of sources) {
+    const found = new Set(source());
+    if (found.size === 1) return [...found][0];
+    if (found.size > 1) return '';
   }
   return '';
+}
+
+/**
+ * A classifier result with its phase slot set to `phase`, as `classify` would
+ * have filled it: a phase learned after classifying (a worker inheriting its
+ * parent's, the back-fill's re-derived one) takes slot one, any other phase tag
+ * goes, and the cap drops the last tag, never a hand tag (this list is
+ * hook-applied only). `unclassified` gives way to any real tag and stands
+ * alone when nothing is left.
+ */
+export function withPhaseTag(tags, phase) {
+  const rest = listOf(tags).filter((tag) => tag !== UNCLASSIFIED && !PHASE_TAG_PATTERN.test(tag));
+  const ordered = phase ? [phase, ...rest] : rest;
+  return ordered.length ? ordered.slice(0, MAX_HOOK_TAGS) : [UNCLASSIFIED];
+}
+
+function listOf(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+/** Every phase the phase rule finds in `text`. */
+function tokenPhases(text) {
+  return [...text.matchAll(PHASE_TOKEN)]
+    .map((match) => phaseTag(match[1], match[2].toLowerCase()))
+    .filter(Boolean);
+}
+
+/** The branch's phases: the phase rule, and for bb2dash its segments and aliases. */
+function branchPhases(branch, bb2dash) {
+  const found = tokenPhases(branch);
+  if (!bb2dash) return found;
+  const name = branch.match(BRANCH_TYPE_PREFIX)?.[1] ?? '';
+  if (!name) return found;
+  for (const segment of name.split('-')) {
+    const match = segment.match(PHASE_SEGMENT);
+    const tag = match ? phaseTag(match[1], match[2]) : '';
+    if (tag) found.push(tag);
+  }
+  const aliased = aliasPhase(name);
+  if (aliased) found.push(aliased);
+  return found;
+}
+
+/** Phases named below `docs/planning/`; a path anywhere else names none. */
+function planningPhases(doc) {
+  const posix = doc.replace(/\\/g, '/');
+  const at = posix.indexOf(PHASE_IN_PLANNING_PATH);
+  if (at === -1 || (at > 0 && posix[at - 1] !== '/')) return [];
+  return tokenPhases(posix.slice(at + PHASE_IN_PLANNING_PATH.length));
 }
 
 /**
@@ -104,8 +157,9 @@ export function classify({
   toolNames = [],
   branch = '',
   prTitles = [],
+  repo = '',
 } = {}) {
-  const phase = derivePhase({ branch, docsTouched, prTitles });
+  const phase = derivePhase({ branch, docsTouched, prTitles, repo });
   // What a session read is weaker evidence than what it changed, so it speaks
   // only when the edits are silent: a research or review worker edits nothing.
   const editedAreas = countAreas(files);

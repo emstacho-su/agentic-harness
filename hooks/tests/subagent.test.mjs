@@ -645,3 +645,134 @@ test('an agent id that is not a safe filename never reaches a path', () => {
     sandbox.cleanup();
   }
 });
+
+// ------------------------------------- parent phase and repo (brief 101 H-1)
+//
+// A worker files under its PM's phase and repo. Its own branch speaks first; a
+// worker whose own sources yield no phase takes the one the parent
+// transcript's checkout branch yields, and one whose own cwd yields no repo
+// takes the parent's. The workflow cwd is sandbox-rooted: the live spelling,
+// `C:/Users/stack/.claude/projects/…`, would decode against the real disk.
+
+const BB2DASH_REMOTE = 'https://github.com/emstacho-su/bb2dash.git';
+
+/** A fake checkout beside the sandbox's own: `.git/config` and `HEAD` are all the hook reads. */
+function addCheckout(sandbox, dir, head, remote = BB2DASH_REMOTE) {
+  const gitDir = path.join(sandbox.root, dir, '.git');
+  fs.mkdirSync(gitDir, { recursive: true });
+  fs.writeFileSync(path.join(gitDir, 'config'), `[remote "origin"]\n\turl = ${remote}\n`, 'utf8');
+  fs.writeFileSync(path.join(gitDir, 'HEAD'), `ref: refs/heads/${head}\n`, 'utf8');
+  return `${sandbox.root}/${dir}`;
+}
+
+function checkoutBranch(sandbox, dir, head) {
+  fs.writeFileSync(path.join(sandbox.root, dir, '.git', 'HEAD'), `ref: refs/heads/${head}\n`, 'utf8');
+}
+
+/** Rewrite a worker transcript as if it ran in `cwd` on `branch` (`''`: no branch recorded). */
+function moveWorker(sandbox, agentId, cwd, branch) {
+  const file = path.join(sandbox.transcriptsDir, SESSION_ID, 'subagents', `agent-${agentId}.jsonl`);
+  const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+  const moved = lines.map((line) => {
+    const { gitBranch: _branch, ...rest } = JSON.parse(line);
+    return JSON.stringify({ ...rest, cwd, ...(branch ? { gitBranch: branch } : {}) });
+  });
+  fs.writeFileSync(file, `${moved.join('\n')}\n`, 'utf8');
+}
+
+test("a worker on main under a fix/page-pass-12b parent takes the parent's phase-12b", () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    checkoutBranch(sandbox, 'repos/bb2dash', 'fix/page-pass-12b');
+    const workerCwd = addCheckout(sandbox, 'repos/bb2dash-main', 'main');
+    moveWorker(sandbox, 'c0ffee01', workerCwd, 'main');
+
+    const outcome = stopIn(sandbox, transcriptPath, 'c0ffee01', workerCwd);
+    assert.equal(outcome.written, true, `${outcome.action}: ${outcome.skip}`);
+
+    const child = fieldsAt(sandbox, WORKER_ONE);
+    assert.equal(child.branch, 'main', 'the branch stays the worker’s own');
+    assert.equal(child.phase, 'phase-12b');
+    assert.equal(child.tags[0], 'phase-12b', 'the inherited phase takes the first tag slot');
+    assert.ok(child.tags.length <= 5);
+    assert.match(readNote(sandbox, WORKER_ONE), /\| Phase \| phase-12b \|/);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('a worker on feat/db-hygiene-15-runner keeps its own phase-15 under a parent in another phase', () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    checkoutBranch(sandbox, 'repos/bb2dash', 'fix/page-pass-12b');
+    const workerCwd = addCheckout(sandbox, 'repos/bb2dash-wt-runner', 'feat/db-hygiene-15-runner');
+    moveWorker(sandbox, 'c0ffee01', workerCwd, 'feat/db-hygiene-15-runner');
+
+    const outcome = stopIn(sandbox, transcriptPath, 'c0ffee01', workerCwd);
+    assert.equal(outcome.written, true, `${outcome.action}: ${outcome.skip}`);
+
+    const child = fieldsAt(sandbox, WORKER_ONE);
+    assert.equal(child.phase, 'phase-15');
+    assert.ok(child.tags.includes('phase-15'));
+    assert.ok(!child.tags.includes('phase-12b'));
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test("a workflow worker whose cwd is a Claude Code folder takes the parent transcript's repo", () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    const workflowDir = `home/.claude/projects/C--Users-stack-projects-bb2dash/${SESSION_ID}/subagents/workflows/wf-1`;
+    fs.mkdirSync(path.join(sandbox.root, workflowDir), { recursive: true });
+    const workerCwd = `${sandbox.root}/${workflowDir}`;
+    moveWorker(sandbox, 'c0ffee01', workerCwd, '');
+
+    const outcome = stopIn(sandbox, transcriptPath, 'c0ffee01', workerCwd);
+    assert.equal(outcome.written, true, `${outcome.action}: ${outcome.skip}`);
+
+    const child = fieldsAt(sandbox, WORKER_ONE);
+    assert.equal(child.cwd, workerCwd, 'where the worker ran stays on the note');
+    assert.equal(child.repo, 'emstacho-su/bb2dash');
+    assert.equal(child.collection, 'bb2dash');
+    // The parent's checkout is on feat/phase7-retrieval, so its phase comes too.
+    assert.equal(child.phase, 'phase-7');
+    assert.match(readNote(sandbox, WORKER_ONE), /\| Repo \| emstacho-su\/bb2dash \|/);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test("a worker with no phase of its own under a parent with none stays phase ''", () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    checkoutBranch(sandbox, 'repos/bb2dash', 'main');
+    const workerCwd = addCheckout(sandbox, 'repos/bb2dash-main', 'main');
+    moveWorker(sandbox, 'c0ffee01', workerCwd, 'main');
+
+    stopIn(sandbox, transcriptPath, 'c0ffee01', workerCwd);
+    const child = fieldsAt(sandbox, WORKER_ONE);
+    assert.equal(child.phase, '');
+    assert.ok(!child.tags.some((tag) => /^phase-\d/.test(tag)));
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('parentPlacement reports the repo and the phase the parent checkout yields', () => {
+  const sandbox = createSandbox();
+  try {
+    const transcriptPath = installParent(sandbox);
+    checkoutBranch(sandbox, 'repos/bb2dash', 'feat/grades-10a');
+    const agent = path.join(sandbox.transcriptsDir, SESSION_ID, 'subagents', 'agent-c0ffee01.jsonl');
+    const placed = parentPlacement({ input: { sessionId: SESSION_ID, transcriptPath }, agentTranscriptPath: agent, vaultRoot: sandbox.vaultRoot });
+    assert.equal(placed.repo, 'emstacho-su/bb2dash');
+    assert.equal(placed.phase, 'phase-10a');
+  } finally {
+    sandbox.cleanup();
+  }
+});
