@@ -16,6 +16,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import * as backfillFields from '../lib/backfill-fields.mjs';
 import { REPORT_KEYS, parseRelocation, runBackfill } from '../lib/backfill-fields.mjs';
 import { FIELD_SPEC, parseFrontmatter } from '../lib/frontmatter.mjs';
 import { renderFacts, renderNote } from '../lib/note.mjs';
@@ -495,6 +496,159 @@ test('--report counts the projected state: every key, and the over-cap and index
     assert.equal(report.phase_underivable_indexed, report.phase_underivable - 1, 'the SDK note is not indexed');
     assert.ok(report.repo_empty >= 4, 'repo_empty counts the vault as it is, before the run');
   });
+});
+
+// ------------------------------------------------------ former home (estac)
+
+/**
+ * A sandbox shaped like the real machines: the checkout under the current
+ * home, and notes captured on the old laptop whose user folder differs
+ * (`C:/Users/estac` there, `C:/Users/stack` here; bb2dash DECISIONS
+ * 2026-09-29). Nothing under the former home exists on disk, as on this laptop.
+ */
+function createHomesSandbox() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'backfill-homes-')).replace(/\\/g, '/');
+  const home = `${root}/Users/stack`;
+  const former = `${root}/Users/estac`;
+  const checkout = `${home}/projects/bb2dash`;
+  fs.mkdirSync(`${checkout}/.git`, { recursive: true });
+  fs.writeFileSync(`${checkout}/.git/config`, `[remote "origin"]\n\turl = https://github.com/${BB2DASH}.git\n`, 'utf8');
+  fs.writeFileSync(`${checkout}/.git/HEAD`, 'ref: refs/heads/main\n', 'utf8');
+  fs.mkdirSync(`${root}/vault/${SESSIONS}`, { recursive: true });
+  return {
+    root, home, former, checkout,
+    vault: `${root}/vault`,
+    backup: `${root}/archive/backfill`,
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+const FORMER = Object.freeze({
+  worktree: 'a0000001-0000-4000-8000-000000000001',
+  parent: 'a0000002-0000-4000-8000-000000000002',
+  memory: 'a0000003-0000-4000-8000-000000000003',
+  onedrive: 'a0000004-0000-4000-8000-000000000004',
+  onedriveBelow: 'a0000005-0000-4000-8000-000000000005',
+  absolute: 'a0000006-0000-4000-8000-000000000006',
+  otherRepo: 'a0000007-0000-4000-8000-000000000007',
+  otherMemory: 'a0000008-0000-4000-8000-000000000008',
+});
+
+function buildFormerHomeVault(sandbox) {
+  const { former, home } = sandbox;
+  const oldCheckout = `${former}/projects/bb2dash`;
+  const oldProject = `${former}/.claude/projects/${encode(oldCheckout)}`;
+  const oldOneDrive = `${former}/OneDrive - Syracuse University/.fall2026/.projects2026/bb2dash`;
+  const put = (id, fields, name = `${id}.md`) => writeNote(sandbox, `${SESSIONS}/${name}`, noteText({ id: `session-${id}`, session_id: id, repo: '', branch: '', tags: ['unclassified'], ...fields }));
+
+  put(FORMER.worktree, { cwd: `${former}/projects/bb2dash-wt-p11`, branch: 'feat/planner-11' });
+  put(FORMER.parent, { cwd: `${former}/projects/bb2dash-wt-12b`, branch: 'fix/page-pass-12b', child_sessions: [`session-${FORMER.parent}--${WORKFLOW_AGENT}`] });
+  put(FORMER.parent, { parent_session: FORMER.parent, cwd: `${oldProject}/${FORMER.parent}/subagents/workflows/wf-1`, agent_type: 'workflow' }, `${FORMER.parent}--${WORKFLOW_AGENT}.md`);
+  put(FORMER.memory, { cwd: `${oldProject}/memory` });
+  put(FORMER.onedrive, { cwd: oldOneDrive });
+  put(FORMER.onedriveBelow, { cwd: `${oldOneDrive}/course context/IST.466` });
+  put(FORMER.absolute, {
+    repo: BB2DASH, cwd: `${former}/projects/bb2dash-wt-p11`,
+    files_modified: [
+      `${former}/projects/bb2dash-wt-p11`,
+      `${former}/projects/bb2dash-wt-p11/web/src/app/planner/page.tsx`,
+      `${oldCheckout}/db/migrations/050_planner.sql`,
+      oldCheckout,
+      `${home}/projects/bb2dash`,
+      `${oldOneDrive}/ingest/bb_crawler.js`,
+    ],
+  });
+  // Never guessed: another repo under the former home, and another project's memory folder.
+  put(FORMER.otherRepo, { cwd: `${former}/projects/some-other-repo` });
+  put(FORMER.otherMemory, { cwd: `${former}/.claude/projects/${encode(`${former}/projects/some-other-repo`)}/memory` });
+}
+
+function formerOptions(sandbox, extra = {}) {
+  return {
+    vaultRoot: sandbox.vault,
+    backupDir: sandbox.backup,
+    checkout: sandbox.checkout,
+    home: sandbox.home,
+    formerHomes: [sandbox.former],
+    projectsRoot: `${sandbox.home}/.claude/projects`,
+    machine: 'stack-laptop',
+    runGit: () => ({ ok: false, stdout: '', error: 'no git in the fixture' }),
+    runGh: () => ({ ok: true, stdout: '[]' }),
+    ...extra,
+  };
+}
+
+function withFormerHome(fn) {
+  const sandbox = createHomesSandbox();
+  try {
+    buildFormerHomeVault(sandbox);
+    runBackfill(formerOptions(sandbox, { dryRun: false }));
+    return fn(sandbox, (name) => fieldsOf(sandbox, `${SESSIONS}/${name}`).fields);
+  } finally {
+    sandbox.cleanup();
+  }
+}
+
+test('FORMER_HOMES names the old laptop user folder', () => {
+  assert.deepEqual([...(backfillFields.FORMER_HOMES ?? [])], ['C:/Users/estac']);
+});
+
+test('a bb2dash-wt-* cwd under a former home takes the main checkout origin', () => {
+  withFormerHome((sandbox, fields) => {
+    const note = fields(`${FORMER.worktree}.md`);
+    assert.equal(note.repo, BB2DASH);
+    assert.equal(note.phase, 'phase-11');
+  });
+});
+
+test("a workflow agent under a former home's bb2dash project folder takes its parent note's repo", () => {
+  withFormerHome((sandbox, fields) => {
+    assert.equal(fields(`${FORMER.parent}.md`).repo, BB2DASH);
+    assert.equal(fields(`${FORMER.parent}--${WORKFLOW_AGENT}.md`).repo, BB2DASH);
+  });
+});
+
+test("a cwd in bb2dash's own Claude project memory folder under a former home is bb2dash", () => {
+  withFormerHome((sandbox, fields) => {
+    assert.equal(fields(`${FORMER.memory}.md`).repo, BB2DASH);
+  });
+});
+
+test('the OneDrive checkout under a former home, and a path below it, are bb2dash', () => {
+  withFormerHome((sandbox, fields) => {
+    assert.equal(fields(`${FORMER.onedrive}.md`).repo, BB2DASH);
+    assert.equal(fields(`${FORMER.onedriveBelow}.md`).repo, BB2DASH);
+  });
+});
+
+test('absolute files_modified under a former home go repo-relative, a checkout or worktree root to "."', () => {
+  withFormerHome((sandbox, fields) => {
+    assert.deepEqual(fields(`${FORMER.absolute}.md`).files_modified, [
+      '.',
+      'web/src/app/planner/page.tsx',
+      'db/migrations/050_planner.sql',
+      'ingest/bb_crawler.js',
+    ]);
+  });
+});
+
+test('a former-home cwd that is not bb2dash stays repo: "" (never guessed)', () => {
+  withFormerHome((sandbox, fields) => {
+    assert.equal(fields(`${FORMER.otherRepo}.md`).repo, '');
+    assert.equal(fields(`${FORMER.otherMemory}.md`).repo, '');
+  });
+});
+
+test('the former-home report projects no underivable bb2dash repo and no absolute path', () => {
+  const sandbox = createHomesSandbox();
+  try {
+    buildFormerHomeVault(sandbox);
+    const { report } = runBackfill(formerOptions(sandbox, { dryRun: true }));
+    assert.equal(report.repo_empty_underivable, 2, 'only the two notes that are not bb2dash');
+    assert.equal(report.absolute_files_modified, 0);
+  } finally {
+    sandbox.cleanup();
+  }
 });
 
 test('the CLI: --dry-run --report --json --no-network prints the report and writes nothing', () => {
