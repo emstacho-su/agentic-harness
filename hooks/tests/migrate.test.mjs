@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { GENERATOR_VERSION } from '../lib/constants.mjs';
 import { parseFrontmatter, serializeFrontmatter } from '../lib/frontmatter.mjs';
 import { COLLECTION_OVERRIDES, migrateNote, planNote, rewriteBody } from '../lib/migrate.mjs';
 import { makeRepoResolver } from '../lib/paths.mjs';
@@ -191,7 +192,7 @@ test('a migrated note gains schema v2 and loses its scratchpad paths', () => {
     assert.deepEqual(fields.docs_touched, ['docs/architecture.md', 'docs/retrieval.md']);
     assert.ok(fields.files_modified.every((file) => !file.includes('scratchpad')));
     assert.ok(fields.tags.length > 0 && fields.tags.length <= 5);
-    assert.match(fields.generator, /2\.3\.0 \(migrated\)/);
+    assert.equal(fields.generator, `session-capture.mjs ${GENERATOR_VERSION} (migrated)`);
     assert.deepEqual(emptied, ['parent_session', 'child_sessions', 'artifacts']);
   } finally {
     sandbox.cleanup();
@@ -426,6 +427,25 @@ test('a retired folder whose hub is still the legacy index.md is removed too (re
     const output = runMigration(sandbox, ['--backup', path.join(sandbox.root, 'backup')]);
     assert.doesNotMatch(output, /unexpected contents/);
     assert.equal(fs.existsSync(retired), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('a migrated bb2dash note reads the bb2dash phase rules, not its PR titles (code review, PR #36)', () => {
+  const sandbox = createSandbox();
+  try {
+    installV1Notes(sandbox);
+    const note = loadNote(sandbox, 'bb2dash-retrieval', '2026-09-10-0e3b3d00.md');
+    const plan = { ...planNote({ note, resolveRepoFor: () => null }), repoFullName: 'emstacho-su/bb2dash' };
+    const { fields } = migrateNote({
+      note,
+      plan,
+      backfill: { commits: [], prs: [], branch: 'feat/grades-10a', prTitles: ['Phase 99 wrong'], notes: [] },
+      repoFor: makeRepoResolver(),
+    });
+    assert.equal(fields.repo, 'emstacho-su/bb2dash');
+    assert.equal(fields.phase, 'phase-10a');
   } finally {
     sandbox.cleanup();
   }

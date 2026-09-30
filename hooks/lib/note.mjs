@@ -130,6 +130,9 @@ export function buildFields(ctx) {
     // SC-1: the session's searches and the vault notes they returned.
     retrievals: ctx.retrievals ?? [],
     retrieved: ctx.retrieved ?? [],
+    // H-3: this render's classifier output, so the next merge knows which of
+    // `tags` the hook put there and may replace (at most MAX_HOOK_TAGS).
+    hook_tags: [...(ctx.tags ?? [])],
   };
 }
 

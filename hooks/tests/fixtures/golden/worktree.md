@@ -21,8 +21,9 @@ repos_touched:
 cwd: '__SANDBOX__/repos/bb2dash-wt-sl'
 cwds_seen:
   - '__SANDBOX__/repos/bb2dash-wt-sl'
-phase: ''
+phase: 'phase-9'
 tags:
+  - 'phase-9'
   - 'gui'
   - 'db'
   - 'validation'
@@ -45,7 +46,7 @@ agent: claude-code
 agent_type: ''
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.3.0'
+generator: 'session-capture.mjs 2.4.0'
 tools_used:
   Edit: 2
   Bash: 1
@@ -55,6 +56,11 @@ related: []
 machine: ''
 retrievals: []
 retrieved: []
+hook_tags:
+  - 'phase-9'
+  - 'gui'
+  - 'db'
+  - 'validation'
 ---
 
 # 2026-09-12 · bb2dash · In the sync-loop worktree: finish the
@@ -92,8 +98,8 @@ _The assistant's closing message, verbatim._
 | Repo | emstacho-su/bb2dash |
 | Branch | feat/sync-loop |
 | Worktree | bb2dash-wt-sl |
-| Phase | — |
-| Tags | `gui`, `db`, `validation` |
+| Phase | phase-9 |
+| Tags | `phase-9`, `gui`, `db`, `validation` |
 | Started | 2026-09-12T09:00:00.000Z |
 | Ended | 2026-09-12T09:31:00.000Z |
 | End reason | logout |

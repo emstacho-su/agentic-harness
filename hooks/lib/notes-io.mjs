@@ -57,16 +57,72 @@ export function readNote(notePath) {
  * a detached ingest process that loads a 130 MB embedding model to conclude the
  * hash is unchanged. One small read is much cheaper than that.
  *
+ * The text goes to a temporary file in the same folder, which is then renamed
+ * over the note (R-100, H-10). The hook never waits for a realm's lock — it
+ * must not block session exit — so the nightly sync may be staging this very
+ * folder; a rename means it reads the old note or the new one, never half of
+ * one. The temporary name starts with a dot and does not end `.md`, so neither
+ * Obsidian, the sweep's index nor a realm's sync paths take it for a note.
+ *
  * @returns {{ok: boolean, changed: boolean, error: string}}
  */
 export function persist(notePath, text) {
   try {
     if (isIdentical(notePath, text)) return { ok: true, changed: false, error: '' };
     fs.mkdirSync(path.dirname(notePath), { recursive: true });
-    fs.writeFileSync(notePath, text, 'utf8');
+    writeByRename(notePath, text);
     return { ok: true, changed: true, error: '' };
   } catch (err) {
     return { ok: false, changed: false, error: err?.code || err?.message || 'unknown' };
+  }
+}
+
+/**
+ * On Windows a rename onto a file another process has open (the sync's `git
+ * add`, an indexer, antivirus, Obsidian) fails with one of these while the
+ * handle is open. The rename is retried after each of these waits, 230 ms at
+ * most, paid only when something is in the way and well inside the hook's
+ * budget. Past that the write fails and says so; it is never done in place,
+ * because a half-written note is exactly what a concurrent stage must not see.
+ * The old note stays whole: a note that was never created is a candidate for
+ * the next sweep, and a merge that did not land is redone by the next capture.
+ */
+const TRANSIENT_RENAME_CODES = Object.freeze(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_RETRY_DELAYS_MS = Object.freeze([10, 20, 40, 80, 80]);
+
+function writeByRename(notePath, text) {
+  const temp = path.join(path.dirname(notePath), `.${path.basename(notePath)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(temp, text, { encoding: 'utf8', flag: 'wx' });
+    renameWithRetry(temp, notePath);
+  } catch (err) {
+    try {
+      fs.rmSync(temp, { force: true });
+    } catch {
+      /* the write's own error is the one worth reporting; a stray .tmp is not a note */
+    }
+    throw err;
+  }
+}
+
+function renameWithRetry(from, to) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (err) {
+      const transient = TRANSIENT_RENAME_CODES.includes(err?.code) && !isDirectory(to);
+      if (!transient || attempt >= RENAME_RETRY_DELAYS_MS.length) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+function isDirectory(file) {
+  try {
+    return fs.statSync(file).isDirectory();
+  } catch {
+    return false;
   }
 }
 

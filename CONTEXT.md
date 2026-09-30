@@ -4,8 +4,9 @@
 decisions already made. Do not re-litigate them; if something here looks wrong, report it rather than
 silently diverging.
 
-Last updated: 2026-09-27 (memory sprint unit C-b: curator status, history, scores and curation
-report, the weekly curator run; built, not live)
+Last updated: 2026-09-29 (bb2dash Phase 20, R-104: the realm vault, the machine file, the optional
+local store, the environment re-read on stack-laptop). Before that 2026-09-27 (memory sprint unit
+C-b: curator status, history, scores and curation report, the weekly curator run; built, not live)
 
 ---
 
@@ -45,7 +46,7 @@ or duplicating capability that is now native.
 | Location | schema `rag` | schema `public` |
 | Model | **`bge-small-en-v1.5`** (local fastembed) | **`gte-small`** (Supabase server-side) |
 | Dims | 384 | 384 |
-| State | **live — obsidian 472 docs (realms `projects` 464 / `classes` 8), 1,838 chunks; claude-mem 1,037 docs, 2,010 chunks**; every obsidian row carries `_ingest.realm` (2026-09-24) | **fully embedded** — 534/534 texts, 1,195 chunks; retrieval via Edge Function `search` + MCP server `bb2dash` (see bb2dash repo) |
+| State | **live — on 2026-09-24: obsidian 472 docs (realms `projects` 464 / `classes` 8), 1,838 chunks; claude-mem 1,037 docs, 2,010 chunks**; every obsidian row carries `_ingest.realm` (2026-09-24) | **fully embedded** — 534/534 texts, 1,195 chunks; retrieval via Edge Function `search` + MCP server `bb2dash` (see bb2dash repo) |
 
 **Both are 384-dim, so mixing them raises no error — it silently returns confidently-ranked garbage.**
 They are different vector spaces. A `bge` query vector must never be run against `gte` vectors or the
@@ -200,7 +201,8 @@ applies to anything added to that server later.
 
 ### 1. claude-mem history (already exported)
 
-`C:/Users/estac/.claude-archive/2026-09-09/claude-mem-export/`
+`~/.claude-archive/2026-09-09/claude-mem-export/` on the machine the reset ran on (imported once on
+2026-09-09; the archive is not on stack-laptop)
 
 | File | Rows | Notes |
 | --- | --- | --- |
@@ -255,37 +257,48 @@ otherwise a partial or interrupted run silently mass-deletes.
 
 ### 2. Obsidian vault (live)
 
-`C:/Users/estac/OneDrive - Syracuse University/vault/`. Markdown syncs through OneDrive safely;
-**binary indexes must never go there** (that combination previously caused file-lock failures).
+The folder the machine file `~/.harness/machine.env` names in `HARNESS_VAULT`
+(`C:/Users/stack/vault` on stack-laptop, whose `HARNESS_MACHINE` is `stack-laptop`). It left
+OneDrive on 2026-09-23 (`docs/vault-migration-requirements.md`). Its top-level folders are
+**realms**: each a git repository with a private remote and a committed `.realm` file naming it.
+`HARNESS_REALMS` lists the realms a machine may hold and whether each may leave it
+(`projects:push,classes:push,harness:push` on stack-laptop); a realm on disk it does not name stops
+the run. `hooks/sync-realms.mjs` commits, merge-pulls and pushes them (never a rebase, never a
+force), from the nightly job; the Obsidian Git plugin is not used. `.obsidian/` stays at the vault
+root, outside every realm, untracked. **Binary indexes never go in the vault.**
 
-Map to `source='obsidian'`, `external_id=<vault-relative path>`, `collection=<folder name>`.
+Map to `source='obsidian'`, `external_id=<frontmatter id, else vault-relative path>`,
+`collection=<second path segment>`.
 
 ### Vault layout — folder name IS the collection
 
 ```
 vault/
-  projects/
-    agentic-harness/     agentic-harness.md     sessions/  notes/  decisions/
-    ev-trainer/          ev-trainer.md          sessions/  notes/  decisions/
-    quant-edge-tracker/  quant-edge-tracker.md  sessions/  notes/  decisions/
-    bb2dash-retrieval/   bb2dash-retrieval.md   sessions/
-    misc/                misc.md                sessions/  notes/  decisions/
-  classes/
+  projects/              realm: one folder per repository
+    bb2dash/             bb2dash.md             sessions/  decisions/
+    quant-edge-tracker/  quant-edge-tracker.md  sessions/
+    misc/                misc.md                sessions/
+    …
+  classes/               realm: one folder per course
     ist323/  ist352/  ist466/  ist471/  ecn304/  geo103/     (Fall 2026)
-                         <course>.md            sessions/  notes/  materials/
-    ist335/              ist335.md              sessions/  notes/          (prior term)
-  daily/                 one note per day, from templates/daily.md
-  templates/             never ingested
-  .obsidian/             never ingested
+                         <course>.md            sessions/  materials/
+    ist335/              ist335.md                                   (prior term)
+    attachments/         the realm's binary files
+  harness/               realm: this repository's own sessions
+    agentic-harness/     agentic-harness.md     sessions/
+  .obsidian/             vault root, outside every realm; never ingested
 ```
+
+Subfolders exist once something is written into them. A vault-root `templates/`, where a vault
+has one, is never ingested.
 
 The second path segment (`ev-trainer`, `ist335`) becomes `documents.collection` **verbatim** — folder
 casing is the collection casing, and `filter_collection` matches with `=`. Files land as
 markdown **first**, get embedded **second** — the vault stays human-readable and git-friendly, and
 survives any change of tooling underneath it.
 
-**Registered in Obsidian 2026-09-10** (`%APPDATA%/obsidian/obsidian.json`; Obsidian 1.13.7 created
-`.obsidian/`). Daily Notes and Templates core plugins point at `daily/` and `templates/`.
+**Registered in Obsidian** (`%APPDATA%/obsidian/obsidian.json` names `C:Usersstackault` on
+stack-laptop, checked 2026-09-29), with the Front Matter Title community plugin enabled.
 
 Conventions, all live:
 
@@ -317,7 +330,7 @@ Conventions, all live:
   where the material is *read*; retrieval over it stays in the bb2dash store via the `bb2dash` MCP
   server. Embedding it into harness-memory would put gte-small content into a bge-small index.
   The exporter refuses any `SUPABASE_URL` that is not the bb2dash project and only ever reads.
-  Run it with `--env-file C:/Users/estac/projects/bb2dash/.env`; it never merges that file into the
+  Run it with `--env-file C:/Users/you/projects/bb2dash/.env`; it never merges that file into the
   process environment. 63 of 64 files exported 2026-09-10 (one is `text_status = na`).
 
 ### Session capture: SessionEnd hook → vault → ingest
@@ -327,7 +340,7 @@ The capability that claude-mem used to provide and that nothing currently replac
 1. A `SessionEnd` hook fires when a session ends.
 2. It reads that session's transcript (Claude Code writes JSONL under
    `~/.claude/projects/<sanitised-cwd>/<session-id>.jsonl`).
-3. It writes a markdown summary to `vault/<projects|classes>/<collection>/sessions/<session_id>.md`
+3. It writes a markdown summary to `<vault>/<realm>/<collection>/sessions/<session_id>.md`
    (a subagent's note is `<session_id>--<agent_id>.md`)
    with YAML frontmatter carrying `collection`, `session_id`, `date`, and files touched.
 4. The next ingest run embeds it. `content_hash` means re-running is free.
@@ -350,11 +363,15 @@ Notes carry `captured_by: hook | sweep | skill` and `origin`. See `hooks/README.
 
 ## Environment
 
+Read on stack-laptop, 2026-09-29:
+
 - Windows 11. Both PowerShell and Git Bash available.
-- `uv` 0.9.26 with a uv-managed Python 3.12 (`ingest/.python-version`).
-- Node 24.13.0 at `C:/Program Files/nodejs/node.exe`.
-- `sqlite3` and `gh` on PATH. `gh` authed as `emstacho-su`.
-- Docker installed but **daemon not running**, 0 images. Do not depend on it.
+- `uv` 0.12.19 with a uv-managed Python 3.12 (`ingest/.python-version`).
+- Node 24.19.0 at `C:/Program Files/nodejs/node.exe`.
+- `gh` 2.101.0 on PATH, authed as `emstacho-su`. `sqlite3` is not on PATH.
+- Docker Desktop running, with the optional local store's container `harness-postgres`
+  (`pgvector/pgvector:0.8.6-pg17`) up; the repo `.env`'s `DATABASE_URL` still points at the
+  Supabase pooler, so `harness-memory` is the store this machine ingests into.
 
 ### ⚠ Windows path gotcha — this has already broken two commands
 
@@ -374,8 +391,8 @@ DATABASE_URL           # postgresql://postgres.hqkytnyiiuxovnnyixye:…@aws-0-us
 SUPABASE_DB_PASSWORD   # raw password; DATABASE_URL is assembled from it
 ```
 
-bb2dash's `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE` **moved out** to
-`C:/Users/estac/projects/bb2dash/.env`. A stale service-role key for the wrong project sitting beside
+bb2dash's `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE` **moved out** to the bb2dash checkout's own
+`.env` (`~/projects/bb2dash/.env`). A stale service-role key for the wrong project sitting beside
 the right one is a live footgun — do not reintroduce them here.
 
 Never hardcode, never commit, never print a value. Schema changes go through the Supabase MCP
@@ -420,17 +437,18 @@ agentic-harness/
   README.md         <- primary user-facing doc
   docs/             <- architecture + diagrams
   db/migrations/    <- SQL mirroring what is applied to Supabase
+  db/docker-compose.yml <- the optional local store (Docker pgvector)
   ingest/           <- Python ingestion pipeline (uv)
   mcp-server/       <- Node/TS stdio MCP retrieval server
   hooks/            <- SessionEnd capture hook, nightly transcript sweep, checkpoint collector (Node, zero deps)
-  scripts/          <- PowerShell: nightly ingest + Task Scheduler registration
+  scripts/          <- nightly ingest, checkpoint collector, weekly curator, bootstrap, store backup (PowerShell + sh)
   skills/           <- /checkpoint skill for cloud sessions (copied into .claude/skills/)
   certs/            <- Supabase public root CA, pinned for TLS
   .harness/         <- checkpoint notes committed by cloud sessions, collected into the vault
 ```
 
-Repo lives at `C:/Users/estac/agentic-harness`, deliberately **outside OneDrive** — `.git` and
-OneDrive sync corrupt each other. Branch `main`. Public at
+Repo lives at `~/agentic-harness` (`C:/Users/stack/agentic-harness` on stack-laptop), deliberately
+**outside OneDrive** — `.git` and OneDrive sync corrupt each other. Branch `main`. Public at
 `https://github.com/emstacho-su/agentic-harness`, MIT.
 
 ## Conventions
@@ -446,7 +464,7 @@ OneDrive sync corrupt each other. Branch `main`. Public at
 
 | Phase | State |
 | --- | --- |
-| 0 Archive | done — `~/.claude-archive/2026-09-09/`, 839 files, 210 MB |
+| 0 Archive | done — `~/.claude-archive/2026-09-09/` on the machine the reset ran on, 839 files, 210 MB |
 | 1 Export claude-mem | done — 4 JSON files + verified snapshot |
 | 2 Teardown + rebuild harness | done — 71→12 skills, 58→0 agents, 60→0 commands, 22→1 hooks |
 | 3 pgvector schema | done — `rag` schema live, verified |
@@ -458,3 +476,5 @@ OneDrive sync corrupt each other. Branch `main`. Public at
 | 9 Docs repo | done — public on GitHub, docs rewritten for the harness-memory relocation |
 | Memory sprint | proposed 2026-09-24 — `docs/memory-sprint-requirements.md`: phases N (hub names), H (`harness` realm, SessionStart brief, portable `~/.claude`), P (retrieval provenance), Q (store audit, location matrix), C (read-only curator); Hermes stays optional, the curator is tool-neutral |
 | Curator C-a / C-b | built, not live (fixtures and a fake judge only) — `uv run ingest curate` stages inventory, extract, ledger, status, history and report (ingest/README.md, *Curator*); both `curate` migrations (`20260927200342_curate_schema`, `20260927214500_curate_status_scores`) are applied at L7; the weekly task (`scripts/weekly-curate.ps1|sh`, Sunday 04:30) is registered by Stack at L7 |
+| Vault into realms | moved out of OneDrive 2026-09-23; R-D1 done 2026-09-24; open: R-B1's three-night push check and R-B4's credential test (`docs/vault-migration-requirements.md`), then Phases E and F. stack-laptop's nightly runs `-RealmSync DryRun` (checked 2026-09-29) |
+| V-2 session capture | built 2026-09-16; acceptance walk and closure in bb2dash Phase 20 (brief 101), in progress on `feat/v2-closure` |

@@ -15,15 +15,15 @@ import test from 'node:test';
 
 import { MAX_HOOK_TAGS } from '../lib/constants.mjs';
 import { parseFrontmatter } from '../lib/frontmatter.mjs';
-import { classify, derivePhase } from '../lib/tags.mjs';
-import { UNCLASSIFIED } from '../lib/vocabulary.mjs';
+import { classify, derivePhase, withPhaseTag } from '../lib/tags.mjs';
+import { PHASE_TAG_PATTERN, UNCLASSIFIED } from '../lib/vocabulary.mjs';
 import { GOLDEN_DIR } from './helpers/sandbox.mjs';
 import { SCENARIOS } from './helpers/scenarios.mjs';
 import { parseTagsDoc } from './helpers/tags-doc.mjs';
 
 const doc = parseTagsDoc();
 const DOCUMENTED = new Set([...doc.areas, ...doc.activities, ...doc.sentinel]);
-const PHASE_FAMILY = /^phase-([1-9][0-9]?)$/;
+const PHASE_FAMILY = /^phase-([1-9][0-9]?)([a-z]?)$/;
 
 function documented(tag) {
   return DOCUMENTED.has(tag) || PHASE_FAMILY.test(tag);
@@ -170,4 +170,77 @@ test('a planning brief filed in a per-sprint folder still names its phase', () =
 test('a planning file with no phase in its name names no phase; the branch or PR title carries it', () => {
   assert.equal(derivePhase({ docsTouched: ['docs/planning/sprint-2/90_SPRINT2_INTAKE.md'] }), '');
   assert.equal(derivePhase({ branch: 'feat/phase-14-containers', docsTouched: ['docs/planning/sprint-2/90_SPRINT2_INTAKE.md'] }), 'phase-14');
+});
+
+// ------------------------------------------------ H-2 through the classifier
+//
+// Brief 101's frozen rows (H-2), bb2dash unless a repo is named, driven through
+// `classify`: the phase lands in `phase` and leads `tags`, and a row that reads
+// `''` carries no phase tag at all. phase-aliases.test.mjs holds the same rows
+// against `derivePhase`.
+
+const BB2DASH = 'emstacho-su/bb2dash';
+const HARNESS = 'emstacho-su/agentic-harness';
+const BRIEF_80C = 'docs/planning/sprint-1-hub/briefs/80c_PHASE12B_page_pass.md';
+const BRIEF_82 = 'docs/planning/sprint-2/82_PHASE14_containers.md';
+
+const H2_ROWS = Object.freeze([
+  ['feat/retrieval-polish', 'phase-7'],
+  ['feat/retrieval-polish-db', 'phase-7'],
+  ['feat/course-dimension', 'phase-8'],
+  ['feat/sync-loop', 'phase-9'],
+  ['feat/grades-10a', 'phase-10a'],
+  ['feat/grades-10b', 'phase-10b'],
+  ['feat/planner-11', 'phase-11'],
+  ['feat/planner-events-11b', 'phase-11b'],
+  ['feat/electron-12', 'phase-12'],
+  ['fix/page-pass-12b', 'phase-12b'],
+  ['fix/page-pass-12b-tail', 'phase-12b'],
+  ['fix/page-pass-12b-db', 'phase-12b'],
+  ['docs/phase6-signoff', 'phase-6'],
+  ['docs/phase12b-merged', 'phase-12b'],
+  ['docs/phase12b-14-briefs', ''],
+  ['feat/retrieval-mcp', ''],
+  ['docs/mvp-dod', ''],
+  ['feat/inbox-apply', ''],
+  ['chore/sprint1-closeout', '', { prTitles: ['chore: sprint 1 close-out — planning docs by sprint, Phase 13 skipped, sprint 2 intake'] }],
+  ['feat/db-hygiene-15', 'phase-15'],
+  ['feat/grades-v1-16', 'phase-16'],
+  ['feat/web-polish-17', 'phase-17'],
+  ['feat/ingest-corpus-18', 'phase-18'],
+  ['feat/content-history-19', 'phase-19'],
+  ['feat/containers-14', 'phase-14'],
+  ['docs/harness-closure-20', 'phase-20'],
+  ['fix/inbox-apply-vault-20', 'phase-20'],
+  ['docs/sprint2-planning', ''],
+  ['main', ''],
+  ['main', 'phase-12b', { docsTouched: [BRIEF_80C] }],
+  ['main', '', { docsTouched: [BRIEF_80C, BRIEF_82] }],
+  ['feat/containers', '', { repo: HARNESS }],
+  ['feat/v2-closure', '', { repo: HARNESS }],
+]);
+
+for (const [branch, expected, extra = {}] of H2_ROWS) {
+  const label = `${branch}${extra.repo ? ` (${extra.repo})` : ''}${extra.docsTouched ? ` + ${extra.docsTouched.length} doc(s)` : ''}`;
+  test(`classify, H-2: ${label} -> ${expected || "''"}`, () => {
+    const result = classify({ repo: BB2DASH, ...extra, branch, files: [{ path: 'README.md', count: 1 }] });
+    assert.equal(result.phase, expected);
+    const phaseTags = result.tags.filter((tag) => PHASE_FAMILY.test(tag));
+    assert.deepEqual(phaseTags, expected ? [expected] : []);
+    if (expected) assert.equal(result.tags[0], expected, 'the phase takes the first slot');
+  });
+}
+
+test('the phase family these tests accept is the one the vocabulary declares', () => {
+  assert.equal(String(PHASE_FAMILY), String(PHASE_TAG_PATTERN));
+});
+
+test('withPhaseTag puts the phase in slot one, replaces any other, and keeps the cap', () => {
+  assert.deepEqual(withPhaseTag(['db', 'gui'], 'phase-12b'), ['phase-12b', 'db', 'gui']);
+  assert.deepEqual(withPhaseTag(['phase-7', 'db'], 'phase-9'), ['phase-9', 'db']);
+  assert.deepEqual(withPhaseTag(['phase-7', 'db'], ''), ['db']);
+  assert.deepEqual(withPhaseTag([UNCLASSIFIED], 'phase-7'), ['phase-7']);
+  assert.deepEqual(withPhaseTag([UNCLASSIFIED], ''), [UNCLASSIFIED]);
+  assert.deepEqual(withPhaseTag(['phase-7'], ''), [UNCLASSIFIED]);
+  assert.deepEqual(withPhaseTag(['a', 'b', 'c', 'd', 'e'], 'phase-1'), ['phase-1', 'a', 'b', 'c', 'd']);
 });

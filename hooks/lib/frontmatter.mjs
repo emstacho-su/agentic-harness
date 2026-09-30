@@ -91,6 +91,9 @@ export const FIELD_SPEC = Object.freeze([
   // vault notes it got back. Appended, same reason.
   ['retrievals', RECORDS],
   ['retrieved', LIST],
+  // The tags the hook raised on its latest render (H-3, R-102): the only tags a
+  // merge may replace; anything else in `tags` is a hand tag. Appended, same reason.
+  ['hook_tags', LIST],
 ]);
 
 /** Field names in emit order. Handy for tests and for the migration. */

@@ -43,7 +43,7 @@ agent: claude-code
 agent_type: ''
 origin: ''
 captured_by: 'hook'
-generator: 'session-capture.mjs 2.3.0'
+generator: 'session-capture.mjs 2.4.0'
 tools_used:
   Bash: 1
   Write: 1
@@ -52,6 +52,9 @@ related: []
 machine: ''
 retrievals: []
 retrieved: []
+hook_tags:
+  - 'harness'
+  - 'validation'
 ---
 
 # 2026-09-15 · agentic-harness · You are W-H1. Build the hook
