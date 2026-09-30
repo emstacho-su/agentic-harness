@@ -11,16 +11,6 @@
  * credential in OneDrive and then in Postgres.
  */
 
-const NAMED_ASSIGNMENT = 'named-secret-assignment';
-
-/**
- * How many lookalike assignments deep (`path=pattern=…`) a value is searched
- * for a nested secret assignment. Past this the value is treated as a secret:
- * each level rescans the rest of the text, so an unbounded chain of
- * `path=path=…` is quadratic (100,000 links took 36 s against a 1.2 s budget).
- */
-const MAX_NESTED_ASSIGNMENT_DEPTH = 8;
-
 export const SECRET_RULES = Object.freeze([
   // KEY=value / KEY: value / "key": "value" where the key name signals a secret.
   //
@@ -33,18 +23,12 @@ export const SECRET_RULES = Object.freeze([
   //   - the key may be quoted, so a JSON or YAML mapping is covered and not
   //     just a shell assignment;
   //   - a quoted value may contain spaces, because a passphrase usually does.
-  //
-  // `PAT` in the key counts as a token (`GHPAT`, `mypat`, `PATS`) except
-  // inside a lookalike word (`path`, `Pattern`, `dispatch`, `compat`): see
-  // `namesASecret`. Such a key's value is left as it is, apart from any
-  // assignment nested inside it (`path=PASSWORD=…`), searched to
-  // MAX_NESTED_ASSIGNMENT_DEPTH.
   {
-    name: NAMED_ASSIGNMENT,
+    name: 'named-secret-assignment',
     re: /(["']?)\b([A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|SERVICE[_-]?ROLE|ANON[_-]?KEY|AUTH[_-]?KEY|BEARER|DSN|APIKEY|PAT)[A-Za-z0-9_]*)\1(\s*[:=]\s*)(?:"[^"\n]{4,}"|'[^'\n]{4,}'|[^\s"'`,;)]{4,})/gi,
-    to: (m, quote, key, sep) => redactAssignment([m, quote, key, sep], 0),
+    to: (_m, quote, key, sep) => `${quote}${key}${quote}${sep}[REDACTED]`,
     // Everything after the separator, minus the quotes a quoted value carries.
-    secret: (m) => unquote(assignedValue(m)),
+    secret: (m) => unquote(m[0].slice(m[1].length * 2 + m[2].length + m[3].length)),
   },
   // Connection strings carrying an inline password: postgresql://user:pw@host.
   {
@@ -86,26 +70,6 @@ export const SECRET_RULES = Object.freeze([
     secret: (m) => withoutFirstWord(m[0]),
   },
 ]);
-
-/** Everything after the separator of a named-assignment match, quotes and all. */
-function assignedValue(m) {
-  return m[0].slice(m[1].length * 2 + m[2].length + m[3].length);
-}
-
-/** Is this named-assignment match a secret, or a lookalike whose value is searched instead? */
-function treatAsSecret(key, depth) {
-  return namesASecret(key) || depth >= MAX_NESTED_ASSIGNMENT_DEPTH;
-}
-
-/** One named-assignment match, redacted: the value, or the assignments nested in it. */
-function redactAssignment(m, depth) {
-  const [, quote, key, sep] = m;
-  const head = `${quote}${key}${quote}${sep}`;
-  if (treatAsSecret(key, depth)) return `${head}[REDACTED]`;
-  const rule = SECRET_RULES.find((candidate) => candidate.name === NAMED_ASSIGNMENT);
-  const nested = new RegExp(rule.re.source, rule.re.flags);
-  return head + assignedValue(m).replace(nested, (...inner) => redactAssignment(inner, depth + 1));
-}
 
 function unquote(value) {
   const quote = value[0];
@@ -219,20 +183,11 @@ function isLiteralSecret(value) {
  * @returns {string[]} distinct values, each at least MIN_LITERAL_SECRET_CHARS long
  */
 export function findSecretValues(text) {
-  return collectSecretValues(text, 0);
-}
-
-function collectSecretValues(text, depth) {
   if (typeof text !== 'string' || text === '') return [];
   const found = new Set();
   for (const rule of SECRET_RULES) {
     try {
       for (const match of text.matchAll(rule.re)) {
-        if (rule.name === NAMED_ASSIGNMENT && !treatAsSecret(match[2], depth)) {
-          // `path: …` is not a secret, but its value may hold an assignment that is.
-          for (const nested of collectSecretValues(assignedValue(match), depth + 1)) found.add(nested);
-          continue;
-        }
         const value = String(rule.secret ? rule.secret(match) : match[0]).trim();
         if (isLiteralSecret(value)) found.add(value);
       }
@@ -251,12 +206,11 @@ function collectSecretValues(text, depth) {
  * redaction in a note. Built for the claude-config pre-commit scan (R-H5), which
  * must say where a secret is without printing it.
  *
- * `PAT` in a key name counts as a token except inside a lookalike word
- * (`output_path`, `pattern`, `dispatch`) — the same reading `redact()` and
- * `findSecretValues` use. A commit gate that fired on
- * every `*_path = …` in a skill's scripts (165 of 180 hits on the real
- * `~/.claude`) could never pass, and a note that lost every `path:` value,
- * and every later mention of it, lost the file names it was about.
+ * One reading differs, and only here: `PAT` in a key name counts only as a word
+ * (`GITHUB_PAT`, `githubPat`), not as the letters inside `output_path`,
+ * `pattern` or `dispatch`. Redaction stays greedy — a spurious `[REDACTED]`
+ * costs a note nothing — but a commit gate that fires on every `*_path = …` in
+ * a skill's scripts (165 of 180 hits on the real `~/.claude`) can never pass.
  *
  * A rule that throws is where this parts company with `redact()`. There a
  * skipped rule costs a little redaction; here it would be a scan that reports
@@ -284,42 +238,36 @@ function ruleMatches(text, rule) {
   for (const match of text.matchAll(rule.re)) {
     const value = String(rule.secret ? rule.secret(match) : match[0]).trim();
     if (!isLiteralSecret(value)) continue;
-    if (rule.name === NAMED_ASSIGNMENT && !namesASecret(match[2])) continue;
+    if (rule.name === 'named-secret-assignment' && !namesASecret(match[2])) continue;
     matches.push({ rule: rule.name, index: match.index });
   }
   return matches;
 }
 
-/**
- * Whole words that contain `pat` without being a token: path (`PATHEXT`,
- * `classpath`, `paths`), pattern, patch, patient, spatial, dispatch, compat
- * (`COMPATIBILITY`).
- *
- * The list names the lookalike words, not the tokens, and not the letter after
- * `pat`: keying on that letter let `PATTKN`, `patTest` and `PATTMP` through.
- * Any `pat` outside these words stays a secret. Known residue, masked though
- * contrived: a key that really spells one of the words (`GHPATH`, `ECOMPAT`).
- */
-const LOOKALIKE_WORDS = /dispatch|compat|spatial|patient|pattern|patch|path/gi;
+const isLetter = (ch) => /[A-Za-z]/.test(ch ?? '');
+const isLower = (ch) => /[a-z]/.test(ch ?? '');
+const isUpper = (ch) => /[A-Z]/.test(ch ?? '');
 
 /**
- * A lookalike only when the word is one case run after its first letter:
- * `path`, `PATH` and `videosPath` are words, but `patHeader` and
- * `patChain` are `pat` followed by a camelCase word of their own.
+ * Is this `pat` a word of its own? It is at a non-letter boundary on each side,
+ * or at a camelCase one: `githubPat` starts a word, `patValue` ends one.
+ * `path`, `PATH`, `dispatch`, `COMPATIBILITY` and `videosPath` are embedded.
  */
-function maskLookalike(word) {
-  const rest = word.slice(1);
-  return rest === rest.toLowerCase() || rest === rest.toUpperCase() ? '#' : word;
+function patIsAWord(occurrence, before, after) {
+  const starts = !isLetter(before) || (occurrence[0] === 'P' && isLower(before));
+  const ends = !isLetter(after) || (isUpper(after) && occurrence[2] === 't');
+  return starts && ends;
 }
 
 /**
- * Does this key name still read as a secret once every lookalike word is
+ * Does this key name still read as a secret once every embedded `pat` is
  * masked? Re-asks the rule itself, so the keyword list lives in one place.
- * `PATTERN_TOKEN` masks to `#_TOKEN` and is still a secret by its `TOKEN`.
  */
 function namesASecret(key) {
-  const masked = String(key ?? '').replace(LOOKALIKE_WORDS, maskLookalike);
-  const rule = SECRET_RULES.find((candidate) => candidate.name === NAMED_ASSIGNMENT);
+  const name = String(key ?? '');
+  const masked = name.replace(/pat/gi, (occurrence, offset) =>
+    patIsAWord(occurrence, name[offset - 1], name[offset + 3]) ? occurrence : '#');
+  const rule = SECRET_RULES.find((candidate) => candidate.name === 'named-secret-assignment');
   return new RegExp(rule.re.source, 'i').test(`${masked}=probevalue`);
 }
 

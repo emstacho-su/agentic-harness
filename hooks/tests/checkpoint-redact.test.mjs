@@ -21,7 +21,7 @@ import test from 'node:test';
 
 import * as hookRedact from '../lib/redact.mjs';
 import * as checkpointRedact from '../../skills/checkpoint/redact.mjs';
-import { buildNote, countRedactions, main } from '../../skills/checkpoint/build-note.mjs';
+import { buildNote, countRedactions, main, redactBody } from '../../skills/checkpoint/build-note.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HOOK_COPY = path.resolve(HERE, '..', 'lib', 'redact.mjs');
@@ -139,4 +139,13 @@ test('the CLI JSON line reports redactions, 0 for a clean note', () => {
   } finally {
     fixture.cleanup();
   }
+});
+
+test('a /checkpoint body keeps a file path written after `path:`', () => {
+  const body = [
+    '## Outcome',
+    '- Fix the output path: web/src/lib/progress-status.ts',
+    '- Later, web/src/lib/progress-status.ts gained the graded label.',
+  ].join('\n');
+  assert.deepEqual(redactBody(body), { text: body, count: 0 });
 });
