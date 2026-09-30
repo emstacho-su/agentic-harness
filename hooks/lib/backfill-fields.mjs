@@ -66,6 +66,8 @@ const CLAUDE_PROJECTS_UNDER_HOME = '.claude/projects';
 const MEMORY_FOLDER = 'memory';
 /** How a file list names the checkout or a worktree root itself, repo-relative. */
 const REPO_ROOT_RELATIVE = '.';
+/** A worktree beside a checkout is `<checkout>-wt-<name>`; its Claude folder name carries the same infix. */
+const WORKTREE_INFIX = '-wt-';
 const BB2DASH_SESSIONS_PREFIX = `projects/bb2dash/${SESSIONS_DIR}/`;
 const SDK_ORIGIN_PREFIX = 'sdk-';
 const WORKER_NOTE = /^(.+)--([^/]+)\.md$/;
@@ -169,7 +171,8 @@ function makeContext({ vaultRoot, checkout, home, formerHomes, projectsRoot, rel
  * under one; worktrees are `<checkout>-wt-*` beside each), `namedWorktrees`
  * (`NAMED_BB2DASH_WORKTREES` beside each checkout), `onedriveCheckouts`
  * (the pre-move checkout under every home) and `projectFolders` (Claude Code's
- * folder for each checkout, where workflow agents and auto-memory live).
+ * folder for each checkout, where workflow agents and auto-memory live) with
+ * `namedProjectFolders` (the same for each named worktree).
  */
 export function bb2dashPlaces({ checkout, home = '', formerHomes = FORMER_HOMES }) {
   const root = trimSlash(toPosix(checkout));
@@ -178,15 +181,14 @@ export function bb2dashPlaces({ checkout, home = '', formerHomes = FORMER_HOMES 
   const owner = homes.find((entry) => isUnder(root, entry)) ?? '';
   const twins = owner ? homes.map((entry) => ({ home: entry, checkout: `${entry}${root.slice(owner.length)}` })) : [];
   const checkouts = uniqueText([root, ...twins.map((twin) => twin.checkout)]);
+  const pairs = [...(ownHome ? [{ home: ownHome, checkout: root }] : []), ...twins];
   const projectFolderOf = (entryHome, entryCheckout) => `${entryHome}/${CLAUDE_PROJECTS_UNDER_HOME}/${encodeProjectName(entryCheckout)}`;
   return {
     checkouts,
     namedWorktrees: uniqueText(checkouts.flatMap((entry) => NAMED_BB2DASH_WORKTREES.map((name) => `${path.posix.dirname(entry)}/${name}`))),
     onedriveCheckouts: uniqueText(homes.map((entry) => `${entry}/${ONEDRIVE_CHECKOUT_UNDER_HOME}`)),
-    projectFolders: uniqueText([
-      ...(ownHome ? [projectFolderOf(ownHome, root)] : []),
-      ...twins.map((twin) => projectFolderOf(twin.home, twin.checkout)),
-    ]),
+    projectFolders: uniqueText(pairs.map((pair) => projectFolderOf(pair.home, pair.checkout))),
+    namedProjectFolders: uniqueText(pairs.flatMap((pair) => NAMED_BB2DASH_WORKTREES.map((name) => projectFolderOf(pair.home, `${path.posix.dirname(pair.checkout)}/${name}`)))),
   };
 }
 
@@ -439,7 +441,7 @@ function relativeTo(file, ctx) {
 function checkoutRoots(posix, ctx) {
   const roots = [...ctx.checkouts, ...ctx.namedWorktrees, ...ctx.onedriveCheckouts];
   for (const checkout of ctx.checkouts) {
-    if (!posix.toLowerCase().startsWith(`${checkout.toLowerCase()}-wt-`)) continue;
+    if (!posix.toLowerCase().startsWith(`${checkout.toLowerCase()}${WORKTREE_INFIX}`)) continue;
     const slash = posix.indexOf('/', checkout.length + 1);
     roots.push(slash === -1 ? posix : posix.slice(0, slash));
   }
@@ -475,10 +477,15 @@ function findTranscript(note, ctx) {
   return '';
 }
 
-/** `<any home>/.claude/projects/<bb2dash encoded>*\/…`: a workflow agent's folder. */
+/**
+ * A cwd in bb2dash's Claude project folder under any home: the checkout's own
+ * folder, a worktree's (`<folder>-wt-…`) or a named worktree's, at the folder
+ * or below it. A sibling such as `<folder>-notes` is another repo's.
+ */
 function isWorkflowCwd(cwd, ctx) {
   const value = cwd.toLowerCase();
-  return ctx.projectFolders.some((folder) => value.startsWith(folder.toLowerCase()));
+  const inFolder = (folder) => isAtOrUnder(value, folder) || value.startsWith(`${folder.toLowerCase()}${WORKTREE_INFIX}`);
+  return ctx.projectFolders.some(inFolder) || ctx.namedProjectFolders.some((folder) => isAtOrUnder(value, folder));
 }
 
 /** `<any home>/.claude/projects/<bb2dash encoded>/memory`: bb2dash's own auto-memory folder, or below it. */
@@ -661,7 +668,7 @@ function isIndexed(plan) {
 function cwdInCheckout(cwd, ctx) {
   const value = toPosix(cwd).toLowerCase();
   if (!value) return false;
-  return ctx.checkouts.some((checkout) => isAtOrUnder(value, checkout) || value.startsWith(`${checkout.toLowerCase()}-wt-`))
+  return ctx.checkouts.some((checkout) => isAtOrUnder(value, checkout) || value.startsWith(`${checkout.toLowerCase()}${WORKTREE_INFIX}`))
     || ctx.namedWorktrees.some((worktree) => isAtOrUnder(value, worktree));
 }
 
