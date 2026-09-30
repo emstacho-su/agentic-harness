@@ -42,9 +42,24 @@ import { readTranscriptHead } from './transcript-head.mjs';
 import { UNCLASSIFIED, isKnownTag } from './vocabulary.mjs';
 
 export const BB2DASH_REPO = 'emstacho-su/bb2dash';
-export const DEFAULT_BB2DASH_CHECKOUT = 'C:/Users/stack/projects/bb2dash';
-/** Where bb2dash lived before the move out of OneDrive; its notes name this cwd. */
-export const ONEDRIVE_BB2DASH_CHECKOUT = 'C:/Users/stack/OneDrive - Syracuse University/.fall2026/.projects2026/bb2dash';
+/** The user folder on stack-laptop, the primary machine (bb2dash DECISIONS 2026-09-29). */
+export const CURRENT_HOME = 'C:/Users/stack';
+/**
+ * User folders of machines bb2dash notes were captured on before this one.
+ * The primary machine is stack-laptop; the old machine's user was `estac`
+ * (bb2dash DECISIONS 2026-09-29), so older notes name `C:/Users/estac/...`.
+ * Every path rule here applies to the current home and to each of these.
+ */
+export const FORMER_HOMES = Object.freeze(['C:/Users/estac']);
+export const DEFAULT_BB2DASH_CHECKOUT = `${CURRENT_HOME}/projects/bb2dash`;
+/** Where bb2dash lived, under a home, before the move out of OneDrive; its notes name this cwd. */
+const ONEDRIVE_CHECKOUT_UNDER_HOME = 'OneDrive - Syracuse University/.fall2026/.projects2026/bb2dash';
+export const ONEDRIVE_BB2DASH_CHECKOUT = `${CURRENT_HOME}/${ONEDRIVE_CHECKOUT_UNDER_HOME}`;
+/** Claude Code's per-project folder under a home, and the auto-memory folder inside one. */
+const CLAUDE_PROJECTS_UNDER_HOME = '.claude/projects';
+const MEMORY_FOLDER = 'memory';
+/** How a file list names the checkout or a worktree root itself, repo-relative. */
+const REPO_ROOT_RELATIVE = '.';
 const BB2DASH_SESSIONS_PREFIX = `projects/bb2dash/${SESSIONS_DIR}/`;
 const SDK_ORIGIN_PREFIX = 'sdk-';
 const WORKER_NOTE = /^(.+)--([^/]+)\.md$/;
@@ -102,6 +117,7 @@ export function runBackfill({
   dryRun = true,
   checkout = DEFAULT_BB2DASH_CHECKOUT,
   home = '',
+  formerHomes = FORMER_HOMES,
   projectsRoot = '',
   relocations = [],
   network = true,
@@ -112,7 +128,7 @@ export function runBackfill({
 }) {
   if (!dryRun && !backupDir) throw new Error('a real run needs --backup <dir>');
   const scan = scanVault(vaultRoot);
-  const ctx = makeContext({ vaultRoot, checkout, home, projectsRoot, relocations, network, machine, resolveRepoFor, runGit, runGh });
+  const ctx = makeContext({ vaultRoot, checkout, home, formerHomes, projectsRoot, relocations, network, machine, resolveRepoFor, runGit, runGh });
   const plans = planAll(scan.notes, ctx);
   const lines = plans.flatMap((plan) => plan.lines);
   const refused = [...scan.refused, ...plans.filter((plan) => plan.refusal).map((plan) => ({ path: plan.note.notePath, error: plan.refusal }))];
@@ -121,14 +137,15 @@ export function runBackfill({
   return { lines, report, refused, written };
 }
 
-function makeContext({ vaultRoot, checkout, home, projectsRoot, relocations, network, machine, resolveRepoFor, runGit, runGh }) {
+function makeContext({ vaultRoot, checkout, home, formerHomes, projectsRoot, relocations, network, machine, resolveRepoFor, runGit, runGh }) {
   const root = trimSlash(toPosix(checkout));
   const cachedGh = memoize(runGh);
+  const places = bb2dashPlaces({ checkout: root, home, formerHomes });
   return {
     vaultRoot,
     checkout: root,
+    ...places,
     bb2dashRepo: redact(resolveRepoFor(root)?.repoFullName ?? ''),
-    workflowPrefix: home ? `${trimSlash(toPosix(home))}/.claude/projects/${encodeProjectName(root)}` : '',
     projectsRoot,
     relocations,
     network,
@@ -137,6 +154,30 @@ function makeContext({ vaultRoot, checkout, home, projectsRoot, relocations, net
     runGit,
     runGh: network ? cachedGh : () => ({ ok: false, stdout: '', error: 'offline (--no-network)' }),
     byStem: new Map(),
+  };
+}
+
+/**
+ * Every place bb2dash lived, under the current home and each former one:
+ * `checkouts` (the checkout, and its twin under every other home when it sits
+ * under one; worktrees are `<checkout>-wt-*` beside each), `onedriveCheckouts`
+ * (the pre-move checkout under every home) and `projectFolders` (Claude Code's
+ * folder for each checkout, where workflow agents and auto-memory live).
+ */
+export function bb2dashPlaces({ checkout, home = '', formerHomes = FORMER_HOMES }) {
+  const root = trimSlash(toPosix(checkout));
+  const ownHome = trimSlash(toPosix(String(home ?? '')));
+  const homes = uniqueText([ownHome, CURRENT_HOME, ...formerHomes].map((entry) => trimSlash(toPosix(String(entry ?? '')))).filter(Boolean));
+  const owner = homes.find((entry) => isUnder(root, entry)) ?? '';
+  const twins = owner ? homes.map((entry) => ({ home: entry, checkout: `${entry}${root.slice(owner.length)}` })) : [];
+  const projectFolderOf = (entryHome, entryCheckout) => `${entryHome}/${CLAUDE_PROJECTS_UNDER_HOME}/${encodeProjectName(entryCheckout)}`;
+  return {
+    checkouts: uniqueText([root, ...twins.map((twin) => twin.checkout)]),
+    onedriveCheckouts: uniqueText(homes.map((entry) => `${entry}/${ONEDRIVE_CHECKOUT_UNDER_HOME}`)),
+    projectFolders: uniqueText([
+      ...(ownHome ? [projectFolderOf(ownHome, root)] : []),
+      ...twins.map((twin) => projectFolderOf(twin.home, twin.checkout)),
+    ]),
   };
 }
 
@@ -218,7 +259,8 @@ function isWorker(note) {
 function isInScope(note, ctx) {
   if (note.rel.startsWith(BB2DASH_SESSIONS_PREFIX)) return true;
   if (sameText(note.fields.repo, BB2DASH_REPO)) return true;
-  return cwdInCheckout(String(note.fields.cwd ?? ''), ctx.checkout);
+  const cwd = toPosix(String(note.fields.cwd ?? ''));
+  return cwdInCheckout(cwd, ctx) || isOneDriveCwd(cwd, ctx) || isWorkflowCwd(cwd, ctx);
 }
 
 function deriveFields(note, ctx) {
@@ -260,8 +302,9 @@ function deriveRepo(note, ctx, parent, sources) {
     sources.repo = source;
     return redact(value);
   };
-  if (cwdInCheckout(cwd, ctx.checkout) && ctx.bb2dashRepo) return pick(ctx.bb2dashRepo, `origin of ${ctx.checkout}`);
-  if (sameText(cwd, ONEDRIVE_BB2DASH_CHECKOUT)) return pick(BB2DASH_REPO, 'pre-move OneDrive checkout');
+  if (cwdInCheckout(cwd, ctx) && ctx.bb2dashRepo) return pick(ctx.bb2dashRepo, `origin of ${ctx.checkout}`);
+  if (isOneDriveCwd(cwd, ctx)) return pick(BB2DASH_REPO, 'pre-move OneDrive checkout');
+  if (isMemoryCwd(cwd, ctx)) return pick(BB2DASH_REPO, "bb2dash's Claude project memory folder");
   if (isWorkflowCwd(cwd, ctx)) {
     if (parent?.repo) return pick(parent.repo, `parent note ${note.fields.parent_session}`);
     const fromTranscript = parentTranscriptRepo(cwd, ctx);
@@ -373,19 +416,23 @@ function repoRelative(files, ctx) {
 function relativeTo(file, ctx) {
   const posix = toPosix(file);
   if (!isAbsolute(posix)) return posix;
-  for (const root of checkoutRoots(posix, ctx.checkout)) {
-    if (posix.toLowerCase().startsWith(`${root.toLowerCase()}/`)) return posix.slice(root.length + 1);
+  for (const root of checkoutRoots(posix, ctx)) {
+    if (sameText(posix, root)) return REPO_ROOT_RELATIVE;
+    if (isUnder(posix, root)) return posix.slice(root.length + 1);
   }
   const repo = isLocalPath(posix) ? ctx.resolveRepoFor(path.posix.dirname(posix)) : null;
   const root = toPosix(repo?.repoRoot ?? '');
   return root && posix.toLowerCase().startsWith(`${root.toLowerCase()}/`) ? posix.slice(root.length + 1) : posix;
 }
 
-/** The checkout, the worktree folder a path is in, and the pre-move OneDrive checkout. */
-function checkoutRoots(posix, checkout) {
-  const roots = [checkout, ONEDRIVE_BB2DASH_CHECKOUT];
-  const worktree = posix.slice(0, posix.indexOf('/', checkout.length + 1));
-  if (posix.toLowerCase().startsWith(`${checkout.toLowerCase()}-wt-`) && worktree) roots.push(worktree);
+/** The checkouts under every home, the worktree folder a path is in, and the pre-move OneDrive checkouts. */
+function checkoutRoots(posix, ctx) {
+  const roots = [...ctx.checkouts, ...ctx.onedriveCheckouts];
+  for (const checkout of ctx.checkouts) {
+    if (!posix.toLowerCase().startsWith(`${checkout.toLowerCase()}-wt-`)) continue;
+    const slash = posix.indexOf('/', checkout.length + 1);
+    roots.push(slash === -1 ? posix : posix.slice(0, slash));
+  }
   return roots;
 }
 
@@ -393,8 +440,8 @@ function checkoutRoots(posix, checkout) {
 function repoResolverFor(ctx) {
   return (filePath) => {
     const posix = toPosix(filePath);
-    for (const root of checkoutRoots(posix, ctx.checkout)) {
-      if (posix.toLowerCase().startsWith(`${root.toLowerCase()}/`)) return { repoRoot: root, repoSlug: 'bb2dash' };
+    for (const root of checkoutRoots(posix, ctx)) {
+      if (isUnder(posix, root)) return { repoRoot: root, repoSlug: 'bb2dash' };
     }
     const repo = isLocalPath(posix) ? ctx.resolveRepoFor(path.posix.dirname(posix)) : null;
     return repo?.repoRoot ? repo : null;
@@ -418,9 +465,20 @@ function findTranscript(note, ctx) {
   return '';
 }
 
-/** `<home>/.claude/projects/<bb2dash encoded>*\/…`: a workflow agent's folder. */
+/** `<any home>/.claude/projects/<bb2dash encoded>*\/…`: a workflow agent's folder. */
 function isWorkflowCwd(cwd, ctx) {
-  return Boolean(ctx.workflowPrefix) && cwd.toLowerCase().startsWith(ctx.workflowPrefix.toLowerCase());
+  const value = cwd.toLowerCase();
+  return ctx.projectFolders.some((folder) => value.startsWith(folder.toLowerCase()));
+}
+
+/** `<any home>/.claude/projects/<bb2dash encoded>/memory`: bb2dash's own auto-memory folder, or below it. */
+function isMemoryCwd(cwd, ctx) {
+  return ctx.projectFolders.some((folder) => isAtOrUnder(cwd, `${folder}/${MEMORY_FOLDER}`));
+}
+
+/** The pre-move OneDrive checkout under any home, or a path below it. */
+function isOneDriveCwd(cwd, ctx) {
+  return ctx.onedriveCheckouts.some((root) => isAtOrUnder(cwd, root));
 }
 
 /** The repo `resolveRepo` gives for the cwd the parent transcript declares, `…/<encoded>/<sid>.jsonl`. */
@@ -581,10 +639,30 @@ function isIndexed(plan) {
 
 // ------------------------------------------------------------------ helpers
 
-function cwdInCheckout(cwd, checkout) {
+/** A cwd in a bb2dash checkout under any home, or in a `-wt-*` worktree beside one. */
+function cwdInCheckout(cwd, ctx) {
   const value = toPosix(cwd).toLowerCase();
-  const root = checkout.toLowerCase();
-  return Boolean(value) && (value === root || value.startsWith(`${root}/`) || value.startsWith(`${root}-wt-`));
+  return Boolean(value) && ctx.checkouts.some((checkout) => isAtOrUnder(value, checkout) || value.startsWith(`${checkout.toLowerCase()}-wt-`));
+}
+
+/** `child` is strictly below `root`, compared case-insensitively. */
+function isUnder(child, root) {
+  return Boolean(root) && String(child).toLowerCase().startsWith(`${root.toLowerCase()}/`);
+}
+
+function isAtOrUnder(child, root) {
+  return sameText(child, root) || isUnder(child, root);
+}
+
+/** Case-insensitive de-duplication, first spelling kept. */
+function uniqueText(values) {
+  const seen = new Set();
+  return values.filter((value) => {
+    const key = value.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function encodeProjectName(cwd) {
