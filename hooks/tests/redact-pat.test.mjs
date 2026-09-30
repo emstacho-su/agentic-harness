@@ -16,6 +16,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { BUDGET_MS } from '../lib/constants.mjs';
 import * as current from '../lib/redact.mjs';
 import * as baseline from './fixtures/redact-baseline/redact.mjs';
 
@@ -28,12 +29,17 @@ const REAL_PAT_KEYS = [
   'ghpat', 'githubpat', 'mypat', 'my_pat', 'PATS', 'PATs', 'pats', 'GH_PATS', 'githubPATs',
   'PATKEY', 'patkey', 'GHPat', 'ADOPat', 'PAT2', 'patValue', 'PAT_VALUE', 'AZURE_DEVOPS_EXT_PAT',
   'PATTOKEN', 'x_pat',
+  // A `pat` followed by letters that only start a lookalike word is still a token.
+  'PATTKN', 'GHPATTKN', 'patTkn', 'GH_PATTOK', 'PATTEST', 'patTest', 'PATTMP', 'GHPATTMP', 'ghPatTmp',
+  'PATTEMP', 'ghpatText', 'GHPATTXT', 'PATTTL',
+  // A camelCase word after `pat` is not the rest of `path` or `patch`.
+  'patHeader', 'patHash', 'patChain',
 ];
 
 const LOOKALIKE_KEYS = [
   'path', 'PATH', 'Pattern', 'pattern', 'patterns', 'dispatch', 'dispatcher', 'DISPATCH', 'compat',
   'COMPATIBILITY', 'output_path', 'videosPath', 'spatial', 'patient', 'patch', 'PATCH', 'filepath',
-  'xpath', 'classpath', 'PATHEXT',
+  'xpath', 'classpath', 'PATHEXT', 'paths', 'Paths', 'patches', 'PATCHES', 'compatibility',
 ];
 
 const FORMS = [
@@ -57,8 +63,25 @@ test('every PAT key name, in every assignment form, is found, redacted and flagg
 });
 
 test('a PAT value named without a separator is removed from later prose too', () => {
-  const text = `GHPAT=${TOKEN_VALUE}\nLater: rotate ${TOKEN_VALUE}`;
-  assert.equal(fullPass(current, text), 'GHPAT=[REDACTED]\nLater: rotate [REDACTED]');
+  for (const key of ['GHPAT', 'PATTKN', 'patTest', 'GHPATTXT', 'patHeader']) {
+    const text = `${key}=${TOKEN_VALUE}\nLater: rotate ${TOKEN_VALUE}`;
+    assert.equal(fullPass(current, text), `${key}=[REDACTED]\nLater: rotate [REDACTED]`);
+  }
+});
+
+test('a long chain of lookalike assignments is bounded: fast, and the real secret stays redacted', () => {
+  const text = `API_TOKEN=${TOKEN_VALUE}\n${'path='.repeat(100_000)}`;
+  const started = performance.now();
+  const out = fullPass(current, text);
+  const elapsed = performance.now() - started;
+  assert.ok(!out.includes(TOKEN_VALUE));
+  assert.ok(elapsed < BUDGET_MS / 4, `took ${Math.round(elapsed)} ms`);
+});
+
+test('a secret nested a few lookalike assignments deep is still caught', () => {
+  const text = `path=pattern=dispatch=PASSWORD=${TOKEN_VALUE}`;
+  assert.ok(!redact(text).includes(TOKEN_VALUE));
+  assert.deepEqual(findSecretValues(text), [TOKEN_VALUE]);
 });
 
 test('a lookalike key is not a secret: its value is neither collected, redacted nor flagged', () => {
