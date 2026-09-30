@@ -273,3 +273,57 @@ test('the secret scan reads a bounded amount however large the session was', () 
   const early = [{ text: `DATABASE_PASSWORD=Sup3rSecretPassw0rd ${'x'.repeat(MAX_SECRET_SCAN_CHARS)}` }];
   assert.deepEqual(knownSecrets(early, { commandTexts: [] }), ['Sup3rSecretPassw0rd']);
 });
+
+// A `pat` inside a key name (`path`, `Pattern`, `dispatch`, `compat`) is not a
+// personal access token. The value after such a key is ordinary text; hunting
+// it through the rest of the note blanked every mention of a file path.
+const PAT_LOOKALIKES = [
+  'path: web/src/lib/progress-status.ts',
+  'Pattern: retrieval-first',
+  'dispatch: queue-worker-one',
+  'compat: node-twenty-two',
+  'output_path=out/notes/today.md',
+];
+
+test('a key that only contains the letters pat does not yield a secret value', () => {
+  for (const line of PAT_LOOKALIKES) {
+    assert.deepEqual(findSecretValues(line), [], line);
+  }
+});
+
+test('redact leaves a pat-lookalike assignment alone', () => {
+  for (const line of PAT_LOOKALIKES) {
+    assert.equal(redact(line), line, line);
+  }
+});
+
+test('a real PAT assignment is still found and redacted', () => {
+  const secret = 'Sup3rSecretPatValue9';
+  for (const line of [
+    `pat=${secret}`,
+    `GITHUB_PAT=${secret}`,
+    `my_pat: ${secret}`,
+    `githubPat: ${secret}`,
+    `password: hunter2hunter2`,
+  ]) {
+    const value = line.split(/[:=]\s*/)[1];
+    assert.deepEqual(findSecretValues(line), [value], line);
+    assert.ok(!redact(line).includes(value), line);
+  }
+  assert.equal(redact('pat: ghp_ABCdefGHIjklMNOpqrSTU'), 'pat: [REDACTED]');
+});
+
+test('a secret assignment hidden inside a pat-lookalike value is still caught', () => {
+  const line = 'path=PASSWORD=hunter2hunter2';
+  assert.ok(!redact(line).includes('hunter2hunter2'));
+  assert.deepEqual(findSecretValues(line), ['hunter2hunter2']);
+});
+
+test("the reviewer's repro: a file path after `path:` survives the whole redaction pass", () => {
+  const body = [
+    '## Outcome',
+    '- Fix the output path: web/src/lib/progress-status.ts',
+    '- Later, web/src/lib/progress-status.ts gained the graded label.',
+  ].join('\n');
+  assert.equal(redactLiterals(redact(body), findSecretValues(body)), body);
+});
