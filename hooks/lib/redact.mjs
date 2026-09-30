@@ -26,8 +26,8 @@ export const SECRET_RULES = Object.freeze([
   //     just a shell assignment;
   //   - a quoted value may contain spaces, because a passphrase usually does.
   //
-  // `PAT` counts only as a word of the key (`GITHUB_PAT`, `githubPat`), not
-  // as the letters inside `path`, `Pattern`, `dispatch` or `compat`: see
+  // `PAT` in the key counts as a token (`GHPAT`, `mypat`, `PATS`) except
+  // inside a lookalike word (`path`, `Pattern`, `dispatch`, `compat`): see
   // `namesASecret`. Such a key's value is left as it is, apart from any
   // assignment nested inside it (`path=PASSWORD=…`).
   {
@@ -230,9 +230,9 @@ export function findSecretValues(text) {
  * redaction in a note. Built for the claude-config pre-commit scan (R-H5), which
  * must say where a secret is without printing it.
  *
- * `PAT` in a key name counts only as a word (`GITHUB_PAT`, `githubPat`), not
- * as the letters inside `output_path`, `pattern` or `dispatch` — the same
- * reading `redact()` and `findSecretValues` use. A commit gate that fired on
+ * `PAT` in a key name counts as a token except inside a lookalike word
+ * (`output_path`, `pattern`, `dispatch`) — the same reading `redact()` and
+ * `findSecretValues` use. A commit gate that fired on
  * every `*_path = …` in a skill's scripts (165 of 180 hits on the real
  * `~/.claude`) could never pass, and a note that lost every `path:` value,
  * and every later mention of it, lost the file names it was about.
@@ -269,29 +269,23 @@ function ruleMatches(text, rule) {
   return matches;
 }
 
-const isLetter = (ch) => /[A-Za-z]/.test(ch ?? '');
-const isLower = (ch) => /[a-z]/.test(ch ?? '');
-const isUpper = (ch) => /[A-Z]/.test(ch ?? '');
-
 /**
- * Is this `pat` a word of its own? It is at a non-letter boundary on each side,
- * or at a camelCase one: `githubPat` starts a word, `patValue` ends one.
- * `path`, `PATH`, `dispatch`, `COMPATIBILITY` and `videosPath` are embedded.
+ * The `pat` inside a word that is not a token: path (`PATHEXT`, `classpath`),
+ * pattern, patch and dispatch, patient and spatial, compat.
+ *
+ * The list names the lookalikes, not the tokens. Reading `pat` as a token only
+ * at a separator or camelCase boundary let `GHPAT`, `mypat`, `PATS` and
+ * `PATKEY` through; a token name nobody listed here stays a secret.
  */
-function patIsAWord(occurrence, before, after) {
-  const starts = !isLetter(before) || (occurrence[0] === 'P' && isLower(before));
-  const ends = !isLetter(after) || (isUpper(after) && occurrence[2] === 't');
-  return starts && ends;
-}
+const EMBEDDED_PAT = /pat(?=h|t|ch|i)|(?<=dis|com)pat/gi;
 
 /**
- * Does this key name still read as a secret once every embedded `pat` is
+ * Does this key name still read as a secret once every lookalike `pat` is
  * masked? Re-asks the rule itself, so the keyword list lives in one place.
+ * `PATTOKEN` masks to `#TOKEN` and is still a secret by its `TOKEN`.
  */
 function namesASecret(key) {
-  const name = String(key ?? '');
-  const masked = name.replace(/pat/gi, (occurrence, offset) =>
-    patIsAWord(occurrence, name[offset - 1], name[offset + 3]) ? occurrence : '#');
+  const masked = String(key ?? '').replace(EMBEDDED_PAT, '#');
   const rule = SECRET_RULES.find((candidate) => candidate.name === NAMED_ASSIGNMENT);
   return new RegExp(rule.re.source, 'i').test(`${masked}=probevalue`);
 }
