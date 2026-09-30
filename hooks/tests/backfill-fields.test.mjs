@@ -662,6 +662,34 @@ test('bb2dash-retrieval under a former home is a bb2dash worktree (brief 66 G1)'
   });
 });
 
+test("a sibling repo's Claude project folder (bb2dash-notes) is out of scope under every home, on a dry run and a real run", () => {
+  const sandbox = createHomesSandbox();
+  try {
+    buildFormerHomeVault(sandbox);
+    const siblings = [sandbox.home, sandbox.former].map((home, index) => {
+      const id = `b000000${index + 1}-0000-4000-8000-00000000000${index + 1}`;
+      const folder = `${home}/.claude/projects/${encode(`${home}/projects/bb2dash-notes`)}`;
+      const relative = `projects/bb2dash-notes/sessions/${id}--${WORKFLOW_AGENT}.md`;
+      writeNote(sandbox, relative, noteText({
+        id: `session-${id}--${WORKFLOW_AGENT}`, session_id: id, parent_session: id, collection: 'bb2dash-notes',
+        repo: '', branch: '', cwd: `${folder}/${id}/subagents/workflows/wf-9`, agent_type: 'workflow', tags: ['unclassified'],
+        files_modified: [`${home}/projects/bb2dash-notes/notes.md`],
+      }));
+      return { id, relative };
+    });
+    const before = hashTree(sandbox.vault);
+    const dry = runBackfill(formerOptions(sandbox, { dryRun: true }));
+    const real = runBackfill(formerOptions(sandbox, { dryRun: false }));
+    const after = hashTree(sandbox.vault);
+    for (const { id, relative } of siblings) {
+      for (const run of [dry, real]) assert.ok(!run.lines.some((line) => line.startsWith(`${id}--`)), `${id}: no change line`);
+      assert.equal(after[relative], before[relative], `${relative} is unchanged`);
+    }
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
 test('the former-home report projects no underivable bb2dash repo and no absolute path', () => {
   const sandbox = createHomesSandbox();
   try {
