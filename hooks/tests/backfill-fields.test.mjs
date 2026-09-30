@@ -532,6 +532,9 @@ const FORMER = Object.freeze({
   absolute: 'a0000006-0000-4000-8000-000000000006',
   otherRepo: 'a0000007-0000-4000-8000-000000000007',
   otherMemory: 'a0000008-0000-4000-8000-000000000008',
+  orphanParent: 'a0000009-0000-4000-8000-000000000009',
+  orphanWorktreeParent: 'a000000a-0000-4000-8000-00000000000a',
+  retrieval: 'a000000b-0000-4000-8000-00000000000b',
 });
 
 function buildFormerHomeVault(sandbox) {
@@ -561,6 +564,11 @@ function buildFormerHomeVault(sandbox) {
   // Never guessed: another repo under the former home, and another project's memory folder.
   put(FORMER.otherRepo, { cwd: `${former}/projects/some-other-repo` });
   put(FORMER.otherMemory, { cwd: `${former}/.claude/projects/${encode(`${former}/projects/some-other-repo`)}/memory` });
+  // Workflow agents whose parent note is gone and whose parent transcript is not on this machine.
+  put(FORMER.orphanParent, { parent_session: FORMER.orphanParent, cwd: `${oldProject}/${FORMER.orphanParent}/subagents/workflows/wf-2`, agent_type: 'workflow' }, `${FORMER.orphanParent}--${WORKFLOW_AGENT}.md`);
+  put(FORMER.orphanWorktreeParent, { parent_session: FORMER.orphanWorktreeParent, cwd: `${oldProject}-wt-p11/${FORMER.orphanWorktreeParent}/subagents/workflows/wf-3`, agent_type: 'workflow' }, `${FORMER.orphanWorktreeParent}--${WORKFLOW_AGENT}.md`);
+  // bb2dash-retrieval, the worktree brief 66 G1 names, beside the old checkout.
+  put(FORMER.retrieval, { cwd: `${former}/projects/bb2dash-retrieval`, files_modified: [`${former}/projects/bb2dash-retrieval/mcp-server/src/index.ts`] });
 }
 
 function formerOptions(sandbox, extra = {}) {
@@ -639,12 +647,27 @@ test('a former-home cwd that is not bb2dash stays repo: "" (never guessed)', () 
   });
 });
 
+test("a workflow agent with no parent note or transcript takes bb2dash from the exact project folder, a -wt- folder never", () => {
+  withFormerHome((sandbox, fields) => {
+    assert.equal(fields(`${FORMER.orphanParent}--${WORKFLOW_AGENT}.md`).repo, BB2DASH);
+    assert.equal(fields(`${FORMER.orphanWorktreeParent}--${WORKFLOW_AGENT}.md`).repo, '');
+  });
+});
+
+test('bb2dash-retrieval under a former home is a bb2dash worktree (brief 66 G1)', () => {
+  withFormerHome((sandbox, fields) => {
+    const note = fields(`${FORMER.retrieval}.md`);
+    assert.equal(note.repo, BB2DASH);
+    assert.deepEqual(note.files_modified, ['mcp-server/src/index.ts']);
+  });
+});
+
 test('the former-home report projects no underivable bb2dash repo and no absolute path', () => {
   const sandbox = createHomesSandbox();
   try {
     buildFormerHomeVault(sandbox);
     const { report } = runBackfill(formerOptions(sandbox, { dryRun: true }));
-    assert.equal(report.repo_empty_underivable, 2, 'only the two notes that are not bb2dash');
+    assert.equal(report.repo_empty_underivable, 3, 'only the two notes that are not bb2dash and the -wt- orphan');
     assert.equal(report.absolute_files_modified, 0);
   } finally {
     sandbox.cleanup();
