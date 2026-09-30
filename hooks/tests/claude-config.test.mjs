@@ -351,9 +351,10 @@ test('findSecretMatches reads PAT as a word, not the letters inside path, patter
   assert.deepEqual(hitLines, [6, 7, 8, 9]);
 });
 
-test('the scan-only PAT reading leaves redaction exactly as greedy as before', () => {
-  // The capture hook still redacts `output_path = …`; only the scan reads PAT as a word.
-  assert.equal(redact('output_path = "ValueLongEnough123"'), 'output_path = [REDACTED]');
+test('redaction reads PAT as a word too, the same as the scan', () => {
+  // Redacting `output_path = …` blanked file paths out of notes (bb2dash PR #48 review).
+  assert.equal(redact('output_path = "ValueLongEnough123"'), 'output_path = "ValueLongEnough123"');
+  assert.equal(redact('GITHUB_PAT = "ValueLongEnough123"'), 'GITHUB_PAT = [REDACTED]');
 });
 
 test('a clean export scans clean', () => {

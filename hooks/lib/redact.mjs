@@ -11,6 +11,8 @@
  * credential in OneDrive and then in Postgres.
  */
 
+const NAMED_ASSIGNMENT = 'named-secret-assignment';
+
 export const SECRET_RULES = Object.freeze([
   // KEY=value / KEY: value / "key": "value" where the key name signals a secret.
   //
@@ -23,12 +25,18 @@ export const SECRET_RULES = Object.freeze([
   //   - the key may be quoted, so a JSON or YAML mapping is covered and not
   //     just a shell assignment;
   //   - a quoted value may contain spaces, because a passphrase usually does.
+  //
+  // `PAT` counts only as a word of the key (`GITHUB_PAT`, `githubPat`), not
+  // as the letters inside `path`, `Pattern`, `dispatch` or `compat`: see
+  // `namesASecret`. Such a key's value is left as it is, apart from any
+  // assignment nested inside it (`path=PASSWORD=…`).
   {
-    name: 'named-secret-assignment',
+    name: NAMED_ASSIGNMENT,
     re: /(["']?)\b([A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|SERVICE[_-]?ROLE|ANON[_-]?KEY|AUTH[_-]?KEY|BEARER|DSN|APIKEY|PAT)[A-Za-z0-9_]*)\1(\s*[:=]\s*)(?:"[^"\n]{4,}"|'[^'\n]{4,}'|[^\s"'`,;)]{4,})/gi,
-    to: (_m, quote, key, sep) => `${quote}${key}${quote}${sep}[REDACTED]`,
+    to: (m, quote, key, sep) => `${quote}${key}${quote}${sep}${
+      namesASecret(key) ? '[REDACTED]' : redactNamedAssignments(assignedValue([m, quote, key, sep]))}`,
     // Everything after the separator, minus the quotes a quoted value carries.
-    secret: (m) => unquote(m[0].slice(m[1].length * 2 + m[2].length + m[3].length)),
+    secret: (m) => unquote(assignedValue(m)),
   },
   // Connection strings carrying an inline password: postgresql://user:pw@host.
   {
@@ -70,6 +78,17 @@ export const SECRET_RULES = Object.freeze([
     secret: (m) => withoutFirstWord(m[0]),
   },
 ]);
+
+/** Everything after the separator of a named-assignment match, quotes and all. */
+function assignedValue(m) {
+  return m[0].slice(m[1].length * 2 + m[2].length + m[3].length);
+}
+
+/** The named-assignment rule alone, over `text`: for a value a non-secret key carries. */
+function redactNamedAssignments(text) {
+  const rule = SECRET_RULES.find((candidate) => candidate.name === NAMED_ASSIGNMENT);
+  return text.replace(new RegExp(rule.re.source, rule.re.flags), rule.to);
+}
 
 function unquote(value) {
   const quote = value[0];
@@ -188,6 +207,11 @@ export function findSecretValues(text) {
   for (const rule of SECRET_RULES) {
     try {
       for (const match of text.matchAll(rule.re)) {
+        if (rule.name === NAMED_ASSIGNMENT && !namesASecret(match[2])) {
+          // `path: …` is not a secret, but its value may hold an assignment that is.
+          for (const nested of findSecretValues(assignedValue(match))) found.add(nested);
+          continue;
+        }
         const value = String(rule.secret ? rule.secret(match) : match[0]).trim();
         if (isLiteralSecret(value)) found.add(value);
       }
@@ -206,11 +230,12 @@ export function findSecretValues(text) {
  * redaction in a note. Built for the claude-config pre-commit scan (R-H5), which
  * must say where a secret is without printing it.
  *
- * One reading differs, and only here: `PAT` in a key name counts only as a word
- * (`GITHUB_PAT`, `githubPat`), not as the letters inside `output_path`,
- * `pattern` or `dispatch`. Redaction stays greedy — a spurious `[REDACTED]`
- * costs a note nothing — but a commit gate that fires on every `*_path = …` in
- * a skill's scripts (165 of 180 hits on the real `~/.claude`) can never pass.
+ * `PAT` in a key name counts only as a word (`GITHUB_PAT`, `githubPat`), not
+ * as the letters inside `output_path`, `pattern` or `dispatch` — the same
+ * reading `redact()` and `findSecretValues` use. A commit gate that fired on
+ * every `*_path = …` in a skill's scripts (165 of 180 hits on the real
+ * `~/.claude`) could never pass, and a note that lost every `path:` value,
+ * and every later mention of it, lost the file names it was about.
  *
  * A rule that throws is where this parts company with `redact()`. There a
  * skipped rule costs a little redaction; here it would be a scan that reports
@@ -238,7 +263,7 @@ function ruleMatches(text, rule) {
   for (const match of text.matchAll(rule.re)) {
     const value = String(rule.secret ? rule.secret(match) : match[0]).trim();
     if (!isLiteralSecret(value)) continue;
-    if (rule.name === 'named-secret-assignment' && !namesASecret(match[2])) continue;
+    if (rule.name === NAMED_ASSIGNMENT && !namesASecret(match[2])) continue;
     matches.push({ rule: rule.name, index: match.index });
   }
   return matches;
@@ -267,7 +292,7 @@ function namesASecret(key) {
   const name = String(key ?? '');
   const masked = name.replace(/pat/gi, (occurrence, offset) =>
     patIsAWord(occurrence, name[offset - 1], name[offset + 3]) ? occurrence : '#');
-  const rule = SECRET_RULES.find((candidate) => candidate.name === 'named-secret-assignment');
+  const rule = SECRET_RULES.find((candidate) => candidate.name === NAMED_ASSIGNMENT);
   return new RegExp(rule.re.source, 'i').test(`${masked}=probevalue`);
 }
 
