@@ -55,6 +55,12 @@ export const DEFAULT_BB2DASH_CHECKOUT = `${CURRENT_HOME}/projects/bb2dash`;
 /** Where bb2dash lived, under a home, before the move out of OneDrive; its notes name this cwd. */
 const ONEDRIVE_CHECKOUT_UNDER_HOME = 'OneDrive - Syracuse University/.fall2026/.projects2026/bb2dash';
 export const ONEDRIVE_BB2DASH_CHECKOUT = `${CURRENT_HOME}/${ONEDRIVE_CHECKOUT_UNDER_HOME}`;
+/**
+ * Worktrees of bb2dash that sit beside the checkout without the `-wt-` infix.
+ * Brief 66 G1 (bb2dash `docs/planning/sprint-1-hub/briefs/66_SESSION_ARCHIVAL_RAG.md`)
+ * names `bb2dash-retrieval` as one of bb2dash's worktrees.
+ */
+export const NAMED_BB2DASH_WORKTREES = Object.freeze(['bb2dash-retrieval']);
 /** Claude Code's per-project folder under a home, and the auto-memory folder inside one. */
 const CLAUDE_PROJECTS_UNDER_HOME = '.claude/projects';
 const MEMORY_FOLDER = 'memory';
@@ -160,7 +166,8 @@ function makeContext({ vaultRoot, checkout, home, formerHomes, projectsRoot, rel
 /**
  * Every place bb2dash lived, under the current home and each former one:
  * `checkouts` (the checkout, and its twin under every other home when it sits
- * under one; worktrees are `<checkout>-wt-*` beside each), `onedriveCheckouts`
+ * under one; worktrees are `<checkout>-wt-*` beside each), `namedWorktrees`
+ * (`NAMED_BB2DASH_WORKTREES` beside each checkout), `onedriveCheckouts`
  * (the pre-move checkout under every home) and `projectFolders` (Claude Code's
  * folder for each checkout, where workflow agents and auto-memory live).
  */
@@ -170,9 +177,11 @@ export function bb2dashPlaces({ checkout, home = '', formerHomes = FORMER_HOMES 
   const homes = uniqueText([ownHome, CURRENT_HOME, ...formerHomes].map((entry) => trimSlash(toPosix(String(entry ?? '')))).filter(Boolean));
   const owner = homes.find((entry) => isUnder(root, entry)) ?? '';
   const twins = owner ? homes.map((entry) => ({ home: entry, checkout: `${entry}${root.slice(owner.length)}` })) : [];
+  const checkouts = uniqueText([root, ...twins.map((twin) => twin.checkout)]);
   const projectFolderOf = (entryHome, entryCheckout) => `${entryHome}/${CLAUDE_PROJECTS_UNDER_HOME}/${encodeProjectName(entryCheckout)}`;
   return {
-    checkouts: uniqueText([root, ...twins.map((twin) => twin.checkout)]),
+    checkouts,
+    namedWorktrees: uniqueText(checkouts.flatMap((entry) => NAMED_BB2DASH_WORKTREES.map((name) => `${path.posix.dirname(entry)}/${name}`))),
     onedriveCheckouts: uniqueText(homes.map((entry) => `${entry}/${ONEDRIVE_CHECKOUT_UNDER_HOME}`)),
     projectFolders: uniqueText([
       ...(ownHome ? [projectFolderOf(ownHome, root)] : []),
@@ -309,6 +318,7 @@ function deriveRepo(note, ctx, parent, sources) {
     if (parent?.repo) return pick(parent.repo, `parent note ${note.fields.parent_session}`);
     const fromTranscript = parentTranscriptRepo(cwd, ctx);
     if (fromTranscript) return pick(fromTranscript, 'parent transcript cwd');
+    if (isProjectFolderAgent(cwd, ctx)) return pick(BB2DASH_REPO, "bb2dash's Claude project folder (no parent note or transcript)");
   }
   const own = cwd && isLocalPath(cwd) ? ctx.resolveRepoFor(cwd)?.repoFullName ?? '' : '';
   if (own) return pick(own, 'cwd git remote');
@@ -427,7 +437,7 @@ function relativeTo(file, ctx) {
 
 /** The checkouts under every home, the worktree folder a path is in, and the pre-move OneDrive checkouts. */
 function checkoutRoots(posix, ctx) {
-  const roots = [...ctx.checkouts, ...ctx.onedriveCheckouts];
+  const roots = [...ctx.checkouts, ...ctx.namedWorktrees, ...ctx.onedriveCheckouts];
   for (const checkout of ctx.checkouts) {
     if (!posix.toLowerCase().startsWith(`${checkout.toLowerCase()}-wt-`)) continue;
     const slash = posix.indexOf('/', checkout.length + 1);
@@ -474,6 +484,14 @@ function isWorkflowCwd(cwd, ctx) {
 /** `<any home>/.claude/projects/<bb2dash encoded>/memory`: bb2dash's own auto-memory folder, or below it. */
 function isMemoryCwd(cwd, ctx) {
   return ctx.projectFolders.some((folder) => isAtOrUnder(cwd, `${folder}/${MEMORY_FOLDER}`));
+}
+
+/**
+ * Below bb2dash's own project folder itself (`…/C--Users-<user>-projects-bb2dash/<sid>/subagents/…`),
+ * never a `-wt-` one: that folder name encodes the parent session's cwd, bb2dash's checkout.
+ */
+function isProjectFolderAgent(cwd, ctx) {
+  return ctx.projectFolders.some((folder) => isUnder(cwd, folder));
 }
 
 /** The pre-move OneDrive checkout under any home, or a path below it. */
@@ -639,10 +657,12 @@ function isIndexed(plan) {
 
 // ------------------------------------------------------------------ helpers
 
-/** A cwd in a bb2dash checkout under any home, or in a `-wt-*` worktree beside one. */
+/** A cwd in a bb2dash checkout under any home, in a `-wt-*` worktree beside one, or in a named worktree. */
 function cwdInCheckout(cwd, ctx) {
   const value = toPosix(cwd).toLowerCase();
-  return Boolean(value) && ctx.checkouts.some((checkout) => isAtOrUnder(value, checkout) || value.startsWith(`${checkout.toLowerCase()}-wt-`));
+  if (!value) return false;
+  return ctx.checkouts.some((checkout) => isAtOrUnder(value, checkout) || value.startsWith(`${checkout.toLowerCase()}-wt-`))
+    || ctx.namedWorktrees.some((worktree) => isAtOrUnder(value, worktree));
 }
 
 /** `child` is strictly below `root`, compared case-insensitively. */
