@@ -537,6 +537,31 @@ test('the claude-config row sits just before the SessionStart rows', () => {
   }
 });
 
+// ------------------------------------------------ DATABASE_URL as a secret file (Phase 14)
+
+test('DATABASE_URL row: set when DATABASE_URL_FILE names a readable file, ABSENT with the reason when it does not', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { env } = vaultWith(root);
+    const file = path.join(root, 'harness_database_url');
+    fs.writeFileSync(file, 'postgresql://u:hunter2@h/db\n');
+    const urlRow = (extra) => diagnose({ ...env, ...extra }, root).find(([label]) => label === 'DATABASE_URL');
+
+    // What `docker compose exec harness-jobs node hooks/doctor.mjs` sees: the file's name, not its content.
+    assert.deepEqual(urlRow({ DATABASE_URL_FILE: file }), ['DATABASE_URL', 'set (read from DATABASE_URL_FILE)', false]);
+    assert.ok(!JSON.stringify(diagnose({ ...env, DATABASE_URL_FILE: file }, root)).includes('hunter2'));
+
+    const absent = path.join(root, 'absent');
+    assert.deepEqual(urlRow({ DATABASE_URL_FILE: absent }), [
+      'DATABASE_URL', `ABSENT (DATABASE_URL_FILE names ${absent}, which is not a readable file)`, true,
+    ]);
+    assert.deepEqual(urlRow({ DATABASE_URL: 'postgresql://u:hunter2@h/db' }), ['DATABASE_URL', 'set', false]);
+    assert.deepEqual(urlRow({}), ['DATABASE_URL', 'ABSENT', true]);
+  } finally {
+    cleanup();
+  }
+});
+
 // ------------------------------------------------ realm clean and pushed rows, the nightly ingest row (Phase 14)
 
 const STATUS = '--no-optional-locks status --porcelain=v1 -z --untracked-files=all';

@@ -78,7 +78,11 @@ RUN ln -s /state/eval-history.jsonl ingest/eval/history.jsonl
 # Where everything is, for the jobs and for doctor. HARNESS_UV is the name the
 # nightly script reads and HARNESS_UV_BIN the one the hooks read: one path.
 # uv never syncs, downloads or caches at run time: the virtualenv is the lock.
+# GIT_CONFIG_GLOBAL is fixed here, not exported by the entrypoint: the
+# entrypoint writes that file (safe.directory, the credential helper; no token),
+# and a `docker compose exec` gets this variable and so the same file.
 ENV HARNESS_VAULT=/vault \
+    GIT_CONFIG_GLOBAL=/home/harness/.gitconfig-jobs \
     HARNESS_INGEST_PROJECT=/app/ingest \
     HARNESS_HOOKS_DIR=/app/hooks \
     HARNESS_NODE=/usr/local/bin/node \

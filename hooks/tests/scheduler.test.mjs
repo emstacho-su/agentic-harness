@@ -8,6 +8,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +20,8 @@ import { EMPTY_STATE, JOB_COLLECT, JOB_NIGHTLY, serializeState, withStart } from
 import {
   DEFAULT_STATE_FILE,
   EXIT_BUSY,
+  EXIT_CONFIG,
+  EXIT_INTERNAL,
   EXIT_OK,
   EXIT_SPAWN_FAILED,
   EXIT_USAGE,
@@ -26,10 +29,12 @@ import {
   OWNER_RUN_NOW,
   RUN_LOCK_FILENAME,
   RUN_LOCK_STALE_MS,
+  SECRET_FILE_VARS,
   STATE_ENV_VAR,
   TICK_MS,
   acquireRunLock,
   createStopper,
+  envWithSecretFiles,
   main,
   parseArgs,
   readState,
@@ -37,6 +42,7 @@ import {
   runLoop,
   signalJob,
   spawnJob,
+  spawnRunner,
   tick,
   writeStateAtomic,
 } from '../scheduler.mjs';
@@ -617,4 +623,175 @@ test('the state file the scheduler writes is the one schedule.mjs serializes', (
   const state = bothRanAt('2026-10-31T07:00:00.000Z');
   writeStateAtomic(s.stateFile, state);
   assert.equal(fs.readFileSync(s.stateFile, 'utf8'), serializeState(state));
+});
+
+// ------------------------------------------------ secrets from files, for a process the entrypoint did not start
+
+/** A made-up connection string. Nothing in these tests is a real credential. */
+const FAKE_URL = 'postgresql://harness:not-a-real-password@localhost:5433/harness';
+
+/** A child that exits 0 as soon as someone listens for its exit; records what it was spawned with. */
+function fakeSpawn(spawned) {
+  return (command, args, options) => {
+    spawned.push({ command, args, options });
+    return {
+      pid: 4242,
+      once(event, listener) {
+        if (event === 'exit') setImmediate(() => listener(0, null));
+      },
+    };
+  };
+}
+
+test('envWithSecretFiles reads DATABASE_URL from DATABASE_URL_FILE and leaves the input alone', (t) => {
+  const s = scratch(t);
+  const file = path.join(s.root, 'harness_database_url');
+  fs.writeFileSync(file, `${FAKE_URL}\r\n`);
+  const env = Object.freeze({ PATH: '/bin', DATABASE_URL_FILE: file, HARNESS_INGEST_STATE_FILE: '/state/ingest-state.json' });
+
+  const resolved = envWithSecretFiles(env);
+
+  assert.equal(resolved.ok, true);
+  assert.deepEqual(resolved.env, { PATH: '/bin', DATABASE_URL: FAKE_URL, HARNESS_INGEST_STATE_FILE: '/state/ingest-state.json' },
+    'the CR and LF are gone, the _FILE name is consumed, and another variable that ends in _FILE is not a secret');
+  assert.deepEqual(resolved.fromFiles, ['DATABASE_URL']);
+  assert.deepEqual(SECRET_FILE_VARS, ['DATABASE_URL']);
+  assert.equal(env.DATABASE_URL, undefined);
+
+  const plain = envWithSecretFiles({ PATH: '/bin', DATABASE_URL: FAKE_URL });
+  assert.deepEqual(plain, { ok: true, env: { PATH: '/bin', DATABASE_URL: FAKE_URL }, fromFiles: [] }, 'what the entrypoint already exported passes through');
+  assert.deepEqual(envWithSecretFiles({}), { ok: true, env: {}, fromFiles: [] });
+});
+
+test('envWithSecretFiles refuses a missing file, an empty one, and both names at once, and never quotes a value', (t) => {
+  const s = scratch(t);
+  const empty = path.join(s.root, 'empty');
+  const good = path.join(s.root, 'good');
+  fs.writeFileSync(empty, '\r\n');
+  fs.writeFileSync(good, FAKE_URL);
+  const absent = path.join(s.root, 'absent');
+
+  assert.deepEqual(envWithSecretFiles({ DATABASE_URL_FILE: absent }), {
+    ok: false, problem: `DATABASE_URL_FILE names ${absent}, which is not a readable file`,
+  });
+  assert.deepEqual(envWithSecretFiles({ DATABASE_URL_FILE: empty }), {
+    ok: false, problem: `DATABASE_URL_FILE names ${empty}, which is empty`,
+  });
+  const both = envWithSecretFiles({ DATABASE_URL_FILE: good, DATABASE_URL: 'postgresql://other:also-not-real@h/db' });
+  assert.deepEqual(both, { ok: false, problem: 'DATABASE_URL and DATABASE_URL_FILE are both set; set only DATABASE_URL_FILE' });
+  assert.ok(!JSON.stringify(both).includes('not-real'));
+});
+
+test('--run-now from an exec: the job is spawned with DATABASE_URL read from the file', async (t) => {
+  const s = scratch(t);
+  const file = path.join(s.root, 'harness_database_url');
+  fs.writeFileSync(file, `${FAKE_URL}\n`);
+  const spawned = [];
+  const lines = [];
+
+  // What `docker compose exec harness-jobs node hooks/scheduler.mjs --run-now nightly` has:
+  // the service's environment, with the file's name and not its content.
+  const code = await main(['--run-now', 'nightly', '--state', s.stateFile], {
+    now: () => at('2026-10-31T09:00:00.000Z'),
+    env: { PATH: process.env.PATH, DATABASE_URL_FILE: file, HARNESS_VAULT: '/vault' },
+    spawn: fakeSpawn(spawned),
+    out: (line) => lines.push(line),
+    err: (line) => lines.push(line),
+  });
+
+  assert.equal(code, EXIT_OK, lines.join('\n'));
+  assert.equal(spawned.length, 1);
+  assert.equal(spawned[0].command, 'bash');
+  assert.equal(spawned[0].options.env.DATABASE_URL, FAKE_URL);
+  assert.equal(spawned[0].options.env.DATABASE_URL_FILE, undefined);
+  assert.equal(spawned[0].options.env.HARNESS_VAULT, '/vault');
+  assert.ok(!lines.join('\n').includes('not-a-real-password'), 'the value reaches the child and nothing else');
+});
+
+test('a secret file that cannot be read stops the scheduler with exit 78 before anything runs', async (t) => {
+  const s = scratch(t);
+  const absent = path.join(s.root, 'absent');
+  const spawned = [];
+  const lines = [];
+  for (const argv of [['--run-now', 'nightly', '--state', s.stateFile], ['--state', s.stateFile]]) {
+    const code = await main(argv, {
+      env: { DATABASE_URL_FILE: absent },
+      spawn: fakeSpawn(spawned),
+      shouldStop: () => true,
+      out: () => {},
+      err: (line) => lines.push(line),
+    });
+    assert.equal(code, EXIT_CONFIG);
+  }
+  assert.equal(EXIT_CONFIG, 78);
+  assert.deepEqual(spawned, []);
+  assert.ok(!fs.existsSync(s.stateFile));
+  assert.match(lines[0], /^error: DATABASE_URL_FILE names .*absent, which is not a readable file$/);
+});
+
+test('main starts a real job only when it is handed spawn: without a runner or spawn it refuses', async (t) => {
+  // The guard this test pins exists because a test once reached the default
+  // runner by omission and ran the real nightly. Neither call below may start
+  // anything whatever main does: the loop is told to stop before its first tick.
+  const s = scratch(t);
+  const lines = [];
+  const code = await main(['--state', s.stateFile], { env: {}, shouldStop: () => true, out: () => {}, err: (line) => lines.push(line) });
+  assert.equal(code, EXIT_INTERNAL);
+  assert.deepEqual(lines, ['error: no runner and no spawn were given, so no job can be started']);
+  assert.throws(() => spawnRunner({ env: {} }), /needs the spawn to use/);
+  assert.ok(!fs.existsSync(s.stateFile));
+});
+
+// ------------------------------------------------ the entrypoint script (bash)
+
+const ENTRYPOINT = path.join(REPO, 'scripts', 'jobs-entrypoint.sh').replace(/\\/g, '/');
+
+/**
+ * Whether `bash` here can run a script of this checkout: true on Linux and in
+ * Git Bash; false where there is no bash, or where `bash` is the WSL launcher,
+ * which cannot see a Windows path. The Linux CI leg always runs these.
+ */
+const BASH_RUNS_REPO_SCRIPTS = spawnSync('bash', ['-c', 'test -f "$1" && echo ok', 'probe', ENTRYPOINT], { encoding: 'utf8' }).stdout?.trim() === 'ok';
+const NEEDS_BASH = BASH_RUNS_REPO_SCRIPTS ? false : 'no bash that can run this checkout\'s scripts';
+
+/** A scratch folder as bash and git name it: forward slashes on every platform. */
+function scratchForBash(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jobs-entrypoint-')).replace(/\\/g, '/');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
+/** Run the entrypoint with `command` under a minimal environment plus `env`. */
+function runEntrypoint(root, env, command) {
+  return spawnSync('bash', [ENTRYPOINT, ...command], {
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: '1', ...env },
+  });
+}
+
+test('the entrypoint writes the git config where GIT_CONFIG_GLOBAL already points, so an exec finds it', { skip: NEEDS_BASH }, (t) => {
+  const root = scratchForBash(t);
+  fs.mkdirSync(`${root}/vault/projects/.git`, { recursive: true });
+  fs.mkdirSync(`${root}/vault/daily`, { recursive: true });
+  const fixed = `${root}/gitconfig-jobs`;
+
+  const run = runEntrypoint(root, { GIT_CONFIG_GLOBAL: fixed, HARNESS_VAULT: `${root}/vault` }, ['bash', '-c', 'printf %s "$GIT_CONFIG_GLOBAL"']);
+
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout, fixed, 'the path the image set is kept, not replaced');
+  const config = fs.readFileSync(fixed, 'utf8');
+  assert.match(config, /directory = .*\/vault\/projects/);
+  assert.ok(!config.includes('/vault/daily'), 'a folder that is not a checkout is not marked safe');
+
+  // A second process that only inherits the variable, as `docker compose exec` does, reads the same file.
+  const exec = spawnSync('git', ['config', '--global', '--get-all', 'safe.directory'], {
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, HOME: `${root}/elsewhere`, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: fixed },
+  });
+  assert.equal(exec.stdout.trim(), `${root}/vault/projects`);
+});
+
+test('the image fixes GIT_CONFIG_GLOBAL, so the entrypoint and an exec agree on the file', () => {
+  const dockerfile = fs.readFileSync(path.join(REPO, 'docker', 'jobs', 'Dockerfile'), 'utf8');
+  assert.match(dockerfile, /^\s+GIT_CONFIG_GLOBAL=\/home\/harness\/\.gitconfig-jobs \\?$/m);
 });

@@ -48,6 +48,7 @@ import { isSyncPath } from './lib/realm-guard.mjs';
 import { describeHolder, gitDirKind, peekRealmLock } from './lib/realm-lock.mjs';
 import { parsePorcelainZ, splitBySyncPath } from './lib/realm-status.mjs';
 import { NO_SUCH_REMOTE_STATUS, redactRemoteUrl } from './lib/realm-steps.mjs';
+import { envWithSecretFiles } from './scheduler.mjs';
 import { registrationStatus } from './lib/settings.mjs';
 import { LOG_ENV_VAR as SESSION_START_LOG_VAR } from './lib/start-brief.mjs';
 
@@ -408,6 +409,21 @@ function nightlyIngestRow(merged, home, now) {
   return row(label, `${file}, last success ${formatAge(ageMs)} ago${note}`, stale);
 }
 
+/**
+ * Whether the store's connection string is there, never what it is. In the
+ * jobs container it arrives as DATABASE_URL_FILE, a secret file the entrypoint
+ * reads; a doctor started by `docker compose exec` sees only the file's name,
+ * so the row resolves it the way the scheduler does and says where it came
+ * from. A file that is named and cannot be used is ABSENT, with the reason.
+ */
+function databaseUrlRow(merged) {
+  const label = 'DATABASE_URL';
+  const secrets = envWithSecretFiles(merged);
+  if (!secrets.ok) return row(label, `ABSENT (${secrets.problem})`, true);
+  if (!secrets.env.DATABASE_URL) return row(label, 'ABSENT', true);
+  return row(label, secrets.fromFiles.includes(label) ? 'set (read from DATABASE_URL_FILE)' : 'set');
+}
+
 /** The clone bootstrap step 7 makes and `install.mjs --config` reads (R-H5). */
 const CONFIG_REPO_DIRNAME = 'claude-config';
 /** https, ssh:// or scp-style GitHub remotes of the one repo the config may live in (userinfo already stripped). */
@@ -481,7 +497,7 @@ export function diagnose(env = process.env, home = os.homedir(), { runGit = runG
     row('uv', uv || '(not found: ~/.local/bin or PATH)', !uv),
     row('node', process.execPath),
     row('mcp-server build', built ? distIndex : `${distIndex} (not built: npm run build)`, !built),
-    row('DATABASE_URL', merged.DATABASE_URL ? 'set' : 'ABSENT', !merged.DATABASE_URL),
+    databaseUrlRow(merged),
     row('DATABASE_CA_CERT', caCert ? `${caCert} ${caCertMissing ? '(MISSING)' : ''}`.trim() : '(unset)', caCertMissing),
     row('DATABASE_SSL', merged.DATABASE_SSL || '(default: verify-full)'),
     claudeConfigRow(home, runGit, now),

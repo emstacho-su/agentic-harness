@@ -13,7 +13,13 @@
 #    container: a job that runs without its store would only fail later, at 03:00.
 #    The list is explicit on purpose. A loop over every *_FILE variable would
 #    also read HARNESS_INGEST_STATE_FILE, which is a path and not a secret.
-# 2. Git. A fresh global config for this container, written at each start:
+#    A process started by `docker compose exec` does not pass through here. It
+#    has DATABASE_URL_FILE (the service's environment) and not DATABASE_URL, so
+#    hooks/scheduler.mjs reads the same list of files itself (envWithSecretFiles)
+#    and doctor.mjs reports through it.
+# 2. Git. A fresh global config for this container, written at each start to
+#    the path GIT_CONFIG_GLOBAL names (fixed by the image, so an exec'd process
+#    reads it too). It holds no token:
 #    - `safe.directory` for every realm checkout under the vault and every
 #      checkpoint repository. A bind-mounted Windows checkout is owned by root
 #      as seen from here, and git refuses a repository owned by someone else.
@@ -56,7 +62,11 @@ for name in $SECRET_FILE_VARS; do
   unset value "$file_var"
 done
 
-export GIT_CONFIG_GLOBAL="${HOME}/.gitconfig-jobs"
+# The image sets GIT_CONFIG_GLOBAL to a fixed path, and that is the file written
+# here. A process started later by `docker compose exec` inherits the variable
+# from the image, not from this script, so it reads the same file. The fallback
+# is for running this script outside the image.
+export GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-${HOME}/.gitconfig-jobs}"
 : > "$GIT_CONFIG_GLOBAL"
 
 trust_checkout() {

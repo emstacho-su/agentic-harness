@@ -82,6 +82,52 @@ export const EXIT_OK = 0;
 export const EXIT_USAGE = 64;
 export const EXIT_INTERNAL = 70;
 export const EXIT_BUSY = 75;
+/** A setting that cannot be used (a secret file that is missing or empty): EX_CONFIG, as the entrypoint. */
+export const EXIT_CONFIG = 78;
+
+/**
+ * The variables that may arrive as `<NAME>_FILE`, a file holding the value
+ * (a Docker secret). The same list as scripts/jobs-entrypoint.sh, explicit for
+ * the same reason: HARNESS_INGEST_STATE_FILE ends in _FILE and is a path.
+ */
+export const SECRET_FILE_VARS = Object.freeze(['DATABASE_URL']);
+
+/**
+ * The environment with each `<NAME>_FILE` of SECRET_FILE_VARS read into
+ * `<NAME>`: what scripts/jobs-entrypoint.sh does for the processes it starts,
+ * done again here for the ones it does not start. `docker compose exec` gives
+ * a process the service's environment (the file's name) and not the
+ * entrypoint's exports (its content), so without this an exec'd
+ * `scheduler.mjs --run-now nightly` would run the ingest with no store.
+ *
+ * Returns `{ ok: true, env, fromFiles }` with a new object (the input is not
+ * changed), or `{ ok: false, problem }`. A value the entrypoint already
+ * exported passes through. A file that is named but missing or empty is a
+ * problem, and so is having both names set: the same three refusals as the
+ * entrypoint. A problem names the variable and the path, never a value.
+ */
+export function envWithSecretFiles(env, { readFile = (file) => fs.readFileSync(file, 'utf8') } = {}) {
+  const resolved = { ...env };
+  const fromFiles = [];
+  for (const name of SECRET_FILE_VARS) {
+    const fileVar = `${name}_FILE`;
+    const file = env[fileVar];
+    if (!file) continue;
+    if (env[name]) return { ok: false, problem: `${name} and ${fileVar} are both set; set only ${fileVar}` };
+    let text;
+    try {
+      text = readFile(file);
+    } catch {
+      return { ok: false, problem: `${fileVar} names ${file}, which is not a readable file` };
+    }
+    const value = text.replace(/[\r\n]/g, '');
+    if (!value) return { ok: false, problem: `${fileVar} names ${file}, which is empty` };
+    resolved[name] = value;
+    delete resolved[fileVar];
+    fromFiles.push(name);
+  }
+  return { ok: true, env: resolved, fromFiles };
+}
 /** What a shell reports for a command it could not start. */
 export const EXIT_SPAWN_FAILED = 127;
 /** A child ended by signal n is reported as 128 + n, as a shell does. */
@@ -386,9 +432,15 @@ export async function runLoop(deps) {
  * stderr, and resolve with its exit code. The working directory is the home
  * directory and the script is named by its full path, the package's spawn rule
  * (lib/spawn.mjs). `onChild` hears the running child, then null when it ends.
+ *
+ * `spawn` has no default on purpose. This is the one function that turns a job
+ * name into the real nightly or the real collector, and the only caller that
+ * may do that is the process entry point, which passes node's own spawn. A
+ * caller that forgets it gets an error, not a reconcile of the live vault.
  */
-export function spawnRunner({ env = process.env, repoRoot = path.resolve(HERE, '..'), onChild = () => {} } = {}) {
-  return (job) => spawnJob(jobCommand(job, { repoRoot, node: process.execPath, env }), { env, onChild });
+export function spawnRunner({ env, repoRoot = path.resolve(HERE, '..'), onChild = () => {}, spawn: spawnImpl } = {}) {
+  if (typeof spawnImpl !== 'function') throw new Error('spawnRunner needs the spawn to use');
+  return (job) => spawnJob(jobCommand(job, { repoRoot, node: process.execPath, env }), { env, onChild, spawn: spawnImpl });
 }
 
 const WINDOWS = 'win32';
@@ -446,8 +498,14 @@ export function signalJob(child, signal, { platform = process.platform, kill = (
  * One invocation: `--run-now <job>` runs that job and returns its exit code;
  * no flag runs the loop until `shouldStop`. Everything that touches the clock,
  * the processes or the terminal is a parameter, for the tests.
+ *
+ * Jobs are run by `runner` when one is given, otherwise by the real commands
+ * through `spawn`. With neither, nothing is started and the exit is 70: only
+ * the entry point below passes node's spawn. The jobs' environment is `env`
+ * with its secret files read in (`envWithSecretFiles`), so a process started
+ * by `docker compose exec` runs them as the entrypoint's own child would.
  */
-export async function main(argv, { env = process.env, out = console.log, err = console.error, ...overrides } = {}) {
+export async function main(argv, { env = process.env, out = console.log, err = console.error, runner, spawn: spawnImpl, onChild, ...overrides } = {}) {
   const parsed = parseArgs(argv, env);
   if (!parsed.ok) {
     err(`error: ${parsed.error}\n${USAGE}`);
@@ -457,11 +515,20 @@ export async function main(argv, { env = process.env, out = console.log, err = c
     out(USAGE);
     return EXIT_OK;
   }
+  const secrets = envWithSecretFiles(env);
+  if (!secrets.ok) {
+    err(`error: ${secrets.problem}`);
+    return EXIT_CONFIG;
+  }
+  if (typeof runner !== 'function' && typeof spawnImpl !== 'function') {
+    err('error: no runner and no spawn were given, so no job can be started');
+    return EXIT_INTERNAL;
+  }
   const deps = {
     now: Date.now,
     log: (line) => out(`${new Date().toISOString()} scheduler: ${line}`),
-    runner: spawnRunner({ env }),
     ...overrides,
+    runner: runner ?? spawnRunner({ env: secrets.env, onChild, spawn: spawnImpl }),
     stateFile: parsed.options.stateFile,
   };
 
@@ -519,8 +586,7 @@ function runAsProcess() {
   const stopper = createStopper();
   process.once('SIGTERM', () => stopper.stop('SIGTERM'));
   process.once('SIGINT', () => stopper.stop('SIGINT'));
-  const runner = spawnRunner({ onChild: stopper.onChild });
-  return main(process.argv.slice(2), { runner, sleep: stopper.sleep, shouldStop: stopper.shouldStop });
+  return main(process.argv.slice(2), { spawn, onChild: stopper.onChild, sleep: stopper.sleep, shouldStop: stopper.shouldStop });
 }
 
 if (isEntryPoint(import.meta.url)) {
