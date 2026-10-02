@@ -20,6 +20,8 @@ import {
   EXIT_OK,
   EXIT_SPAWN_FAILED,
   EXIT_USAGE,
+  OWNER_LOOP,
+  OWNER_RUN_NOW,
   RUN_LOCK_FILENAME,
   RUN_LOCK_STALE_MS,
   STATE_ENV_VAR,
@@ -35,7 +37,6 @@ import {
 } from '../scheduler.mjs';
 
 const at = (iso) => Date.parse(iso);
-const HOST = 'jobs-container';
 const DEAD_PID = 999_999;
 
 function scratch(t) {
@@ -60,9 +61,9 @@ function recordingRunner(code = 0) {
   return { ran, runner };
 }
 
-/** Dependencies for `tick` and `main`: a fixed clock, a quiet log, one host. */
+/** Dependencies for `tick` and `main`: a fixed clock and a quiet log. */
 function deps(s, now, extra = {}) {
-  return { stateFile: s.stateFile, now: () => at(now), log: () => {}, host: HOST, pid: process.pid, ...extra };
+  return { stateFile: s.stateFile, now: () => at(now), log: () => {}, pid: process.pid, ...extra };
 }
 
 const stateOnDisk = (s) => JSON.parse(fs.readFileSync(s.stateFile, 'utf8'));
@@ -185,7 +186,7 @@ test('a restart mid-run never runs it twice', async (t) => {
   // What a scheduler killed inside the nightly leaves on disk: the lock it took
   // and the last_run_at it wrote before starting the job, with no finish.
   const startedAtMs = at('2026-10-31T07:00:10.000Z');
-  const dead = acquireRunLock(s.stateFile, { job: JOB_NIGHTLY, pid: DEAD_PID, host: HOST, now: startedAtMs, isAlive: () => true });
+  const dead = acquireRunLock(s.stateFile, { job: JOB_NIGHTLY, owner: OWNER_LOOP, pid: DEAD_PID, now: startedAtMs });
   assert.equal(dead.ok, true);
   writeStateAtomic(s.stateFile, withStart(bothRanAt('2026-10-30T22:30:00.000Z'), JOB_NIGHTLY, {
     startedAtMs,
@@ -195,16 +196,40 @@ test('a restart mid-run never runs it twice', async (t) => {
 
   // The restarted scheduler, minutes later, inside the same window.
   const { ran, runner } = recordingRunner();
-  const results = await tick(deps(s, '2026-10-31T07:05:00.000Z', { runner, isAlive: () => false }));
+  const results = await tick(deps(s, '2026-10-31T07:05:00.000Z', { runner }));
 
   assert.deepEqual(ran, [], 'the interrupted nightly is not started again');
   assert.deepEqual(results, []);
 
-  // The dead lock does not block the next job that comes due.
-  const later = await tick(deps(s, '2026-10-31T16:00:00.000Z', { runner, isAlive: () => false }));
+  // The dead lock is past the stale window by the time the next job comes due, and does not block it.
+  const later = await tick(deps(s, '2026-10-31T16:00:00.000Z', { runner }));
   assert.deepEqual(ran, ['collect']);
   assert.equal(later[0].ran, true);
   assert.ok(!fs.existsSync(s.lockPath), 'the lock is released after the run');
+});
+
+test('a lock left by a killed run delays the next job until it is stale, and never drops it', async (t) => {
+  const s = scratch(t);
+  writeStateAtomic(s.stateFile, bothRanAt('2026-10-31T07:00:10.000Z'));
+  // A --run-now killed with its container at 11:50 New York: nothing will ever release this lock.
+  const leftAt = at('2026-10-31T15:50:00.000Z');
+  assert.equal(acquireRunLock(s.stateFile, { job: JOB_NIGHTLY, owner: OWNER_RUN_NOW, pid: process.pid, now: leftAt }).ok, true);
+  const { ran, runner } = recordingRunner();
+  const lines = [];
+  const at12 = deps(s, '2026-10-31T16:00:00.000Z', { runner, log: (line) => lines.push(line) });
+
+  const waiting = await tick(at12);
+  assert.deepEqual(ran, [], 'the lock names this very pid and is ten minutes old: it is still someone else\'s');
+  assert.equal(waiting[0].busy, true);
+  assert.equal(stateOnDisk(s).jobs.collect.last_run_at, '2026-10-31T07:00:10.000Z', 'a job that waits is not stamped, so it stays due');
+  assert.ok(lines.some((line) => /collect: waiting, busy: nightly running since 2026-10-31T15:50:00\.000Z \(--run-now, pid \d+\)/.test(line)), lines.join('\n'));
+
+  await tick(deps(s, new Date(leftAt + RUN_LOCK_STALE_MS).toISOString(), { runner }));
+  assert.deepEqual(ran, [], 'exactly at the stale window it is still held');
+
+  const after = await tick(deps(s, new Date(leftAt + RUN_LOCK_STALE_MS + 1000).toISOString(), { runner }));
+  assert.deepEqual(ran, ['collect'], 'past the window the lock is taken over and the waiting job runs');
+  assert.equal(after[0].ran, true);
 });
 
 test('a runner that cannot start is recorded and never thrown', async (t) => {
@@ -244,7 +269,7 @@ test('nightly and collect never overlap: the second starts after the first has e
   const second = recordingRunner();
   const lines = [];
   const code = await main(['--run-now', 'collect', '--state', s.stateFile], {
-    ...deps(s, '2026-10-31T16:00:05.000Z', { runner: second.runner, isAlive: () => true, pid: process.pid + 1 }),
+    ...deps(s, '2026-10-31T16:00:05.000Z', { runner: second.runner }),
     out: (line) => lines.push(line),
     err: (line) => lines.push(line),
     env: {},
@@ -291,36 +316,102 @@ test('a bad argument is exit 64 with the usage, and nothing runs', async (t) => 
   assert.ok(!fs.existsSync(s.stateFile));
 });
 
-test('the run lock: a live holder keeps it, a dead or too-old one is taken over', (t) => {
+test('the run lock is judged by age alone: a pid says nothing in a container', (t) => {
   const s = scratch(t);
   const now = at('2026-10-31T07:00:00.000Z');
-  const first = acquireRunLock(s.stateFile, { job: 'nightly', pid: 41, host: HOST, now, isAlive: () => true });
+  assert.equal(RUN_LOCK_STALE_MS, 6 * 60 * 60_000);
+  const first = acquireRunLock(s.stateFile, { job: 'nightly', owner: OWNER_LOOP, pid: 7, now });
   assert.equal(first.ok, true);
   assert.equal(first.lockPath, s.lockPath);
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(s.lockPath, 'utf8'))).sort(), ['job', 'owner', 'pid', 'startedAt', 'token']);
 
-  const held = acquireRunLock(s.stateFile, { job: 'collect', pid: 42, host: HOST, now: now + 60_000, isAlive: () => true });
+  const held = acquireRunLock(s.stateFile, { job: 'collect', owner: OWNER_RUN_NOW, pid: 42, now: now + 60_000 });
   assert.equal(held.ok, false);
-  assert.equal(held.holder.job, 'nightly');
-  assert.equal(held.holder.pid, 41);
+  assert.equal(held.reason, 'held');
+  assert.deepEqual(
+    { job: held.holder.job, owner: held.holder.owner, pid: held.holder.pid, startedAt: held.holder.startedAt },
+    { job: 'nightly', owner: OWNER_LOOP, pid: 7, startedAt: '2026-10-31T07:00:00.000Z' },
+  );
 
-  const overDead = acquireRunLock(s.stateFile, { job: 'collect', pid: 42, host: HOST, now: now + 60_000, isAlive: () => false });
-  assert.equal(overDead.ok, true, 'a holder whose process is gone is taken over');
+  const samePidFresh = acquireRunLock(s.stateFile, { job: 'collect', owner: OWNER_LOOP, pid: 7, now: now + 60_000 });
+  assert.equal(samePidFresh.ok, false, 'pid 7 is every scheduler in every container: a fresh lock naming it is still held');
+
+  const atTheWindow = acquireRunLock(s.stateFile, { job: 'collect', owner: OWNER_RUN_NOW, pid: 42, now: now + RUN_LOCK_STALE_MS });
+  assert.equal(atTheWindow.ok, false, 'exactly at the stale window it is still held');
+
+  const pastIt = acquireRunLock(s.stateFile, { job: 'collect', owner: OWNER_RUN_NOW, pid: 42, now: now + RUN_LOCK_STALE_MS + 1 });
+  assert.equal(pastIt.ok, true, 'past the stale window any holder is taken over');
   assert.equal(JSON.parse(fs.readFileSync(s.lockPath, 'utf8')).job, 'collect');
+  assert.deepEqual(fs.readdirSync(s.root), [RUN_LOCK_FILENAME], 'the stale copy moved aside is removed');
+});
 
-  const otherHost = acquireRunLock(s.stateFile, { job: 'nightly', pid: 7, host: 'another-container', now: now + 120_000, isAlive: () => false });
-  assert.equal(otherHost.ok, false, 'a holder on another host cannot be probed, so only its age counts');
+test('a stale lock naming the current pid does not stop --run-now', async (t) => {
+  const s = scratch(t);
+  const now = '2026-10-31T16:00:00.000Z';
+  const left = acquireRunLock(s.stateFile, { job: 'nightly', owner: OWNER_LOOP, pid: process.pid, now: at(now) - RUN_LOCK_STALE_MS - 60_000 });
+  assert.equal(left.ok, true);
+  const { ran, runner } = recordingRunner();
 
-  const tooOld = acquireRunLock(s.stateFile, { job: 'nightly', pid: 7, host: 'another-container', now: now + 60_000 + RUN_LOCK_STALE_MS + 1, isAlive: () => true });
-  assert.equal(tooOld.ok, true, 'past the stale window any holder is taken over');
+  const code = await main(['--run-now', 'collect', '--state', s.stateFile], { ...deps(s, now, { runner }), out: () => {}, err: () => {}, env: {} });
 
-  const samePid = acquireRunLock(s.stateFile, { job: 'collect', pid: 7, host: 'another-container', now: now + 60_000 + RUN_LOCK_STALE_MS + 2, isAlive: () => true });
-  assert.equal(samePid.ok, true, 'a lock naming this very process was left by a previous life of the container');
+  assert.equal(code, EXIT_OK);
+  assert.deepEqual(ran, ['collect']);
+  assert.ok(!fs.existsSync(s.lockPath));
+});
+
+test('an unreadable lock file is judged by its own age, never treated as free', (t) => {
+  const s = scratch(t);
+  fs.writeFileSync(s.lockPath, 'not json');
+  const mtimeMs = fs.statSync(s.lockPath).mtimeMs;
+  assert.equal(acquireRunLock(s.stateFile, { job: 'collect', owner: OWNER_LOOP, pid: 7, now: mtimeMs + 60_000 }).ok, false);
+  assert.equal(acquireRunLock(s.stateFile, { job: 'collect', owner: OWNER_LOOP, pid: 7, now: mtimeMs + RUN_LOCK_STALE_MS + 1 }).ok, true);
+});
+
+test('a fresh lock moved aside by mistake is put back; when the path was taken meanwhile that is contention, not a holder', (t) => {
+  const s = scratch(t);
+  const now = at('2026-10-31T16:00:00.000Z');
+  const stale = () => {
+    fs.rmSync(s.root, { recursive: true, force: true });
+    fs.mkdirSync(s.root);
+    assert.equal(acquireRunLock(s.stateFile, { job: 'nightly', owner: OWNER_LOOP, pid: 7, now: now - RUN_LOCK_STALE_MS - 1 }).ok, true);
+  };
+  const freshLock = `${JSON.stringify({ pid: 9, owner: OWNER_RUN_NOW, job: 'collect', startedAt: new Date(now).toISOString(), token: 'fresh' })}\n`;
+  // Between our judging the stale lock and our rename, its holder released it and a
+  // fresh one was written: the file we move aside is the fresh lock.
+  const racing = (afterRename) => ({
+    ...fs,
+    renameSync: (from, to) => {
+      fs.writeFileSync(from, freshLock);
+      fs.renameSync(from, to);
+      afterRename();
+    },
+  });
+
+  stale();
+  const putBack = acquireRunLock(s.stateFile, { job: 'collect', owner: OWNER_LOOP, pid: 7, now, fsImpl: racing(() => {}) });
+  assert.equal(putBack.ok, false);
+  assert.equal(putBack.reason, 'held');
+  assert.equal(putBack.holder.token, undefined, 'a holder is described without its token');
+  assert.equal(putBack.holder.job, 'collect');
+  assert.equal(fs.readFileSync(s.lockPath, 'utf8'), freshLock, 'the fresh lock is back in place');
+  assert.deepEqual(fs.readdirSync(s.root), [RUN_LOCK_FILENAME]);
+
+  stale();
+  const third = `${JSON.stringify({ pid: 11, owner: OWNER_RUN_NOW, job: 'nightly', startedAt: new Date(now).toISOString(), token: 'third' })}\n`;
+  const contended = acquireRunLock(s.stateFile, {
+    job: 'collect', owner: OWNER_LOOP, pid: 7, now, fsImpl: racing(() => fs.writeFileSync(s.lockPath, third)),
+  });
+  assert.deepEqual(contended, { ok: false, reason: 'error', error: 'lock contended' });
+  assert.equal(fs.readFileSync(s.lockPath, 'utf8'), third, 'the third contender keeps the path');
+  const aside = fs.readdirSync(s.root).filter((name) => name !== RUN_LOCK_FILENAME);
+  assert.equal(aside.length, 1, 'the only copy of the fresh lock is kept');
+  assert.equal(fs.readFileSync(path.join(s.root, aside[0]), 'utf8'), freshLock);
 });
 
 test('release removes only a lock carrying our token', (t) => {
   const s = scratch(t);
   const now = at('2026-10-31T07:00:00.000Z');
-  const ours = acquireRunLock(s.stateFile, { job: 'nightly', pid: 41, host: HOST, now, isAlive: () => true });
+  const ours = acquireRunLock(s.stateFile, { job: 'nightly', owner: OWNER_LOOP, pid: 41, now });
   assert.deepEqual(releaseRunLock({ lockPath: ours.lockPath, token: 'someone-else' }), { ok: false, error: 'not ours' });
   assert.ok(fs.existsSync(s.lockPath));
   assert.deepEqual(releaseRunLock(ours), { ok: true });

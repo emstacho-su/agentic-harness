@@ -63,11 +63,20 @@ export const TICK_MS = 30_000;
 export const RUN_LOCK_FILENAME = 'scheduler.lock';
 
 /**
- * A lock older than this is taken over whoever holds it. Six hours is several
- * times the longest nightly on record, and short enough that a lock left by a
- * removed container never costs more than one window.
+ * A lock older than this is taken over, whoever holds it. Age is the only
+ * signal (see `acquireRunLock`), so the window has to outlast any real job:
+ * six hours is far beyond a full re-embed of the vault. What it costs is delay,
+ * never a lost run. A lock is released in a `finally` on every exit the
+ * process survives; one left behind (SIGKILL, a host crash) makes the next job
+ * wait, still due, and it starts on the first tick after the window.
  */
 export const RUN_LOCK_STALE_MS = 6 * 60 * 60_000;
+
+/** Who took the lock, for the "busy" line. Not evidence of anything: only the token is. */
+export const OWNER_LOOP = 'scheduler loop';
+export const OWNER_RUN_NOW = '--run-now';
+
+const LOCK_CONTENDED = 'lock contended';
 
 export const EXIT_OK = 0;
 export const EXIT_USAGE = 64;
@@ -149,23 +158,18 @@ export function writeStateAtomic(stateFile, state, { fsImpl = fs } = {}) {
   }
 }
 
-/** Is a process with this pid running here? EPERM means yes, owned by someone else. */
-function pidIsAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err?.code === 'EPERM';
-  }
-}
-
-/** Read a lock file into `{ ok, text, holder, mtimeMs }`, or `{ ok: false, code }`. */
-function readLock(lockPath) {
+/**
+ * Read a lock file into `{ ok, text, token, holder, ageMs }`, or `{ ok: false, code }`.
+ * The holder is who to name in a message; the token is what a release compares.
+ * When the JSON or its startedAt cannot be trusted, the file's mtime stands in
+ * for the start time, so an unreadable lock ages out and is never taken as free.
+ */
+function readLock(lockPath, now, fsImpl = fs) {
   let text;
   let mtimeMs;
   try {
-    text = fs.readFileSync(lockPath, 'utf8');
-    mtimeMs = fs.statSync(lockPath).mtimeMs;
+    text = fsImpl.readFileSync(lockPath, 'utf8');
+    mtimeMs = fsImpl.statSync(lockPath).mtimeMs;
   } catch (err) {
     return Object.freeze({ ok: false, code: describe(err) });
   }
@@ -175,96 +179,101 @@ function readLock(lockPath) {
   } catch {
     body = null; // Unparseable: judged by the file's age alone.
   }
+  const startedMs = Date.parse(body?.startedAt ?? '');
+  const valid = Number.isFinite(startedMs);
   const holder = Object.freeze({
     pid: Number.isInteger(body?.pid) ? body.pid : null,
-    host: typeof body?.host === 'string' ? body.host : '',
+    owner: typeof body?.owner === 'string' ? body.owner : '',
     job: typeof body?.job === 'string' ? body.job : '',
-    startedAt: typeof body?.startedAt === 'string' ? body.startedAt : '',
-    token: typeof body?.token === 'string' ? body.token : '',
+    startedAt: valid ? new Date(startedMs).toISOString() : '',
   });
-  return Object.freeze({ ok: true, text, holder, mtimeMs });
+  const token = typeof body?.token === 'string' ? body.token : '';
+  return Object.freeze({ ok: true, text, token, holder, ageMs: now - (valid ? startedMs : mtimeMs) });
 }
 
-/**
- * Whether a lock's holder is gone. Past the stale window, always. Inside it,
- * only a holder on this host can be probed: it is gone when its process is, or
- * when the lock names this very process (which has not taken it, so it was
- * left by an earlier life of the container that reused the pid).
- */
-function holderIsGone({ holder, mtimeMs }, { pid, host, now, isAlive }) {
-  const startedMs = Date.parse(holder.startedAt);
-  if (now - (Number.isFinite(startedMs) ? startedMs : mtimeMs) > RUN_LOCK_STALE_MS) return true;
-  if (holder.pid === null || holder.host !== host) return false;
-  return holder.pid === pid || !isAlive(holder.pid);
-}
+const lockHeld = (holder) => Object.freeze({ ok: false, reason: 'held', holder });
+const lockFailed = (error) => Object.freeze({ ok: false, reason: 'error', error });
 
 /**
- * Move a dead holder's lock aside. `'retry'` when the path is free again;
- * a holder when the file we moved turned out to be a fresh lock written after
- * we judged (it is put back). The same dance as lib/realm-lock.mjs.
+ * Move a stale lock aside and make sure it was the one we judged. Returns
+ * `{ step: 'retry' }` to loop, `{ step: 'done', result }` to stop.
+ *
+ * If the file we moved carries another token, it is a fresh lock written after
+ * we judged, and it goes back with an exclusive write. When that write finds
+ * the path taken (a third contender, EEXIST) or fails any other way, nobody can
+ * be named as the holder: the result is an error, "lock contended", and the
+ * aside copy stays, being the only copy of the fresh holder's lock. The same
+ * steps and the same outcome as lib/realm-lock.mjs.
  */
-function evictLock(lockPath, judged) {
+function evictStaleLock(lockPath, judged, now, fsImpl) {
   const aside = `${lockPath}.stale-${randomUUID()}`;
   try {
-    fs.renameSync(lockPath, aside);
+    fsImpl.renameSync(lockPath, aside);
   } catch (err) {
-    if (err?.code === 'ENOENT') return 'retry'; // Another contender moved it first.
-    throw err;
+    if (err?.code === 'ENOENT') return { step: 'retry' }; // Another contender won the rename.
+    return { step: 'done', result: lockFailed(describe(err)) };
   }
-  const moved = readLock(aside);
-  if (moved.ok && moved.holder.token !== judged.holder.token) {
+  const moved = readLock(aside, now, fsImpl);
+  if (moved.ok && moved.token !== judged.token) {
     try {
-      fs.writeFileSync(lockPath, moved.text, { flag: 'wx' });
-      fs.rmSync(aside, { force: true });
-    } catch {
-      // A third contender took the path: the aside copy is the only copy of the fresh lock, so it stays.
+      fsImpl.writeFileSync(lockPath, moved.text, { flag: 'wx' });
+    } catch (err) {
+      return { step: 'done', result: lockFailed(err?.code === 'EEXIST' ? LOCK_CONTENDED : describe(err)) };
     }
-    return moved.holder;
+    fsImpl.rmSync(aside, { force: true });
+    return { step: 'done', result: lockHeld(moved.holder) };
   }
-  fs.rmSync(aside, { force: true });
-  return 'retry';
+  fsImpl.rmSync(aside, { force: true });
+  return { step: 'retry' };
 }
 
 /**
  * Take the run lock beside the state file, or say who holds it. Frozen:
  * `{ ok: true, lockPath, token }`, `{ ok: false, reason: 'held', holder }` or
  * `{ ok: false, reason: 'error', error }`.
+ *
+ * The lock is a file created with an exclusive open; its existence is the
+ * lock. Whether a holder is still there is judged by the lock's age and
+ * nothing else. There is no pid liveness check, for the reason realm-lock.mjs
+ * gives and a stronger one: in a container the scheduler is the same small pid
+ * after every restart and every `exec` draws from the same few numbers, so "is
+ * pid 7 alive" is yes for a lock left by a dead scheduler and "the lock names
+ * my pid" is true of a lock that is not mine. `pid` and `owner` are written
+ * for the message; only the token says whose lock it is. `fsImpl` is for the tests.
  */
-export function acquireRunLock(stateFile, { job, pid = process.pid, host = os.hostname(), now = Date.now(), isAlive = pidIsAlive } = {}) {
+export function acquireRunLock(stateFile, { job, owner = '', pid = process.pid, now = Date.now(), fsImpl = fs } = {}) {
   const lockPath = path.join(path.dirname(stateFile), RUN_LOCK_FILENAME);
   const token = randomUUID();
-  const text = `${JSON.stringify({ pid, host, job, startedAt: new Date(now).toISOString(), token })}\n`;
+  const text = `${JSON.stringify({ pid, owner: String(owner), job, startedAt: new Date(now).toISOString(), token })}\n`;
   try {
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fsImpl.mkdirSync(path.dirname(lockPath), { recursive: true });
     for (let pass = 0; pass < ACQUIRE_MAX_PASSES; pass += 1) {
       try {
-        fs.writeFileSync(lockPath, text, { flag: 'wx' });
+        fsImpl.writeFileSync(lockPath, text, { flag: 'wx' });
         return Object.freeze({ ok: true, lockPath, token });
       } catch (err) {
         if (err?.code !== 'EEXIST') throw err;
       }
-      const current = readLock(lockPath);
+      const current = readLock(lockPath, now, fsImpl);
       if (!current.ok) {
         if (current.code === 'ENOENT') continue; // Released between our create and our read.
-        return Object.freeze({ ok: false, reason: 'error', error: current.code });
+        return lockFailed(current.code);
       }
-      if (!holderIsGone(current, { pid, host, now, isAlive })) {
-        return Object.freeze({ ok: false, reason: 'held', holder: current.holder });
-      }
-      const evicted = evictLock(lockPath, current);
-      if (evicted !== 'retry') return Object.freeze({ ok: false, reason: 'held', holder: evicted });
+      if (current.ageMs <= RUN_LOCK_STALE_MS) return lockHeld(current.holder);
+      const evicted = evictStaleLock(lockPath, current, now, fsImpl);
+      if (evicted.step === 'done') return evicted.result;
     }
   } catch (err) {
-    return Object.freeze({ ok: false, reason: 'error', error: describe(err) });
+    return lockFailed(describe(err));
   }
-  return Object.freeze({ ok: false, reason: 'error', error: 'lock contended' });
+  return lockFailed(LOCK_CONTENDED);
 }
 
 /** Give the lock back. Only a file carrying our token is removed. */
 export function releaseRunLock({ lockPath, token }) {
-  const current = readLock(lockPath);
+  const current = readLock(lockPath, Date.now());
   if (!current.ok) return current.code === 'ENOENT' ? { ok: true } : { ok: false, error: current.code };
-  if (current.holder.token !== token) return { ok: false, error: 'not ours' };
+  if (current.token !== token) return { ok: false, error: 'not ours' };
   try {
     fs.rmSync(lockPath, { force: true });
     return { ok: true };
@@ -281,8 +290,8 @@ export function releaseRunLock({ lockPath, token }) {
  * or the start stamp could not be written. A job whose start cannot be stamped
  * is not run: without the stamp it would be due again on every tick.
  */
-export async function runJob(job, { stateFile, now = Date.now, runner, log = () => {}, host, pid, isAlive }) {
-  const lock = acquireRunLock(stateFile, { job, pid, host, now: now(), isAlive });
+export async function runJob(job, { stateFile, now = Date.now, runner, log = () => {}, owner = OWNER_LOOP, pid }) {
+  const lock = acquireRunLock(stateFile, { job, owner, pid, now: now() });
   if (!lock.ok) {
     if (lock.reason === 'held') return { job, ran: false, busy: true, holder: lock.holder };
     log(`${job}: not started, the run lock could not be taken (${lock.error})`);
@@ -323,7 +332,7 @@ export async function runJob(job, { stateFile, now = Date.now, runner, log = () 
   }
 }
 
-const busyLine = (holder) => `busy: ${holder.job || 'a job'} running since ${holder.startedAt || 'an unknown time'} (pid ${holder.pid ?? 'unknown'})`;
+const busyLine = (holder) => `busy: ${holder.job || 'a job'} running since ${holder.startedAt || 'an unknown time'} (${holder.owner || 'unknown owner'}, pid ${holder.pid ?? 'unknown'})`;
 
 /**
  * Start every job that is due, one after another. Each is checked again just
@@ -411,7 +420,7 @@ export async function main(argv, { env = process.env, out = console.log, err = c
     await runLoop(deps);
     return EXIT_OK;
   }
-  const result = await runJob(runNow, deps);
+  const result = await runJob(runNow, { ...deps, owner: OWNER_RUN_NOW });
   if (result.ran) return result.exitCode;
   if (result.busy) {
     err(`${busyLine(result.holder)}; ${runNow} not started`);
