@@ -339,11 +339,17 @@ const busyLine = (holder) => `busy: ${holder.job || 'a job'} running since ${hol
  * before it starts, because the job before it may have run for an hour and a
  * `--run-now` from another process may have covered the window meanwhile. A
  * job that finds the lock held stays due and is tried on the next tick.
+ *
+ * `shouldStop` is asked before every job: a stop that arrives while one job
+ * runs must not be answered by starting the next. The job not started is not
+ * stamped, so it is still due at the next start.
  */
 export async function tick(deps) {
-  const { stateFile, now = Date.now, log = () => {} } = deps;
+  const { stateFile, now = Date.now, log = () => {}, shouldStop = () => false } = deps;
   const results = [];
+  if (shouldStop()) return results;
   for (const job of dueJobs(readState(stateFile, { report: log }), now())) {
+    if (shouldStop()) break;
     if (!dueJobs(readState(stateFile), now()).includes(job)) continue;
     const result = await runJob(job, deps);
     if (result.busy) log(`${job}: waiting, ${busyLine(result.holder)}`);
@@ -354,7 +360,11 @@ export async function tick(deps) {
 
 const defaultSleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
-/** Tick, sleep, repeat until `shouldStop`. A tick that throws is logged and the loop goes on. */
+/**
+ * Tick, sleep, repeat until `shouldStop`. A tick that throws is logged and the
+ * loop goes on. A stop that arrived during the tick ends the loop before the
+ * sleep, not 30 seconds after it.
+ */
 export async function runLoop(deps) {
   const { stateFile, now = Date.now, log = () => {}, sleep = defaultSleep, shouldStop = () => false } = deps;
   const upcoming = JOB_NAMES.map((job) => `${job} ${new Date(nextWindowMs(SCHEDULE[job], now())).toISOString()}`).join(', ');
@@ -365,6 +375,7 @@ export async function runLoop(deps) {
     } catch (err) {
       log(`tick failed (${err?.message || describe(err)}); trying again in ${TICK_MS / 1000} s`);
     }
+    if (shouldStop()) break;
     await sleep(TICK_MS);
   }
   log('stopped');
@@ -430,28 +441,47 @@ export async function main(argv, { env = process.env, out = console.log, err = c
   return EXIT_INTERNAL;
 }
 
-/** SIGTERM and SIGINT: pass the signal to the running job, then let the loop end. */
-function runAsProcess() {
+/**
+ * What a stop request (SIGTERM, SIGINT) changes, as four functions that share
+ * one flag: `stop(signal)` passes the signal to the running job and wakes the
+ * loop's sleep; `shouldStop()` is what `tick` and `runLoop` ask; `sleep(ms)`
+ * is the loop's sleep; `onChild` is how the runner says which job is running.
+ */
+export function createStopper({ signalJob = (child, signal) => child.kill(signal) } = {}) {
   let stopping = false;
   let child = null;
   let wake = () => {};
-  const stop = (signal) => {
-    stopping = true;
-    if (child) child.kill(signal);
-    wake();
-  };
-  process.once('SIGTERM', () => stop('SIGTERM'));
-  process.once('SIGINT', () => stop('SIGINT'));
-
-  const sleep = (ms) => new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    wake = () => {
-      clearTimeout(timer);
-      resolve();
-    };
+  return Object.freeze({
+    stop(signal) {
+      stopping = true;
+      if (child) signalJob(child, signal);
+      wake();
+    },
+    shouldStop: () => stopping,
+    sleep: (ms) => new Promise((resolve) => {
+      if (stopping) {
+        resolve(); // The stop came first: there is nothing left to wait for.
+        return;
+      }
+      const timer = setTimeout(resolve, ms);
+      wake = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    }),
+    onChild(running) {
+      child = running;
+    },
   });
-  const runner = spawnRunner({ onChild: (running) => { child = running; } });
-  return main(process.argv.slice(2), { runner, sleep, shouldStop: () => stopping });
+}
+
+/** SIGTERM and SIGINT: pass the signal to the running job, then let the loop end. */
+function runAsProcess() {
+  const stopper = createStopper();
+  process.once('SIGTERM', () => stopper.stop('SIGTERM'));
+  process.once('SIGINT', () => stopper.stop('SIGINT'));
+  const runner = spawnRunner({ onChild: stopper.onChild });
+  return main(process.argv.slice(2), { runner, sleep: stopper.sleep, shouldStop: stopper.shouldStop });
 }
 
 if (isEntryPoint(import.meta.url)) {

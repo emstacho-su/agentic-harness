@@ -27,6 +27,7 @@ import {
   STATE_ENV_VAR,
   TICK_MS,
   acquireRunLock,
+  createStopper,
   main,
   parseArgs,
   readState,
@@ -417,6 +418,87 @@ test('release removes only a lock carrying our token', (t) => {
   assert.deepEqual(releaseRunLock(ours), { ok: true });
   assert.ok(!fs.existsSync(s.lockPath));
   assert.deepEqual(releaseRunLock(ours), { ok: true }, 'releasing twice is not an error');
+});
+
+// ------------------------------------------------ stopping (SIGTERM, SIGINT)
+
+/** Resolves with `value`, or rejects after `ms`: a hang becomes a failure, not a stuck suite. */
+const within = (ms, promise, what) => Promise.race([
+  promise,
+  new Promise((_, reject) => { setTimeout(() => reject(new Error(`${what} did not finish within ${ms} ms`)), ms).unref(); }),
+]);
+
+test('a stop that lands during the first of two due jobs: the second never starts and stays due', async (t) => {
+  const s = scratch(t);
+  const stopper = createStopper();
+  const ran = [];
+  const runner = async (job) => {
+    ran.push(job);
+    stopper.stop('SIGTERM'); // docker stop arrives while the nightly runs
+    return 143;
+  };
+
+  const results = await tick(deps(s, '2026-10-31T16:00:00.000Z', { runner, shouldStop: stopper.shouldStop }));
+
+  assert.deepEqual(ran, ['nightly'], 'collect was due too, and is not started after the stop');
+  assert.deepEqual(results, [{ job: 'nightly', ran: true, exitCode: 143 }]);
+  assert.equal(stateOnDisk(s).jobs.collect, undefined, 'unstamped, so the next start runs it');
+  assert.ok(!fs.existsSync(s.lockPath));
+});
+
+test('a stop before the tick starts nothing at all', async (t) => {
+  const s = scratch(t);
+  const { ran, runner } = recordingRunner();
+  const results = await tick(deps(s, '2026-10-31T16:00:00.000Z', { runner, shouldStop: () => true }));
+  assert.deepEqual(ran, []);
+  assert.deepEqual(results, []);
+  assert.ok(!fs.existsSync(s.stateFile));
+});
+
+test('the loop ends as soon as a job stopped mid-run returns: no second job, no 30-second sleep', async (t) => {
+  const s = scratch(t);
+  const stopper = createStopper();
+  const ran = [];
+  const lines = [];
+  const runner = async (job) => {
+    ran.push(job);
+    stopper.stop('SIGTERM');
+    return 143;
+  };
+
+  await within(5_000, runLoop({
+    ...deps(s, '2026-10-31T16:00:00.000Z', { runner, log: (line) => lines.push(line) }),
+    sleep: stopper.sleep,
+    shouldStop: stopper.shouldStop,
+  }), 'the loop');
+
+  assert.deepEqual(ran, ['nightly']);
+  assert.equal(lines.at(-1), 'stopped');
+});
+
+test('a stop wakes a sleep in progress, and a sleep begun after it returns at once', async () => {
+  const stopper = createStopper();
+  assert.equal(stopper.shouldStop(), false);
+  const sleeping = stopper.sleep(60_000);
+  setImmediate(() => stopper.stop('SIGTERM'));
+  await within(2_000, sleeping, 'the sleep in progress');
+  assert.equal(stopper.shouldStop(), true);
+  await within(2_000, stopper.sleep(60_000), 'a sleep after the stop');
+});
+
+test('a stop passes the signal to the running job, and to nothing when no job runs', () => {
+  const signalled = [];
+  const stopper = createStopper({ signalJob: (child, signal) => signalled.push([child.pid, signal]) });
+  stopper.stop('SIGINT');
+  assert.deepEqual(signalled, [], 'no job was running');
+
+  const second = createStopper({ signalJob: (child, signal) => signalled.push([child.pid, signal]) });
+  second.onChild({ pid: 4242 });
+  second.stop('SIGTERM');
+  assert.deepEqual(signalled, [[4242, 'SIGTERM']]);
+  second.onChild(null);
+  second.stop('SIGTERM');
+  assert.deepEqual(signalled, [[4242, 'SIGTERM']], 'the job had ended by the second signal');
 });
 
 test('the loop catches up after a sleep: the clock jumps past 03:00 and nightly runs once', async (t) => {
