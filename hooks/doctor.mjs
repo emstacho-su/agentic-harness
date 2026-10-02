@@ -44,7 +44,9 @@ import {
   loadRepoEnv,
   machineName,
 } from './lib/machine-env.mjs';
+import { isSyncPath } from './lib/realm-guard.mjs';
 import { describeHolder, gitDirKind, peekRealmLock } from './lib/realm-lock.mjs';
+import { parsePorcelainZ, splitBySyncPath } from './lib/realm-status.mjs';
 import { NO_SUCH_REMOTE_STATUS, redactRemoteUrl } from './lib/realm-steps.mjs';
 import { registrationStatus } from './lib/settings.mjs';
 import { LOG_ENV_VAR as SESSION_START_LOG_VAR } from './lib/start-brief.mjs';
@@ -147,19 +149,46 @@ const SYNC_SKIPPED = 'unknown (git did not answer)';
 
 const counted = (count, one, many) => `${count} ${count === 1 ? one : many}`;
 
+/** How many of the paths the sync never stages are named in the clean row; the rest are an ellipsis. */
+const LEFTOVERS_NAMED = 3;
+
+/** ` (the sync never stages 2 entries: a.canvas, b.pptx)`, or '' when there is none. */
+function leftoverNote(leftover) {
+  if (leftover.length === 0) return '';
+  const named = leftover.slice(0, LEFTOVERS_NAMED).map((record) => record.path);
+  const more = leftover.length > LEFTOVERS_NAMED ? ', …' : '';
+  return `the sync never stages ${counted(leftover.length, 'entry', 'entries')}: ${named.join(', ')}${more}`;
+}
+
 /**
- * `realm <name> clean`: whether the checkout holds anything uncommitted,
- * untracked files included. `--no-optional-locks` keeps the look read-only:
- * a plain `git status` may rewrite the index. Returns the row and whether git answered.
+ * `realm <name> clean`: whether the checkout holds a change the sync would
+ * commit and has not. The status is read as the sync reads it (the same git
+ * arguments, `parsePorcelainZ`, `splitBySyncPath` over `isSyncPath`), so the
+ * two cannot disagree about what counts. A path outside the sync set, a
+ * `.canvas` say, is never staged by the sync and so can never make the realm
+ * clean; it is named as a note and is not a problem. `--no-optional-locks`
+ * keeps the look read-only: a plain `git status` may rewrite the index.
+ * Returns the row and whether git answered.
  */
 function cleanRow(label, folder, runGit) {
-  const status = runGit(['--no-optional-locks', 'status', '--porcelain=v1'], { cwd: folder, timeoutMs: DOCTOR_GIT_TIMEOUT_MS });
+  const status = runGit(
+    ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
+    { cwd: folder, timeoutMs: DOCTOR_GIT_TIMEOUT_MS },
+  );
   if (!status.ok) {
     return { row: row(label, `unknown (${status.error || 'git failed'})`, true), answered: gitAnswered(status) };
   }
-  const entries = status.stdout.split('\n').filter((line) => line.trim() !== '').length;
-  if (entries === 0) return { row: row(label, 'yes'), answered: true };
-  return { row: row(label, `no: ${counted(entries, 'uncommitted entry', 'uncommitted entries')}`, true), answered: true };
+  let records;
+  try {
+    records = parsePorcelainZ(status.stdout);
+  } catch {
+    return { row: row(label, 'unknown (git status output not understood)', true), answered: true };
+  }
+  const { sync, leftover } = splitBySyncPath(records, isSyncPath);
+  const note = leftoverNote(leftover);
+  if (sync.length === 0) return { row: row(label, note ? `yes (${note})` : 'yes'), answered: true };
+  const uncommitted = `no: ${counted(sync.length, 'uncommitted entry', 'uncommitted entries')}`;
+  return { row: row(label, note ? `${uncommitted} (${note})` : uncommitted, true), answered: true };
 }
 
 /**

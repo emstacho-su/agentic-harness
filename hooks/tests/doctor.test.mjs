@@ -539,7 +539,7 @@ test('the claude-config row sits just before the SessionStart rows', () => {
 
 // ------------------------------------------------ realm clean and pushed rows, the nightly ingest row (Phase 14)
 
-const STATUS = '--no-optional-locks status --porcelain=v1';
+const STATUS = '--no-optional-locks status --porcelain=v1 -z --untracked-files=all';
 const AHEAD = 'rev-list --count @{upstream}..HEAD';
 const realmSyncRows = (rows) => rows.filter(([label]) => / (clean|pushed)$/.test(label));
 const flagsOf = (rows) => Object.fromEntries(rows.map(([label, value, problem]) => [label, [value, problem]]));
@@ -603,14 +603,14 @@ test('clean and pushed rows: counts, a local realm, no upstream, and only for re
     const { runGit, calls } = scriptedGit({
       [`busy|${ORIGIN}`]: ok('https://github.com/o/busy.git\n'),
       [`busy|${COUNT}`]: ok('9\n'),
-      [`busy|${STATUS}`]: ok('?? new.md\n M old.md\n?? attachments/\n'),
+      [`busy|${STATUS}`]: ok('?? new.md\0 M old.md\0?? attachments/ist466/deck.pptx\0'),
       [`busy|${AHEAD}`]: ok('2\n'),
       [`kept|${ORIGIN}`]: exit(2),
       [`kept|${COUNT}`]: ok('4\n'),
       [`kept|${STATUS}`]: ok(''),
       [`fresh|${ORIGIN}`]: ok('https://github.com/o/fresh.git\n'),
       [`fresh|${COUNT}`]: ok('1\n'),
-      [`fresh|${STATUS}`]: ok('\n'),
+      [`fresh|${STATUS}`]: ok(''),
       [`fresh|${AHEAD}`]: exit(128),
     });
     const rows = flagsOf(diagnose(env, root, { runGit }));
@@ -632,6 +632,54 @@ test('clean and pushed rows: counts, a local realm, no upstream, and only for re
     const labels = diagnose(env, root, { runGit }).map(([label]) => label);
     const at = labels.indexOf('realm busy');
     assert.deepEqual(labels.slice(at, at + 3), ['realm busy', 'realm busy clean', 'realm busy pushed'], 'the two rows follow their realm');
+  } finally {
+    cleanup();
+  }
+});
+
+test('a file the sync never stages does not fail the clean row: --strict exits 0 with a .canvas in the realm', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { vault, env } = vaultWith(root, ['HARNESS_REALMS=projects:local']);
+    const realm = addRealm(vault, 'projects', 'none');
+    const git = (...args) => execFileSync('git', ['-C', realm, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    git('init', '-q', '-b', 'main');
+    git('add', '.realm');
+    git('-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'init');
+    fs.writeFileSync(path.join(realm, 'board.canvas'), '{}\n');
+
+    const lines = [];
+    const code = runDoctor(['--strict'], { rows: () => realmSyncRows(diagnose(env, root)), write: (text) => lines.push(text) });
+    assert.equal(code, 0, lines.join('\n'));
+    assert.deepEqual(flagsOf(diagnose(env, root))['realm projects clean'], ['yes (the sync never stages 1 entry: board.canvas)', false]);
+
+    fs.writeFileSync(path.join(realm, 'note.md'), '# a note\n');
+    assert.deepEqual(flagsOf(diagnose(env, root))['realm projects clean'], [
+      'no: 1 uncommitted entry (the sync never stages 1 entry: board.canvas)', true,
+    ]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('the clean row names at most three unstaged leftovers, and says so when git prints something it cannot read', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { vault, env } = vaultWith(root, ['HARNESS_REALMS=many:local,odd:local']);
+    addRealm(vault, 'many');
+    addRealm(vault, 'odd');
+    const { runGit } = scriptedGit({
+      [`many|${ORIGIN}`]: exit(2),
+      [`many|${COUNT}`]: ok('4\n'),
+      [`many|${STATUS}`]: ok('?? a.canvas\0?? b.pptx\0?? c.txt\0?? d.env\0R  notes/n.md\0drafts/n.txt\0'),
+      [`odd|${ORIGIN}`]: exit(2),
+      [`odd|${COUNT}`]: ok('4\n'),
+      [`odd|${STATUS}`]: ok('??\0'),
+    });
+    const rows = flagsOf(diagnose(env, root, { runGit }));
+    assert.deepEqual(rows['realm many clean'], ['yes (the sync never stages 5 entries: a.canvas, b.pptx, c.txt, …)', false],
+      'a rename out of a path the sync never stages is not the sync\'s to carry');
+    assert.deepEqual(rows['realm odd clean'], ['unknown (git status output not understood)', true]);
   } finally {
     cleanup();
   }
