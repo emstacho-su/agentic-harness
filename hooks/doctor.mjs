@@ -13,6 +13,13 @@
  * unregistered hook). A plain run prints the rows and exits 0 whatever they
  * say. `--strict` prints the same report, then the problem rows by label, and
  * exits 1 if there is any (the bootstrap's last step); 2 is a bad argument.
+ *
+ * Every realm checkout gets two more rows, `realm <name> clean` and
+ * `realm <name> pushed`: a problem when it holds an entry the sync has not
+ * committed, or a commit its upstream does not have. Both are read from the
+ * checkout as it is, with no fetch, so "pushed" means "as of the last sync".
+ * A `local` realm is never expected to be pushed. `nightly ingest` is the age
+ * of the last complete ingest, the figure `ingest --health` judges.
  */
 
 import fs from 'node:fs';
@@ -109,44 +116,109 @@ function lockPart(folder) {
 function commitsPart(folder, runGit) {
   const options = { cwd: folder, timeoutMs: DOCTOR_GIT_TIMEOUT_MS };
   const count = runGit(['rev-list', '--count', 'HEAD'], options);
-  if (count.ok) return `, ${count.stdout.trim()} commits`;
+  if (count.ok) return { text: `, ${count.stdout.trim()} commits`, answered: true };
   const unknown = `, commit count unknown (${count.error || 'git failed'})`;
-  if (!gitAnswered(count)) return unknown;
+  if (!gitAnswered(count)) return { text: unknown, answered: false };
   const head = runGit(['rev-parse', '--verify', '--quiet', 'HEAD'], options);
-  if (!head.ok && head.status === UNRESOLVED_REV_STATUS) return ', no commits yet';
-  return unknown;
+  if (!head.ok && head.status === UNRESOLVED_REV_STATUS) return { text: ', no commits yet', answered: true };
+  return { text: unknown, answered: gitAnswered(head) };
 }
 
 /**
- * One realm's row value: what its `.git` is and, for a checkout, remote, lock
- * and history. When the origin lookup got no answer from git, the history is
- * not asked for: it would wait out the same timeout.
+ * One realm: `value` for its row (what its `.git` is and, for a checkout,
+ * remote, lock and history), `checkout` when it is one the sync would touch,
+ * and `answered` when git replied to every lookup. When the origin lookup got
+ * no answer, the history is not asked for: it would wait out the same timeout.
  */
 function describeRealm(folder, runGit) {
   const kind = gitDirKind(folder);
-  if (kind === 'none') return 'not a checkout (no .git)';
-  if (kind === 'file') return '.git is a file (worktree or submodule): not synced';
+  if (kind === 'none') return { value: 'not a checkout (no .git)', checkout: false, answered: false };
+  if (kind === 'file') return { value: '.git is a file (worktree or submodule): not synced', checkout: false, answered: false };
   const origin = runGit(['remote', 'get-url', 'origin'], { cwd: folder, timeoutMs: DOCTOR_GIT_TIMEOUT_MS });
-  const history = gitAnswered(origin) ? commitsPart(folder, runGit) : COUNT_SKIPPED;
-  return `git checkout${originPart(origin)}${lockPart(folder)}${history}`;
+  const history = gitAnswered(origin) ? commitsPart(folder, runGit) : { text: COUNT_SKIPPED, answered: false };
+  return { value: `git checkout${originPart(origin)}${lockPart(folder)}${history.text}`, checkout: true, answered: history.answered };
 }
 
-/** Realm names from HARNESS_REALMS (`name:mode,…`), in order. */
-function listedRealms(merged) {
+/** The policy that keeps a realm on its machine; anything else is expected to be pushed. */
+const POLICY_LOCAL = 'local';
+
+/** Printed in place of a sync row's answer when an earlier git call already went unanswered. */
+const SYNC_SKIPPED = 'unknown (git did not answer)';
+
+const counted = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+
+/**
+ * `realm <name> clean`: whether the checkout holds anything uncommitted,
+ * untracked files included. `--no-optional-locks` keeps the look read-only:
+ * a plain `git status` may rewrite the index. Returns the row and whether git answered.
+ */
+function cleanRow(label, folder, runGit) {
+  const status = runGit(['--no-optional-locks', 'status', '--porcelain=v1'], { cwd: folder, timeoutMs: DOCTOR_GIT_TIMEOUT_MS });
+  if (!status.ok) {
+    return { row: row(label, `unknown (${status.error || 'git failed'})`, true), answered: gitAnswered(status) };
+  }
+  const entries = status.stdout.split('\n').filter((line) => line.trim() !== '').length;
+  if (entries === 0) return { row: row(label, 'yes'), answered: true };
+  return { row: row(label, `no: ${counted(entries, 'uncommitted entry', 'uncommitted entries')}`, true), answered: true };
+}
+
+/**
+ * `realm <name> pushed`: whether the branch has a commit its upstream lacks,
+ * judged against the remote-tracking ref as it stands (no fetch). git exits
+ * 128 when the branch has no upstream, which for a push realm is "never pushed".
+ */
+function pushedRow(label, folder, policy, runGit) {
+  if (policy === POLICY_LOCAL) return row(label, 'local realm: it stays on this machine');
+  const ahead = runGit(['rev-list', '--count', '@{upstream}..HEAD'], { cwd: folder, timeoutMs: DOCTOR_GIT_TIMEOUT_MS });
+  if (!ahead.ok) {
+    if (!gitAnswered(ahead)) return row(label, `unknown (${ahead.error || 'git failed'})`, true);
+    return row(label, 'no: no upstream branch (git push -u origin <branch> once)', true);
+  }
+  const commits = Number(ahead.stdout.trim());
+  if (!Number.isInteger(commits)) return row(label, 'unknown (git printed no count)', true);
+  if (commits === 0) return row(label, 'yes');
+  return row(label, `no: ${counted(commits, 'commit', 'commits')} ahead of its upstream`, true);
+}
+
+/**
+ * The realm's row, then its `clean` and `pushed` rows when it is a checkout.
+ * Once a git call has gone unanswered the rest are not asked: each would wait
+ * out the same timeout, and an unknown state is reported as a problem.
+ */
+function rowsForRealm(name, folder, policy, runGit) {
+  const realm = describeRealm(folder, runGit);
+  const first = row(`realm ${name}`, realm.value);
+  if (!realm.checkout) return [first];
+  const cleanLabel = `realm ${name} clean`;
+  const pushedLabel = `realm ${name} pushed`;
+  if (!realm.answered) return [first, row(cleanLabel, SYNC_SKIPPED, true), row(pushedLabel, SYNC_SKIPPED, true)];
+  const clean = cleanRow(cleanLabel, folder, runGit);
+  if (!clean.answered) return [first, clean.row, row(pushedLabel, SYNC_SKIPPED, true)];
+  return [first, clean.row, pushedRow(pushedLabel, folder, policy, runGit)];
+}
+
+/** HARNESS_REALMS (`name:policy,…`) as `[name, policy]` pairs, in order. */
+function listedRealmEntries(merged) {
   return String(merged.HARNESS_REALMS ?? '')
     .split(',')
-    .map((entry) => entry.trim().split(':')[0])
-    .filter(Boolean);
+    .map((entry) => entry.trim().split(':').map((part) => part.trim()))
+    .filter(([name]) => Boolean(name));
 }
 
-/** `git email`, `realms missing` and one `realm <name>` row per realm on disk. */
+/** Realm names from HARNESS_REALMS, in order. */
+function listedRealms(merged) {
+  return listedRealmEntries(merged).map(([name]) => name);
+}
+
+/** `git email`, `realms missing`, and per realm on disk its row and its sync rows. */
 function realmRows(merged, vaultRoot, realms, listed, runGit) {
   const onDisk = realms.map((r) => r.name);
   const missing = listed.filter((name) => !onDisk.includes(name));
+  const policies = new Map(listedRealmEntries(merged).map(([name, policy]) => [name, policy ?? '']));
   return [
     row('git email', gitEmail(merged) || '(unset: git config identity applies to realm commits)'),
     row('realms missing', missing.length ? missing.join(', ') : 'none', missing.length > 0),
-    ...realms.map((r) => row(`realm ${r.name}`, describeRealm(path.join(vaultRoot, r.folder), runGit))),
+    ...realms.flatMap((r) => rowsForRealm(r.name, path.join(vaultRoot, r.folder), policies.get(r.name) ?? '', runGit)),
   ];
 }
 
@@ -240,6 +312,47 @@ function sessionStartLogRow(merged, home, now) {
   return row('session-start log', `${file}, last line ${formatAge(now() - at)} ago`);
 }
 
+/**
+ * Where the ingest records its last complete run, and how old that may be:
+ * `ENV_STATE_FILE`, `DEFAULT_STATE_RELATIVE` and `DEFAULT_MAX_AGE_HOURS` in
+ * ingest/src/ingest/runstate.py. The doctor test reads that file so the two
+ * cannot drift apart unnoticed.
+ */
+const INGEST_STATE_ENV_VAR = 'HARNESS_INGEST_STATE_FILE';
+const INGEST_STATE_SEGMENTS = Object.freeze(['.claude', 'hooks', 'ingest-state.json']);
+const INGEST_MAX_AGE_HOURS = 36;
+const HOUR_MS = 60 * 60_000;
+
+/**
+ * How long ago a complete ingest last finished: what `ingest --health` judges,
+ * read here without starting Python. No record is not a fault (a new machine
+ * has none until its first night); a record older than 36 hours is, and so is
+ * one that cannot be read. Only the timestamp is read out of the file.
+ */
+function nightlyIngestRow(merged, home, now) {
+  const label = 'nightly ingest';
+  const file = merged[INGEST_STATE_ENV_VAR] || path.join(home, ...INGEST_STATE_SEGMENTS);
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') return row(label, `${file} (none yet: no complete ingest has finished on this machine)`);
+    return row(label, `${file} (unreadable: ${err?.code || 'error'})`, true);
+  }
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return row(label, `${file} (unreadable: not JSON)`, true);
+  }
+  const at = Date.parse(body?.last_success ?? '');
+  if (!Number.isFinite(at)) return row(label, `${file} (unreadable: no last_success timestamp)`, true);
+  const ageMs = now() - at;
+  const stale = ageMs > INGEST_MAX_AGE_HOURS * HOUR_MS;
+  const note = stale ? ` (STALE: older than ${INGEST_MAX_AGE_HOURS}h)` : '';
+  return row(label, `${file}, last success ${formatAge(ageMs)} ago${note}`, stale);
+}
+
 /** The clone bootstrap step 7 makes and `install.mjs --config` reads (R-H5). */
 const CONFIG_REPO_DIRNAME = 'claude-config';
 /** https, ssh:// or scp-style GitHub remotes of the one repo the config may live in (userinfo already stripped). */
@@ -309,6 +422,7 @@ export function diagnose(env = process.env, home = os.homedir(), { runGit = runG
     row('realms unlisted', unlisted.length ? `${unlisted.join(', ')} — ingest will refuse` : 'none', unlisted.length > 0),
     ...realmRows(merged, vaultRoot, realms, listed, runGit),
     row('ingest project', `${projectDir} ${projectFound ? '' : '(MISSING pyproject.toml)'}`.trim(), !projectFound),
+    nightlyIngestRow(merged, home, now),
     row('uv', uv || '(not found: ~/.local/bin or PATH)', !uv),
     row('node', process.execPath),
     row('mcp-server build', built ? distIndex : `${distIndex} (not built: npm run build)`, !built),

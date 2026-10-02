@@ -1,9 +1,9 @@
 name: test
 
 # The three suites, each self-contained: no database, no network, no model
-# download. Windows is the platform the harness has run on; the Linux leg is
-# the portability work (docs/portable.md) and is informational until it is
-# green on its own — a Linux failure does not fail the run yet.
+# download. Windows is the platform the harness has run on; Linux is the
+# platform the jobs container runs on (docs/portable.md). Both legs are
+# required: a failure on either fails the run.
 
 on:
   push:
@@ -20,7 +20,6 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: hooks
@@ -37,7 +36,6 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: ingest
@@ -53,7 +51,6 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: mcp-server

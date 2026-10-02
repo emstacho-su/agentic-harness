@@ -287,6 +287,44 @@ exists on no remote yet, the Obsidian plugin, the scheduled jobs and the push cr
    `scripts/nightly-ingest.sh`. For the first night pass `-RealmSync DryRun`, read the
    log, then re-register with `-RealmSync Apply`; the switch is a re-registration, not a
    script edit (step 12 of the home migration below does the same).
+
+   **On home-pc (containers):** the nightly job and the checkpoint collector run in the
+   `harness-jobs` container instead of Task Scheduler, on that machine only. Every other
+   machine, the work VM included, keeps the host scheduler above; `nightly-ingest.ps1` and
+   the two `register-*.ps1` scripts stay as they are, as the fallback; and the weekly curator
+   below stays a host task everywhere.
+   - What runs. `compose.yaml` and `docker/jobs/Dockerfile` build one service whose process is
+     `node hooks/scheduler.mjs`. It starts `scripts/nightly-ingest.sh` at 03:00 and
+     `collect-checkpoints.mjs --ingest` at 12:00 and 18:00, New York time, one job at a time.
+     `docker compose exec harness-jobs node hooks/scheduler.mjs --run-now nightly` (or
+     `collect`) runs one now; it exits 75 if a job is already running.
+   - Catch-up. The scheduler does not wait for a timer to fire at 03:00. Every 30 seconds it
+     compares the clock with each job's `last_run_at` in `/state/scheduler.json` (the
+     `job-state` volume), so a laptop that slept through a window runs the job once on wake,
+     and several missed windows are still one run. `last_run_at` is written before the job
+     starts, so a restart mid-run does not run it a second time in the same window.
+   - No cron library: node-cron's `missedExecutionTolerance` is how late a tick may fire and still count, not catch-up, so a run missed while the machine slept would be dropped.
+   - Settings. The compose file reads paths and names from the environment (an umbrella
+     repo's `.env`), never a secret: `VAULT_DIR` (the folder holding the realm checkouts,
+     mounted at `/vault`), `CLAUDE_PROJECTS_DIR` (mounted read-only for the transcript
+     sweep), `SECRETS_DIR`, and `HARNESS_MACHINE`, `HARNESS_GIT_EMAIL` and `HARNESS_REALMS`
+     with the values the machine file has. The container works in the same checkouts as the
+     host, so it writes notes and realm commits under the same machine name.
+   - Secrets are two files in `SECRETS_DIR`, mounted under `/run/secrets`:
+     `harness_database_url` (the entrypoint exports `DATABASE_URL` from it) and
+     `vault_realm_pat`, a fine-grained token with Contents read and write on the realm
+     repositories only, which git reads at the moment it pushes. Without the token a push
+     fails with the `credential` line, as in step 8.
+   - Never both schedulers at once. Before the container's first night, disable the two
+     tasks (`Disable-ScheduledTask -TaskName AgenticHarness-NightlyIngest`, and the same for
+     `AgenticHarness-CheckpointCollect`); `Enable-ScheduledTask` is the way back. If one does
+     fire while the other is running, the realm lock, a file inside the checkout both of them
+     see, makes the second stand down (exit 2, `locked`).
+   - First night. Start it with `REALM_SYNC=dryrun` in the environment, read
+     `docker compose logs harness-jobs` the next morning, then set `REALM_SYNC=apply` and
+     `docker compose up -d`. `docker compose ps` shows the service healthy while
+     `ingest --health` passes: a complete ingest within the last 36 hours.
+
    Then the store backup (R-D3): `powershell -File scripts/backup-store.ps1 -DryRun` prints
    the `pg_dump` command and writes nothing; run it once live and check a
    `harness-<yyyyMMdd-HHmmss>.dump` appears in `~\backups\harness-store`. Schedule it daily

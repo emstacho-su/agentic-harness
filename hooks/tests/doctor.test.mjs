@@ -536,3 +536,205 @@ test('the claude-config row sits just before the SessionStart rows', () => {
     cleanup();
   }
 });
+
+// ------------------------------------------------ realm clean and pushed rows, the nightly ingest row (Phase 14)
+
+const STATUS = '--no-optional-locks status --porcelain=v1';
+const AHEAD = 'rev-list --count @{upstream}..HEAD';
+const realmSyncRows = (rows) => rows.filter(([label]) => / (clean|pushed)$/.test(label));
+const flagsOf = (rows) => Object.fromEntries(rows.map(([label, value, problem]) => [label, [value, problem]]));
+
+test('--strict exits 1 on a realm with an uncommitted entry or one ahead of its remote, and 0 when clean', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { vault, env } = vaultWith(root, ['HARNESS_REALMS=projects:push']);
+    const realm = addRealm(vault, 'projects', 'none');
+    const remote = path.join(root, 'remote.git');
+    const identity = ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false'];
+    const git = (...args) => execFileSync('git', ['-C', realm, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote], { stdio: 'ignore' });
+    git('init', '-q', '-b', 'main');
+    git('add', '.realm');
+    git(...identity, 'commit', '-q', '-m', 'init');
+    git('remote', 'add', 'origin', pathToFileURL(remote).href);
+    git('push', '-q', '-u', 'origin', 'main');
+
+    const strict = () => {
+      const lines = [];
+      const code = runDoctor(['--strict'], { rows: () => realmSyncRows(diagnose(env, root)), write: (text) => lines.push(text) });
+      return { code, lines };
+    };
+
+    const clean = strict();
+    assert.equal(clean.code, 0, clean.lines.join('\n'));
+    assert.deepEqual(realmSyncRows(diagnose(env, root)), [
+      ['realm projects clean', 'yes', false],
+      ['realm projects pushed', 'yes', false],
+    ]);
+
+    fs.writeFileSync(path.join(realm, 'note.md'), '# a note the sync has not committed\n');
+    const dirty = strict();
+    assert.equal(dirty.code, 1);
+    assert.deepEqual(dirty.lines.slice(1), ['doctor --strict: 1 problem', '  problem: realm projects clean']);
+    assert.equal(flagsOf(diagnose(env, root))['realm projects clean'][0], 'no: 1 uncommitted entry');
+
+    git('add', 'note.md');
+    git(...identity, 'commit', '-q', '-m', 'a note');
+    const ahead = strict();
+    assert.equal(ahead.code, 1);
+    assert.deepEqual(ahead.lines.slice(1), ['doctor --strict: 1 problem', '  problem: realm projects pushed']);
+    assert.equal(flagsOf(diagnose(env, root))['realm projects pushed'][0], 'no: 1 commit ahead of its upstream');
+
+    git('push', '-q', 'origin', 'main');
+    assert.equal(strict().code, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test('clean and pushed rows: counts, a local realm, no upstream, and only for real checkouts', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { vault, env } = vaultWith(root, ['HARNESS_REALMS=busy:push,kept:local,fresh:push,bare:push']);
+    addRealm(vault, 'busy');
+    addRealm(vault, 'kept');
+    addRealm(vault, 'fresh');
+    addRealm(vault, 'bare', 'none');
+    const { runGit, calls } = scriptedGit({
+      [`busy|${ORIGIN}`]: ok('https://github.com/o/busy.git\n'),
+      [`busy|${COUNT}`]: ok('9\n'),
+      [`busy|${STATUS}`]: ok('?? new.md\n M old.md\n?? attachments/\n'),
+      [`busy|${AHEAD}`]: ok('2\n'),
+      [`kept|${ORIGIN}`]: exit(2),
+      [`kept|${COUNT}`]: ok('4\n'),
+      [`kept|${STATUS}`]: ok(''),
+      [`fresh|${ORIGIN}`]: ok('https://github.com/o/fresh.git\n'),
+      [`fresh|${COUNT}`]: ok('1\n'),
+      [`fresh|${STATUS}`]: ok('\n'),
+      [`fresh|${AHEAD}`]: exit(128),
+    });
+    const rows = flagsOf(diagnose(env, root, { runGit }));
+
+    assert.deepEqual(rows['realm busy clean'], ['no: 3 uncommitted entries', true]);
+    assert.deepEqual(rows['realm busy pushed'], ['no: 2 commits ahead of its upstream', true]);
+    assert.deepEqual(rows['realm kept clean'], ['yes', false]);
+    assert.deepEqual(rows['realm kept pushed'], ['local realm: it stays on this machine', false]);
+    assert.deepEqual(rows['realm fresh clean'], ['yes', false]);
+    assert.deepEqual(rows['realm fresh pushed'], ['no: no upstream branch (git push -u origin <branch> once)', true]);
+    assert.equal(rows['realm bare clean'], undefined, 'a folder that is not a checkout has no sync rows');
+    assert.equal(rows['realm bare pushed'], undefined);
+
+    const asked = (name) => calls.filter((call) => path.basename(call.cwd) === name).map((call) => call.args.join(' '));
+    assert.deepEqual(asked('busy'), [ORIGIN, COUNT, STATUS, AHEAD]);
+    assert.deepEqual(asked('kept'), [ORIGIN, COUNT, STATUS], 'a local realm is never asked how far ahead it is');
+    assert.ok(calls.every((call) => call.timeoutMs === 5000));
+
+    const labels = diagnose(env, root, { runGit }).map(([label]) => label);
+    const at = labels.indexOf('realm busy');
+    assert.deepEqual(labels.slice(at, at + 3), ['realm busy', 'realm busy clean', 'realm busy pushed'], 'the two rows follow their realm');
+  } finally {
+    cleanup();
+  }
+});
+
+test('clean and pushed rows: a realm no list names is held to the push rule', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { vault, env } = vaultWith(root);
+    addRealm(vault, 'projects');
+    const { runGit } = scriptedGit({
+      [`projects|${ORIGIN}`]: ok('https://github.com/o/projects.git\n'),
+      [`projects|${COUNT}`]: ok('9\n'),
+      [`projects|${STATUS}`]: ok(''),
+      [`projects|${AHEAD}`]: ok('1\n'),
+    });
+    assert.deepEqual(flagsOf(diagnose(env, root, { runGit }))['realm projects pushed'], ['no: 1 commit ahead of its upstream', true]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('clean and pushed rows: when git does not answer they say so, count as problems, and ask nothing more', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { vault, env } = vaultWith(root, ['HARNESS_REALMS=silent:push,slow:push,stuck:push']);
+    addRealm(vault, 'silent');
+    addRealm(vault, 'slow');
+    addRealm(vault, 'stuck');
+    const { runGit, calls } = scriptedGit({
+      [`silent|${ORIGIN}`]: TIMED_OUT,
+      [`slow|${ORIGIN}`]: exit(2),
+      [`slow|${COUNT}`]: TIMED_OUT,
+      [`stuck|${ORIGIN}`]: exit(2),
+      [`stuck|${COUNT}`]: ok('2\n'),
+      [`stuck|${STATUS}`]: TIMED_OUT,
+    });
+    const rows = flagsOf(diagnose(env, root, { runGit }));
+    const SKIPPED = ['unknown (git did not answer)', true];
+    for (const name of ['silent', 'slow']) {
+      assert.deepEqual(rows[`realm ${name} clean`], SKIPPED);
+      assert.deepEqual(rows[`realm ${name} pushed`], SKIPPED);
+    }
+    assert.deepEqual(rows['realm stuck clean'], ['unknown (ETIMEDOUT)', true]);
+    assert.deepEqual(rows['realm stuck pushed'], SKIPPED);
+
+    const asked = (name) => calls.filter((call) => path.basename(call.cwd) === name).map((call) => call.args.join(' '));
+    assert.deepEqual(asked('silent'), [ORIGIN]);
+    assert.deepEqual(asked('slow'), [ORIGIN, COUNT]);
+    assert.deepEqual(asked('stuck'), [ORIGIN, COUNT, STATUS]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('nightly ingest row: none yet, the age of the last success, stale past 36 hours, unreadable', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const stateFile = path.join(root, 'state', 'ingest-state.json');
+    const { env } = vaultWith(root, [`HARNESS_INGEST_STATE_FILE=${stateFile}`]);
+    const now = () => Date.parse('2026-10-02T12:00:00.000Z');
+    const ingestRow = () => diagnose(env, root, { now }).find(([label]) => label === 'nightly ingest');
+    const write = (body) => {
+      fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+      fs.writeFileSync(stateFile, typeof body === 'string' ? body : JSON.stringify(body));
+    };
+
+    assert.deepEqual(ingestRow(), ['nightly ingest', `${stateFile} (none yet: no complete ingest has finished on this machine)`, false]);
+
+    write({ schema_version: 1, last_success: '2026-10-02T07:04:00+00:00', source: 'obsidian', path: '/vault', documents: 480, chunks_written: 3 });
+    assert.deepEqual(ingestRow(), ['nightly ingest', `${stateFile}, last success 4h ago`, false]);
+
+    write({ schema_version: 1, last_success: '2026-10-01T00:00:00+00:00' });
+    assert.deepEqual(ingestRow(), ['nightly ingest', `${stateFile}, last success 36h ago`, false], 'exactly 36 hours is still healthy');
+
+    write({ schema_version: 1, last_success: '2026-09-30T23:59:00+00:00' });
+    assert.deepEqual(ingestRow(), ['nightly ingest', `${stateFile}, last success 36h ago (STALE: older than 36h)`, true]);
+
+    write({ schema_version: 1 });
+    assert.deepEqual(ingestRow(), ['nightly ingest', `${stateFile} (unreadable: no last_success timestamp)`, true]);
+
+    write('{ "last_success": ');
+    assert.deepEqual(ingestRow(), ['nightly ingest', `${stateFile} (unreadable: not JSON)`, true]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('the nightly ingest row follows ingest project, and its defaults are the ones the ingest package uses', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { env } = vaultWith(root);
+    const rows = diagnose(env, root);
+    const labels = rows.map(([label]) => label);
+    assert.equal(labels[labels.indexOf('ingest project') + 1], 'nightly ingest');
+    const [, value] = rows.find(([label]) => label === 'nightly ingest');
+    assert.ok(value.startsWith(path.join(root, '.claude', 'hooks', 'ingest-state.json')), value);
+
+    const runstate = fs.readFileSync(path.resolve(path.dirname(DOCTOR), '..', 'ingest', 'src', 'ingest', 'runstate.py'), 'utf8');
+    assert.match(runstate, /^ENV_STATE_FILE = "HARNESS_INGEST_STATE_FILE"$/m);
+    assert.match(runstate, /^DEFAULT_STATE_RELATIVE = \("\.claude", "hooks", "ingest-state\.json"\)$/m);
+    assert.match(runstate, /^DEFAULT_MAX_AGE_HOURS = 36$/m);
+  } finally {
+    cleanup();
+  }
+});
