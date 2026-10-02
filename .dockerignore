@@ -1,0 +1,52 @@
+# What never enters a build context. The only image built from this repo is
+# harness-jobs (docker/jobs/Dockerfile), which copies certs/prod-ca.crt, hooks/,
+# scripts/ and ingest/. hooks/tests/grep-clean.test.mjs reads this file to know
+# which of those files the image holds, so keep the patterns plain: a path, or a
+# path with * and **.
+
+# Secrets and per-machine files. The connection string reaches a container as a
+# file under /run/secrets, never through a layer.
+**/.env
+**/.env.*
+secrets/
+**/*.pem
+**/*.key
+
+# Version control, CI and editor state.
+.git/
+.github/
+.claude/
+.harness/
+.vscode/
+.idea/
+
+# Parts of the repo the jobs do not run.
+db/
+docs/
+mcp-server/
+skills/
+
+# Build output and caches, rebuilt inside the image.
+**/node_modules/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.fastembed_cache/
+**/.fastembed-cache/
+
+# Tests stay on the host.
+hooks/tests/
+ingest/tests/
+scripts/tests/
+
+# The Windows twins of the scripts: the container runs the .sh ones.
+**/*.ps1
+
+# One-time repairs of notes written on Windows. They name Windows home folders
+# by design and are run by hand on the machine that wrote the notes.
+hooks/backfill-fields.mjs
+hooks/lib/backfill-fields.mjs
+hooks/migrate-sessions.mjs
+
+# Per-machine eval record; in the container it lives on the job-state volume.
+ingest/eval/history.jsonl

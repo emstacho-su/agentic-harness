@@ -320,7 +320,10 @@ exists on no remote yet, the Obsidian plugin, the scheduled jobs and the push cr
      `AgenticHarness-CheckpointCollect`); `Enable-ScheduledTask` is the way back. If one does
      fire while the other is running, the realm lock, a file inside the checkout both of them
      see, makes the second stand down (exit 2, `locked`).
-   - First night. Start it with `REALM_SYNC=dryrun` in the environment, read
+   - First start and first night. A container with no state runs the nightly at once, not
+     at the next 03:00: it sweeps transcripts into the vault and ingests into the store
+     straight away. Until `REALM_SYNC=apply` is set it commits and pushes nothing (the compose
+     file's default is `dryrun`, which only prints what the sync would do). Read
      `docker compose logs harness-jobs` the next morning, then set `REALM_SYNC=apply` and
      `docker compose up -d`. `docker compose ps` shows the service healthy while
      `ingest --health` passes: a complete ingest within the last 36 hours.
