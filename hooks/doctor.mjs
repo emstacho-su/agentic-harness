@@ -191,17 +191,43 @@ function cleanRow(label, folder, runGit) {
   return { row: row(label, note ? `${uncommitted} (${note})` : uncommitted, true), answered: true };
 }
 
+/** `git symbolic-ref --quiet HEAD` exits 1, silently, when HEAD is not on a branch. */
+const DETACHED_HEAD_STATUS = 1;
+/** `git config --get` exits 1 when the key is not set. */
+const UNSET_CONFIG_STATUS = 1;
+
 /**
  * `realm <name> pushed`: whether the branch has a commit its upstream lacks,
- * judged against the remote-tracking ref as it stands (no fetch). git exits
- * 128 when the branch has no upstream, which for a push realm is "never pushed".
+ * judged against the remote-tracking ref as it stands (no fetch).
+ *
+ * `rev-list @{upstream}..HEAD` exits 128 for a branch with no upstream, for a
+ * detached HEAD and for an upstream whose ref is gone alike, so the first two
+ * are asked for by name before it: the branch (`symbolic-ref`), then whether
+ * it tracks anything (`branch.<name>.merge`). Only those two get the "never
+ * pushed" and "detached" wording; any other failure is reported as unknown
+ * with git's exit, never as a missing upstream.
  */
 function pushedRow(label, folder, policy, runGit) {
   if (policy === POLICY_LOCAL) return row(label, 'local realm: it stays on this machine');
-  const ahead = runGit(['rev-list', '--count', '@{upstream}..HEAD'], { cwd: folder, timeoutMs: DOCTOR_GIT_TIMEOUT_MS });
+  const options = { cwd: folder, timeoutMs: DOCTOR_GIT_TIMEOUT_MS };
+  const unknown = (result) => row(label, `unknown (${result.error || 'git failed'})`, true);
+
+  const branch = runGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], options);
+  if (!branch.ok) {
+    if (branch.status === DETACHED_HEAD_STATUS) return row(label, 'no: HEAD is detached (not on a branch)', true);
+    return unknown(branch);
+  }
+  const name = branch.stdout.trim();
+  const merge = runGit(['config', '--get', `branch.${name}.merge`], options);
+  if (!merge.ok) {
+    if (merge.status === UNSET_CONFIG_STATUS) {
+      return row(label, `no: no upstream branch (git push -u origin ${name} once)`, true);
+    }
+    return unknown(merge);
+  }
+  const ahead = runGit(['rev-list', '--count', '@{upstream}..HEAD'], options);
   if (!ahead.ok) {
-    if (!gitAnswered(ahead)) return row(label, `unknown (${ahead.error || 'git failed'})`, true);
-    return row(label, 'no: no upstream branch (git push -u origin <branch> once)', true);
+    return row(label, `unknown (the count against its upstream failed: ${ahead.error || 'git failed'})`, true);
   }
   const commits = Number(ahead.stdout.trim());
   if (!Number.isInteger(commits)) return row(label, 'unknown (git printed no count)', true);

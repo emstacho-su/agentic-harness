@@ -541,6 +541,10 @@ test('the claude-config row sits just before the SessionStart rows', () => {
 
 const STATUS = '--no-optional-locks status --porcelain=v1 -z --untracked-files=all';
 const AHEAD = 'rev-list --count @{upstream}..HEAD';
+const BRANCH = 'symbolic-ref --quiet --short HEAD';
+const MERGE = 'config --get branch.main.merge';
+const ON_MAIN = ok('main\n');
+const TRACKS_MAIN = ok('refs/heads/main\n');
 const realmSyncRows = (rows) => rows.filter(([label]) => / (clean|pushed)$/.test(label));
 const flagsOf = (rows) => Object.fromEntries(rows.map(([label, value, problem]) => [label, [value, problem]]));
 
@@ -604,6 +608,8 @@ test('clean and pushed rows: counts, a local realm, no upstream, and only for re
       [`busy|${ORIGIN}`]: ok('https://github.com/o/busy.git\n'),
       [`busy|${COUNT}`]: ok('9\n'),
       [`busy|${STATUS}`]: ok('?? new.md\0 M old.md\0?? attachments/ist466/deck.pptx\0'),
+      [`busy|${BRANCH}`]: ON_MAIN,
+      [`busy|${MERGE}`]: TRACKS_MAIN,
       [`busy|${AHEAD}`]: ok('2\n'),
       [`kept|${ORIGIN}`]: exit(2),
       [`kept|${COUNT}`]: ok('4\n'),
@@ -611,7 +617,8 @@ test('clean and pushed rows: counts, a local realm, no upstream, and only for re
       [`fresh|${ORIGIN}`]: ok('https://github.com/o/fresh.git\n'),
       [`fresh|${COUNT}`]: ok('1\n'),
       [`fresh|${STATUS}`]: ok(''),
-      [`fresh|${AHEAD}`]: exit(128),
+      [`fresh|${BRANCH}`]: ON_MAIN,
+      [`fresh|${MERGE}`]: exit(1),
     });
     const rows = flagsOf(diagnose(env, root, { runGit }));
 
@@ -620,12 +627,13 @@ test('clean and pushed rows: counts, a local realm, no upstream, and only for re
     assert.deepEqual(rows['realm kept clean'], ['yes', false]);
     assert.deepEqual(rows['realm kept pushed'], ['local realm: it stays on this machine', false]);
     assert.deepEqual(rows['realm fresh clean'], ['yes', false]);
-    assert.deepEqual(rows['realm fresh pushed'], ['no: no upstream branch (git push -u origin <branch> once)', true]);
+    assert.deepEqual(rows['realm fresh pushed'], ['no: no upstream branch (git push -u origin main once)', true]);
     assert.equal(rows['realm bare clean'], undefined, 'a folder that is not a checkout has no sync rows');
     assert.equal(rows['realm bare pushed'], undefined);
 
     const asked = (name) => calls.filter((call) => path.basename(call.cwd) === name).map((call) => call.args.join(' '));
-    assert.deepEqual(asked('busy'), [ORIGIN, COUNT, STATUS, AHEAD]);
+    assert.deepEqual(asked('busy'), [ORIGIN, COUNT, STATUS, BRANCH, MERGE, AHEAD]);
+    assert.deepEqual(asked('fresh'), [ORIGIN, COUNT, STATUS, BRANCH, MERGE], 'with no upstream there is nothing to count');
     assert.deepEqual(asked('kept'), [ORIGIN, COUNT, STATUS], 'a local realm is never asked how far ahead it is');
     assert.ok(calls.every((call) => call.timeoutMs === 5000));
 
@@ -685,6 +693,73 @@ test('the clean row names at most three unstaged leftovers, and says so when git
   }
 });
 
+test('the pushed row tells a detached HEAD and a failing count from a missing upstream', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const names = ['detached', 'gone', 'odd', 'unset'];
+    const { vault, env } = vaultWith(root, [`HARNESS_REALMS=${names.map((name) => `${name}:push`).join(',')}`]);
+    const healthy = (name) => {
+      addRealm(vault, name);
+      return { [`${name}|${ORIGIN}`]: exit(2), [`${name}|${COUNT}`]: ok('3\n'), [`${name}|${STATUS}`]: ok('') };
+    };
+    const { runGit, calls } = scriptedGit({
+      ...healthy('detached'),
+      [`detached|${BRANCH}`]: exit(1),
+      ...healthy('gone'),
+      [`gone|${BRANCH}`]: ON_MAIN,
+      [`gone|${MERGE}`]: TRACKS_MAIN,
+      [`gone|${AHEAD}`]: exit(128),
+      ...healthy('odd'),
+      [`odd|${BRANCH}`]: exit(128),
+      ...healthy('unset'),
+      [`unset|${BRANCH}`]: ON_MAIN,
+      [`unset|${MERGE}`]: exit(1),
+    });
+    const rows = flagsOf(diagnose(env, root, { runGit }));
+
+    assert.deepEqual(rows['realm detached pushed'], ['no: HEAD is detached (not on a branch)', true]);
+    assert.deepEqual(rows['realm gone pushed'], ['unknown (the count against its upstream failed: exit 128)', true]);
+    assert.deepEqual(rows['realm odd pushed'], ['unknown (exit 128)', true]);
+    assert.deepEqual(rows['realm unset pushed'], ['no: no upstream branch (git push -u origin main once)', true]);
+
+    const asked = (name) => calls.filter((call) => path.basename(call.cwd) === name).map((call) => call.args.join(' ')).slice(3);
+    assert.deepEqual(asked('detached'), [BRANCH], 'a detached HEAD has no branch to look an upstream up for');
+    assert.deepEqual(asked('gone'), [BRANCH, MERGE, AHEAD]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('the pushed row against real git: a detached HEAD, then an upstream whose ref is gone', () => {
+  const { root, cleanup } = scratch();
+  try {
+    const { vault, env } = vaultWith(root, ['HARNESS_REALMS=projects:push']);
+    const realm = addRealm(vault, 'projects', 'none');
+    const remote = path.join(root, 'remote.git');
+    const git = (...args) => execFileSync('git', ['-C', realm, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote], { stdio: 'ignore' });
+    git('init', '-q', '-b', 'main');
+    git('add', '.realm');
+    git('-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'init');
+    git('remote', 'add', 'origin', pathToFileURL(remote).href);
+    const pushed = () => flagsOf(diagnose(env, root))['realm projects pushed'];
+
+    assert.deepEqual(pushed(), ['no: no upstream branch (git push -u origin main once)', true]);
+
+    git('push', '-q', '-u', 'origin', 'main');
+    assert.deepEqual(pushed(), ['yes', false]);
+
+    git('checkout', '-q', '--detach');
+    assert.deepEqual(pushed(), ['no: HEAD is detached (not on a branch)', true]);
+
+    git('checkout', '-q', 'main');
+    git('update-ref', '-d', 'refs/remotes/origin/main');
+    assert.deepEqual(pushed(), ['unknown (the count against its upstream failed: exit 128)', true]);
+  } finally {
+    cleanup();
+  }
+});
+
 test('clean and pushed rows: a realm no list names is held to the push rule', () => {
   const { root, cleanup } = scratch();
   try {
@@ -694,6 +769,8 @@ test('clean and pushed rows: a realm no list names is held to the push rule', ()
       [`projects|${ORIGIN}`]: ok('https://github.com/o/projects.git\n'),
       [`projects|${COUNT}`]: ok('9\n'),
       [`projects|${STATUS}`]: ok(''),
+      [`projects|${BRANCH}`]: ON_MAIN,
+      [`projects|${MERGE}`]: TRACKS_MAIN,
       [`projects|${AHEAD}`]: ok('1\n'),
     });
     assert.deepEqual(flagsOf(diagnose(env, root, { runGit }))['realm projects pushed'], ['no: 1 commit ahead of its upstream', true]);
@@ -705,10 +782,11 @@ test('clean and pushed rows: a realm no list names is held to the push rule', ()
 test('clean and pushed rows: when git does not answer they say so, count as problems, and ask nothing more', () => {
   const { root, cleanup } = scratch();
   try {
-    const { vault, env } = vaultWith(root, ['HARNESS_REALMS=silent:push,slow:push,stuck:push']);
+    const { vault, env } = vaultWith(root, ['HARNESS_REALMS=silent:push,slow:push,stuck:push,mute:push']);
     addRealm(vault, 'silent');
     addRealm(vault, 'slow');
     addRealm(vault, 'stuck');
+    addRealm(vault, 'mute');
     const { runGit, calls } = scriptedGit({
       [`silent|${ORIGIN}`]: TIMED_OUT,
       [`slow|${ORIGIN}`]: exit(2),
@@ -716,6 +794,10 @@ test('clean and pushed rows: when git does not answer they say so, count as prob
       [`stuck|${ORIGIN}`]: exit(2),
       [`stuck|${COUNT}`]: ok('2\n'),
       [`stuck|${STATUS}`]: TIMED_OUT,
+      [`mute|${ORIGIN}`]: exit(2),
+      [`mute|${COUNT}`]: ok('2\n'),
+      [`mute|${STATUS}`]: ok(''),
+      [`mute|${BRANCH}`]: TIMED_OUT,
     });
     const rows = flagsOf(diagnose(env, root, { runGit }));
     const SKIPPED = ['unknown (git did not answer)', true];
@@ -730,6 +812,9 @@ test('clean and pushed rows: when git does not answer they say so, count as prob
     assert.deepEqual(asked('silent'), [ORIGIN]);
     assert.deepEqual(asked('slow'), [ORIGIN, COUNT]);
     assert.deepEqual(asked('stuck'), [ORIGIN, COUNT, STATUS]);
+    assert.deepEqual(rows['realm mute clean'], ['yes', false]);
+    assert.deepEqual(rows['realm mute pushed'], ['unknown (ETIMEDOUT)', true]);
+    assert.deepEqual(asked('mute'), [ORIGIN, COUNT, STATUS, BRANCH], 'no upstream lookup after the branch lookup went unanswered');
   } finally {
     cleanup();
   }
