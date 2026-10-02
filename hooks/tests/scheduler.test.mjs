@@ -12,7 +12,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
+import { SYNC_FETCH_TIMEOUT_MS } from '../lib/realm-steps.mjs';
 import { EMPTY_STATE, JOB_COLLECT, JOB_NIGHTLY, serializeState, withStart } from '../lib/schedule.mjs';
 import {
   DEFAULT_STATE_FILE,
@@ -33,10 +35,13 @@ import {
   readState,
   releaseRunLock,
   runLoop,
+  signalJob,
+  spawnJob,
   tick,
   writeStateAtomic,
 } from '../scheduler.mjs';
 
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const at = (iso) => Date.parse(iso);
 const DEAD_PID = 999_999;
 
@@ -499,6 +504,91 @@ test('a stop passes the signal to the running job, and to nothing when no job ru
   second.onChild(null);
   second.stop('SIGTERM');
   assert.deepEqual(signalled, [[4242, 'SIGTERM']], 'the job had ended by the second signal');
+});
+
+const POSIX = process.platform !== 'win32';
+const NO_GROUPS = 'process groups are POSIX; the scheduler runs in a Linux container';
+
+/** Is a process with this pid still there? */
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code === 'EPERM';
+  }
+}
+
+/** Poll `check` every 25 ms until it is true or `ms` has passed; returns its last answer. */
+async function eventually(check, ms) {
+  const deadline = Date.now() + ms;
+  while (!check() && Date.now() < deadline) await new Promise((resolve) => { setTimeout(resolve, 25); });
+  return check();
+}
+
+test('each job is the leader of its own process group, and a stop signals the group', () => {
+  const spawned = [];
+  const fakeSpawn = (command, args, options) => {
+    spawned.push({ command, args, options });
+    return { pid: 4242, once: () => {} };
+  };
+  spawnJob({ command: 'bash', args: ['/app/scripts/nightly-ingest.sh'] }, { env: { A: '1' }, spawn: fakeSpawn, platform: 'linux' });
+  spawnJob({ command: 'bash', args: ['x.sh'] }, { env: {}, spawn: fakeSpawn, platform: 'win32' });
+  assert.equal(spawned[0].options.detached, true, 'detached makes the child a group leader on POSIX');
+  assert.deepEqual(spawned[0].options.stdio, ['ignore', 'inherit', 'inherit']);
+  assert.deepEqual(spawned[0].options.env, { A: '1' });
+  assert.equal(spawned[1].options.detached, false, 'on Windows detached would open a console window and gives no group');
+
+  const killed = [];
+  const kill = (pid, signal) => killed.push([pid, signal]);
+  signalJob({ pid: 4242, kill: () => assert.fail('the child alone must not be signalled') }, 'SIGTERM', { platform: 'linux', kill });
+  assert.deepEqual(killed, [[-4242, 'SIGTERM']], 'a negative pid is the whole group');
+
+  const direct = [];
+  signalJob({ pid: 4242, kill: (signal) => direct.push(signal) }, 'SIGTERM', { platform: 'win32', kill });
+  assert.deepEqual(direct, ['SIGTERM']);
+  assert.equal(killed.length, 1);
+
+  const gone = () => { throw Object.assign(new Error('no such process'), { code: 'ESRCH' }); };
+  assert.doesNotThrow(() => signalJob({ pid: 4242 }, 'SIGTERM', { platform: 'linux', kill: gone }), 'a group that already ended is not an error');
+});
+
+test('compose gives a stopping job longer than one realm push may take', () => {
+  const compose = fs.readFileSync(path.join(REPO, 'compose.yaml'), 'utf8');
+  const grace = /^\s+stop_grace_period:\s*(\d+)s\s*$/m.exec(compose);
+  assert.ok(grace, 'compose.yaml sets no stop_grace_period in whole seconds');
+  assert.ok(
+    Number(grace[1]) * 1000 > SYNC_FETCH_TIMEOUT_MS,
+    `stop_grace_period ${grace[1]}s does not cover a push, which may take ${SYNC_FETCH_TIMEOUT_MS / 1000}s`,
+  );
+});
+
+test('a stop reaches the whole job: the child and the grandchild it started are both gone', { skip: POSIX ? false : NO_GROUPS }, async (t) => {
+  const s = scratch(t);
+  const pidFile = path.join(s.root, 'pids.json');
+  // The child starts a grandchild, as bash starts git, and both then wait.
+  const childScript = `
+    const { spawn } = require('node:child_process');
+    const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));
+    setInterval(() => {}, 1000);`;
+  const stopper = createStopper();
+  const running = spawnJob({ command: process.execPath, args: ['-e', childScript] }, { env: process.env, onChild: stopper.onChild });
+
+  assert.ok(await eventually(() => fs.existsSync(pidFile) && fs.statSync(pidFile).size > 0, 5_000), 'the child never reported its pids');
+  const pids = JSON.parse(fs.readFileSync(pidFile, 'utf8'));
+  t.after(() => {
+    for (const pid of [pids.child, pids.grandchild]) {
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already gone, which is the point */ }
+    }
+  });
+  assert.ok(alive(pids.child) && alive(pids.grandchild));
+
+  stopper.stop('SIGTERM');
+
+  assert.equal(await within(5_000, running, 'the stopped job'), 128 + os.constants.signals.SIGTERM);
+  assert.ok(await eventually(() => !alive(pids.grandchild), 5_000), 'the grandchild outlived the stop');
+  assert.ok(!alive(pids.child));
 });
 
 test('the loop catches up after a sleep: the clock jumps past 03:00 and nightly runs once', async (t) => {

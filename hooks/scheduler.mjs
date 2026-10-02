@@ -388,9 +388,31 @@ export async function runLoop(deps) {
  * (lib/spawn.mjs). `onChild` hears the running child, then null when it ends.
  */
 export function spawnRunner({ env = process.env, repoRoot = path.resolve(HERE, '..'), onChild = () => {} } = {}) {
-  return (job) => new Promise((resolve, reject) => {
-    const { command, args } = jobCommand(job, { repoRoot, node: process.execPath, env });
-    const child = spawn(command, args, { cwd: os.homedir(), env, stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });
+  return (job) => spawnJob(jobCommand(job, { repoRoot, node: process.execPath, env }), { env, onChild });
+}
+
+const WINDOWS = 'win32';
+
+/**
+ * Start one job's command and resolve with its exit code.
+ *
+ * On POSIX the child is started `detached`, which makes it the leader of a new
+ * process group. A job is a tree (bash, then node, git, uv, python), and a
+ * signal sent to the child alone stops bash and leaves the rest running: a
+ * `docker stop` would then wait out its grace period and SIGKILL a git in the
+ * middle of its work. With a group, `signalJob` reaches all of them at once.
+ * On Windows `detached` opens a console window and gives no group to signal,
+ * so the child is started plainly; the scheduler's home is the Linux container.
+ */
+export function spawnJob({ command, args }, { env = process.env, onChild = () => {}, spawn: spawnImpl = spawn, platform = process.platform } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawnImpl(command, args, {
+      cwd: os.homedir(),
+      env,
+      stdio: ['ignore', 'inherit', 'inherit'],
+      windowsHide: true,
+      detached: platform !== WINDOWS,
+    });
     onChild(child);
     child.once('error', (err) => {
       onChild(null);
@@ -401,6 +423,23 @@ export function spawnRunner({ env = process.env, repoRoot = path.resolve(HERE, '
       resolve(Number.isInteger(code) ? code : SIGNAL_EXIT_BASE + (os.constants.signals[signal] ?? 0));
     });
   });
+}
+
+/**
+ * Pass a stop signal to a running job: to its whole process group on POSIX (a
+ * negative pid), to the child alone on Windows. A group that has already ended
+ * (ESRCH) is not an error: the stop and the job's own exit can cross.
+ */
+export function signalJob(child, signal, { platform = process.platform, kill = (pid, sig) => process.kill(pid, sig) } = {}) {
+  if (platform === WINDOWS) {
+    child.kill(signal);
+    return;
+  }
+  try {
+    kill(-child.pid, signal);
+  } catch (err) {
+    if (err?.code !== 'ESRCH') throw err;
+  }
 }
 
 /**
@@ -447,14 +486,14 @@ export async function main(argv, { env = process.env, out = console.log, err = c
  * loop's sleep; `shouldStop()` is what `tick` and `runLoop` ask; `sleep(ms)`
  * is the loop's sleep; `onChild` is how the runner says which job is running.
  */
-export function createStopper({ signalJob = (child, signal) => child.kill(signal) } = {}) {
+export function createStopper({ signalJob: signalRunning = signalJob } = {}) {
   let stopping = false;
   let child = null;
   let wake = () => {};
   return Object.freeze({
     stop(signal) {
       stopping = true;
-      if (child) signalJob(child, signal);
+      if (child) signalRunning(child, signal);
       wake();
     },
     shouldStop: () => stopping,

@@ -39,6 +39,11 @@ services:
       dockerfile: docker/jobs/Dockerfile
     image: harness-jobs:local
     restart: unless-stopped
+    # On a stop the scheduler passes SIGTERM to the whole process group of the
+    # running job and waits for it. Docker's default 10 s before SIGKILL is
+    # shorter than one git network call's own limit (120 s for a realm push or
+    # pull), so a job that is finishing a push is given time to finish it.
+    stop_grace_period: 150s
     environment:
       DATABASE_URL_FILE: /run/secrets/harness_database_url
       VAULT_REALM_PAT_FILE: /run/secrets/vault_realm_pat
