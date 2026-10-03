@@ -45,9 +45,16 @@ fail() {
   exit "$EX_CONFIG"
 }
 
-# One line of a secret file, without the CR or LF an editor left at its end.
+# The UTF-8 byte-order mark PowerShell 5.1 (`Set-Content -Encoding UTF8`) and
+# Notepad write at the start of a file. Left in, it becomes the first three
+# bytes of the password or the token, and the login fails with no clue why.
+BOM=$'\xEF\xBB\xBF'
+
+# One line of a secret file, without a leading BOM or the CR and LF an editor left.
 read_secret() {
-  tr -d '\r\n' < "$1"
+  local value
+  value="$(tr -d '\r\n' < "$1")"
+  printf '%s' "${value#"$BOM"}"
 }
 
 for name in $SECRET_FILE_VARS; do
@@ -94,9 +101,10 @@ if [ -n "$pat_file" ] && [ -s "$pat_file" ]; then
   case "$pat_file" in
     *"'"*) fail "$PAT_FILE_VAR must not contain a single quote" ;;
   esac
-  # The helper runs in git's shell at the moment of the push and reads the file then.
+  # The helper runs in git's shell (sh, not bash) at the moment of the push and
+  # reads the file then, dropping CR and LF and a leading BOM as read_secret does.
   git config --global "credential.${GIT_HOST_URL}.helper" \
-    "!f() { test \"\$1\" = get || exit 0; printf 'username=%s\\npassword=%s\\n' '${GIT_TOKEN_USER}' \"\$(tr -d '\\r\\n' < '${pat_file}')\"; }; f"
+    "!f() { test \"\$1\" = get || exit 0; printf 'username=%s\\npassword=%s\\n' '${GIT_TOKEN_USER}' \"\$(tr -d '\\r\\n' < '${pat_file}' | sed '1s/^\\xEF\\xBB\\xBF//')\"; }; f"
 else
   echo "jobs-entrypoint: no realm token ($PAT_FILE_VAR unset or its file empty); realm pushes will fail closed" >&2
 fi

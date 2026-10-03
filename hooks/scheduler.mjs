@@ -120,7 +120,8 @@ export function envWithSecretFiles(env, { readFile = (file) => fs.readFileSync(f
     } catch {
       return { ok: false, problem: `${fileVar} names ${file}, which is not a readable file` };
     }
-    const value = text.replace(/[\r\n]/g, '');
+    // A leading BOM (PowerShell 5.1, Notepad) and any CR or LF are not part of the value.
+    const value = text.replace(/^﻿/, '').replace(/[\r\n]/g, '');
     if (!value) return { ok: false, problem: `${fileVar} names ${file}, which is empty` };
     resolved[name] = value;
     delete resolved[fileVar];

@@ -915,6 +915,57 @@ test('the jobs image marks itself, and compose mounts no transcripts folder', ()
   assert.ok(!dockerfile.includes('.claude/projects'), 'the image still makes a mount point for transcripts');
 });
 
+// ------------------------------------------------ secret files saved by Windows tools (BOM, CRLF)
+
+/** What PowerShell 5.1's `Set-Content -Encoding UTF8` and Notepad write in front of a file. */
+const BOM = '﻿';
+const FAKE_PAT = 'github_pat_not_a_real_token_0000';
+
+test('envWithSecretFiles drops a UTF-8 byte-order mark as well as CR and LF', (t) => {
+  const s = scratch(t);
+  const file = path.join(s.root, 'harness_database_url');
+  fs.writeFileSync(file, `${BOM}${FAKE_URL}\r\n`, 'utf8');
+  assert.equal(fs.readFileSync(file)[0], 0xef, 'the file really starts with the BOM bytes');
+  const resolved = envWithSecretFiles({ DATABASE_URL_FILE: file });
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.env.DATABASE_URL, FAKE_URL);
+
+  fs.writeFileSync(file, `${BOM}\r\n`, 'utf8');
+  assert.equal(envWithSecretFiles({ DATABASE_URL_FILE: file }).ok, false, 'a file holding only a BOM is empty');
+});
+
+test('the entrypoint drops a BOM from a secret file before exporting it', { skip: NEEDS_BASH }, (t) => {
+  const root = scratchForBash(t);
+  fs.writeFileSync(`${root}/harness_database_url`, `${BOM}${FAKE_URL}\r\n`, 'utf8');
+  const run = runEntrypoint(root, { DATABASE_URL_FILE: `${root}/harness_database_url`, GIT_CONFIG_GLOBAL: `${root}/gitconfig` }, [
+    'bash', '-c', 'printf %s "$DATABASE_URL"',
+  ]);
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout, FAKE_URL);
+});
+
+test('the credential helper drops a BOM from the token file, and the token is in no config', { skip: NEEDS_BASH }, (t) => {
+  const root = scratchForBash(t);
+  fs.writeFileSync(`${root}/vault_realm_pat`, `${BOM}${FAKE_PAT}\r\n`, 'utf8');
+  const config = `${root}/gitconfig`;
+  const env = { VAULT_REALM_PAT_FILE: `${root}/vault_realm_pat`, GIT_CONFIG_GLOBAL: config, GIT_TERMINAL_PROMPT: '0' };
+
+  const setup = runEntrypoint(root, env, ['true']);
+  assert.equal(setup.status, 0, setup.stderr);
+  assert.ok(!fs.readFileSync(config, 'utf8').includes(FAKE_PAT), 'the config names the file, not the token');
+
+  // Only this config is read: no system file (where Git for Windows keeps its credential manager).
+  const fill = spawnSync('git', ['credential', 'fill'], {
+    encoding: 'utf8',
+    input: 'protocol=https\nhost=github.com\n\n',
+    env: { PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: config, GIT_TERMINAL_PROMPT: '0' },
+  });
+  assert.equal(fill.status, 0, fill.stderr);
+  const answer = Object.fromEntries(fill.stdout.trim().split('\n').map((line) => line.split(/=(.*)/s).slice(0, 2)));
+  assert.equal(answer.username, 'x-access-token');
+  assert.equal(answer.password, FAKE_PAT);
+});
+
 test('the image fixes GIT_CONFIG_GLOBAL, so the entrypoint and an exec agree on the file', () => {
   const dockerfile = fs.readFileSync(path.join(REPO, 'docker', 'jobs', 'Dockerfile'), 'utf8');
   assert.match(dockerfile, /^\s+GIT_CONFIG_GLOBAL=\/home\/harness\/\.gitconfig-jobs \\?$/m);
