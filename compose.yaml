@@ -1,0 +1,96 @@
+# harness-jobs: the nightly reconcile (03:00) and the checkpoint collector
+# (12:00, 18:00, New York time) in a container, started by hooks/scheduler.mjs,
+# which catches up on a window the machine slept through.
+#
+#   docker compose up -d --build harness-jobs
+#   docker compose exec harness-jobs node hooks/scheduler.mjs --run-now nightly
+#   docker compose logs -f harness-jobs
+#
+# It replaces the two host scheduled jobs on the machine that runs it and on no
+# other (docs/portable.md, runbook step 7). The store stays where DATABASE_URL
+# points; the optional local store is still db/docker-compose.yml.
+#
+# Usually included by an umbrella compose file with `project_directory` set to
+# this repo, which then supplies the variables below from its `.env`. That file
+# is interpolation only: it holds paths and names, never a secret.
+#
+#   VAULT_DIR            required. The folder holding the realm checkouts; mounted at /vault.
+#   SECRETS_DIR          the folder holding the two secret files (default ./secrets).
+#   HARNESS_MACHINE, HARNESS_GIT_EMAIL, HARNESS_REALMS
+#                        what ~/.harness/machine.env says on a host: the name written into
+#                        notes and realm commits, the commit email, the realms and their policy.
+#   REALM_SYNC           dryrun (default here) | apply | skip, as scripts/nightly-ingest.sh reads
+#                        it. The container commits and pushes a realm only once this says apply.
+#   HARNESS_CHECKPOINT_REPOS, HARNESS_CHECKPOINT_AUTHORS
+#                        optional, comma-separated: checkouts the collector fetches (paths inside
+#                        the container) and the author emails it accepts.
+#   HARNESS_DATABASE_SSL optional. `disable` for a local Postgres only.
+#
+# Secrets are files, mounted at /run/secrets/<name>. The entrypoint exports
+# DATABASE_URL from harness_database_url; git reads vault_realm_pat when it
+# pushes a realm. Neither value is in `environment:`, a build argument or a layer.
+#
+# No transcripts are mounted. The container's nightly does not sweep sessions
+# or session-start state (the image sets HARNESS_JOBS_CONTAINER=1): it cannot
+# see the working directories they ran in, and the host's SessionEnd hook is
+# the capture path. It reconciles, ingests and syncs the realms.
+
+services:
+  harness-jobs:
+    build:
+      context: .
+      dockerfile: docker/jobs/Dockerfile
+    image: harness-jobs:local
+    restart: unless-stopped
+    # On a stop the scheduler passes SIGTERM to the whole process group of the
+    # running job and waits for it. Docker's default 10 s before SIGKILL is
+    # shorter than one git network call's own limit (120 s for a realm push or
+    # pull), so a job that is finishing a push is given time to finish it.
+    stop_grace_period: 150s
+    environment:
+      DATABASE_URL_FILE: /run/secrets/harness_database_url
+      VAULT_REALM_PAT_FILE: /run/secrets/vault_realm_pat
+      DATABASE_SSL: ${HARNESS_DATABASE_SSL:-}
+      HARNESS_MACHINE: ${HARNESS_MACHINE:-}
+      HARNESS_GIT_EMAIL: ${HARNESS_GIT_EMAIL:-}
+      HARNESS_REALMS: ${HARNESS_REALMS:-}
+      REALM_SYNC: ${REALM_SYNC:-dryrun}
+      HARNESS_CHECKPOINT_REPOS: ${HARNESS_CHECKPOINT_REPOS:-}
+      HARNESS_CHECKPOINT_AUTHORS: ${HARNESS_CHECKPOINT_AUTHORS:-}
+    secrets:
+      - harness_database_url
+      - vault_realm_pat
+    volumes:
+      # The embedding model (130 MB), downloaded once.
+      - fastembed-cache:/cache/fastembed
+      # scheduler.json, the run lock, the ingest's last-success record, the eval history.
+      - job-state:/state
+      # The only host bind: the realms.
+      - type: bind
+        source: ${VAULT_DIR:?set VAULT_DIR to the folder holding the realm checkouts}
+        target: /vault
+    # Healthy means a complete nightly ingest finished within 36 hours
+    # (`ingest --health`). The first start has none, so the scheduler runs the
+    # nightly at once and the 30-minute start period covers it.
+    healthcheck:
+      test: ["CMD", "uv", "run", "--directory", "/app/ingest", "ingest", "--health"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 30m
+      start_interval: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  fastembed-cache:
+  job-state:
+
+secrets:
+  harness_database_url:
+    file: ${SECRETS_DIR:-./secrets}/harness_database_url
+  vault_realm_pat:
+    file: ${SECRETS_DIR:-./secrets}/vault_realm_pat

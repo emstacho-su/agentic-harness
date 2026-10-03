@@ -12,6 +12,9 @@
 # audit after the ingest; RETRIEVAL_EVAL (apply|skip) the retrieval eval that
 # appends to ingest/eval/history.jsonl. The ingest and the hooks read the rest of
 # that file (DATABASE_URL, ...) themselves.
+# HARNESS_JOBS_CONTAINER=1, set only by the harness-jobs image, skips the
+# transcript and session-start state sweeps and, with no
+# HARNESS_CHECKPOINT_REPOS, the checkpoints step.
 # STATE_SWEEP (apply|dryrun|skip, default apply) and STATE_MAX_AGE_DAYS (default
 # 7) come from the environment only: the state sweep removes SessionStart records
 # (~/.harness/state/session-start/*.json) older than that, right after the
@@ -76,20 +79,57 @@ if [ "$REALM_SYNC" != "skip" ]; then
   run_step realms-pull "$NODE_BIN" "$HOOKS/sync-realms.mjs" "${sync_args[@]}"; pull_code=$?
 fi
 
-run_step transcripts "$NODE_BIN" "$HOOKS/sweep-transcripts.mjs" --vault "$VAULT" --min-idle-hours "$TRANSCRIPT_IDLE_HOURS"; transcript_code=$?
-
-# Step 0a: session-start records older than STATE_MAX_AGE_DAYS. Never fatal;
-# a missing folder is exit 0, a bad STATE_MAX_AGE_DAYS is the CLI's exit 2.
+# Steps 0 and 0a read this machine's ~/.claude/projects transcripts and its
+# ~/.harness/state. The jobs container (HARNESS_JOBS_CONTAINER=1) is not where
+# sessions run: it cannot see their working directories, so a sweep there would
+# file notes under the wrong collection with their git details lost. The host's
+# SessionEnd hook stays the capture path, and both steps are skipped, in one line.
+transcript_code=0
 state_code=0
-case "$STATE_SWEEP" in
-  skip) log "state: skipped by STATE_SWEEP=skip" ;;
-  apply|dryrun)
-    state_args=(--max-age-days "$STATE_MAX_AGE_DAYS"); [ "$STATE_SWEEP" = "dryrun" ] && state_args+=(--dry-run)
-    run_step state "$NODE_BIN" "$HOOKS/sweep-state.mjs" "${state_args[@]}"; state_code=$? ;;
-  *) log "state: unknown STATE_SWEEP=$STATE_SWEEP (apply|dryrun|skip); not swept"; state_code=2 ;;
-esac
+if [ "${HARNESS_JOBS_CONTAINER:-}" = "1" ]; then
+  log "transcripts and state: skipped in the jobs container (sessions are captured by the host's SessionEnd hook)"
+else
+  run_step transcripts "$NODE_BIN" "$HOOKS/sweep-transcripts.mjs" --vault "$VAULT" --min-idle-hours "$TRANSCRIPT_IDLE_HOURS"; transcript_code=$?
 
-run_step checkpoints "$NODE_BIN" "$HOOKS/collect-checkpoints.mjs" --vault "$VAULT"; checkpoint_code=$?
+  # Step 0a: session-start records older than STATE_MAX_AGE_DAYS. Never fatal;
+  # a missing folder is exit 0, a bad STATE_MAX_AGE_DAYS is the CLI's exit 2.
+  state_code=0
+  case "$STATE_SWEEP" in
+    skip) log "state: skipped by STATE_SWEEP=skip" ;;
+    apply|dryrun)
+      state_args=(--max-age-days "$STATE_MAX_AGE_DAYS"); [ "$STATE_SWEEP" = "dryrun" ] && state_args+=(--dry-run)
+      run_step state "$NODE_BIN" "$HOOKS/sweep-state.mjs" "${state_args[@]}"; state_code=$? ;;
+    *) log "state: unknown STATE_SWEEP=$STATE_SWEEP (apply|dryrun|skip); not swept"; state_code=2 ;;
+  esac
+fi
+
+# Step 0b: the /checkpoint notes cloud sessions pushed. HARNESS_CHECKPOINT_REPOS
+# and HARNESS_CHECKPOINT_AUTHORS (comma-separated) become the collector's --repo
+# and --author lists, the same two settings hooks/scheduler.mjs gives its collect
+# job; with neither, the collector uses its own defaults. In the jobs container
+# (HARNESS_JOBS_CONTAINER=1) those default checkouts do not exist, so with no
+# repository listed the step is skipped with one line instead of failing on them.
+checkpoint_list() {
+  # checkpoint_list <flag> <comma-separated list>: add "<flag> <entry>" per non-empty entry.
+  local flag="$1" entry
+  while IFS= read -r entry; do
+    entry="$(_machine_env_trim "$entry")"
+    [ -n "$entry" ] && checkpoint_args+=("$flag" "$entry")
+  done <<LIST
+$(printf '%s' "$2" | tr ',' '\n')
+LIST
+  return 0
+}
+checkpoint_code=0
+checkpoint_args=(--vault "$VAULT")
+checkpoint_list --repo "${HARNESS_CHECKPOINT_REPOS:-}"
+checkpoint_repos=$(( (${#checkpoint_args[@]} - 2) / 2 ))
+checkpoint_list --author "${HARNESS_CHECKPOINT_AUTHORS:-}"
+if [ "${HARNESS_JOBS_CONTAINER:-}" = "1" ] && [ "$checkpoint_repos" -eq 0 ]; then
+  log "checkpoints: skipped in the jobs container (HARNESS_CHECKPOINT_REPOS is not set)"
+else
+  run_step checkpoints "$NODE_BIN" "$HOOKS/collect-checkpoints.mjs" "${checkpoint_args[@]}"; checkpoint_code=$?
+fi
 run_step sweep "$UV_BIN" --directory "$PROJECT" run ingest sweep-concluded --path "$VAULT" --stale-after-hours "$STALE_AFTER_HOURS" --apply; sweep_code=$?
 run_step ingest "$UV_BIN" --directory "$PROJECT" run ingest --source obsidian --path "$VAULT" --prune; ingest_code=$?
 
