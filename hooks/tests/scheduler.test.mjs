@@ -729,6 +729,33 @@ test('a secret file that cannot be read stops the scheduler with exit 78 before 
   assert.match(lines[0], /^error: DATABASE_URL_FILE names .*absent, which is not a readable file$/);
 });
 
+test('a job the plan skips is logged in one line, exits 0 and spawns nothing', async (t) => {
+  const s = scratch(t);
+  const spawned = [];
+  const lines = [];
+  const code = await main(['--run-now', 'collect', '--state', s.stateFile], {
+    now: () => at('2026-10-31T16:00:00.000Z'),
+    env: { HARNESS_JOBS_CONTAINER: '1' },
+    spawn: fakeSpawn(spawned),
+    out: (line) => lines.push(line),
+    err: (line) => lines.push(line),
+  });
+  assert.equal(code, EXIT_OK, lines.join('\n'));
+  assert.deepEqual(spawned, []);
+  assert.equal(lines.filter((line) => /collect: skipped in the jobs container \(HARNESS_CHECKPOINT_REPOS is not set\)/.test(line)).length, 1, lines.join('\n'));
+  assert.equal(stateOnDisk(s).jobs.collect.exit_code, 0);
+
+  const withRepos = [];
+  await main(['--run-now', 'collect', '--state', s.stateFile], {
+    now: () => at('2026-10-31T16:00:00.000Z'),
+    env: { HARNESS_JOBS_CONTAINER: '1', HARNESS_CHECKPOINT_REPOS: '/repos/bb2dash', HARNESS_CHECKPOINT_AUTHORS: 'a@example.com' },
+    spawn: fakeSpawn(withRepos),
+    out: () => {},
+    err: () => {},
+  });
+  assert.deepEqual(withRepos[0].args.slice(1), ['--ingest', '--repo', '/repos/bb2dash', '--author', 'a@example.com']);
+});
+
 test('main starts a real job only when it is handed spawn: without a runner or spawn it refuses', async (t) => {
   // The guard this test pins exists because a test once reached the default
   // runner by omission and ran the real nightly. Neither call below may start
@@ -789,6 +816,81 @@ test('the entrypoint writes the git config where GIT_CONFIG_GLOBAL already point
     env: { PATH: process.env.PATH, HOME: `${root}/elsewhere`, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: fixed },
   });
   assert.equal(exec.stdout.trim(), `${root}/vault/projects`);
+});
+
+// ------------------------------------------------ the nightly script (bash), with stubs for node and uv
+
+const NIGHTLY = path.join(REPO, 'scripts', 'nightly-ingest.sh').replace(/\\/g, '/');
+/** Records its own name and arguments, and does nothing else. */
+const STUB = '#!/usr/bin/env bash\nprintf \'%s %s\\n\' "$(basename "$0")" "$*" >> "$STUB_RECORD"\n';
+
+/**
+ * Run the real nightly script where it can reach nothing real: every path it
+ * reads (home, machine file, vault, hooks, ingest project, log) is inside a
+ * scratch folder, the environment is built from nothing rather than inherited,
+ * and node and uv are stubs that only record what they were asked to run.
+ * Returns the exit status, the recorded calls with the scratch root as `<root>`, and the log.
+ */
+function runNightly(t, extra = {}) {
+  const root = scratchForBash(t);
+  for (const dir of ['vault', 'hooks', 'project', 'bin']) fs.mkdirSync(`${root}/${dir}`);
+  fs.writeFileSync(`${root}/project/pyproject.toml`, '[project]\nname = "scratch"\n');
+  for (const stub of ['node-stub', 'uv-stub']) fs.writeFileSync(`${root}/bin/${stub}`, STUB, { mode: 0o755 });
+  const run = spawnSync('bash', [NIGHTLY], {
+    encoding: 'utf8',
+    env: {
+      PATH: process.env.PATH,
+      HOME: root,
+      HARNESS_MACHINE_ENV: `${root}/no-machine.env`,
+      HARNESS_VAULT: `${root}/vault`,
+      HARNESS_INGEST_PROJECT: `${root}/project`,
+      HARNESS_HOOKS_DIR: `${root}/hooks`,
+      HARNESS_NODE: `${root}/bin/node-stub`,
+      HARNESS_UV: `${root}/bin/uv-stub`,
+      HARNESS_NIGHTLY_LOG: `${root}/nightly.log`,
+      STUB_RECORD: `${root}/calls.txt`,
+      REALM_SYNC: 'skip',
+      ...extra,
+    },
+  });
+  const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '').split(root).join('<root>');
+  const calls = read(`${root}/calls.txt`).split('\n').filter(Boolean);
+  return { status: run.status, stderr: run.stderr, calls, log: read(`${root}/nightly.log`) };
+}
+
+const CHECKPOINT_CALL = 'node-stub <root>/hooks/collect-checkpoints.mjs --vault <root>/vault';
+const stepsRun = (calls) => calls.map((call) => /(sweep-transcripts|sweep-state|collect-checkpoints|sync-realms)\.mjs|run ingest (sweep-concluded|verify|eval|--source)/.exec(call)?.[0] ?? call);
+
+test('the nightly on a host runs every step, and its stubs are what ran', { skip: NEEDS_BASH }, (t) => {
+  const night = runNightly(t);
+  assert.equal(night.status, 0, night.stderr);
+  assert.deepEqual(stepsRun(night.calls), [
+    'sweep-transcripts.mjs', 'sweep-state.mjs', 'collect-checkpoints.mjs',
+    'run ingest sweep-concluded', 'run ingest --source', 'run ingest verify', 'run ingest eval',
+  ]);
+  assert.ok(night.calls.includes(CHECKPOINT_CALL), 'with no repositories listed the collector is left to its own defaults');
+  assert.match(night.log, /=== nightly reconcile finished \(realms-pull 0, transcripts 0, state 0, checkpoints 0, sweep 0, ingest 0, verify 0, eval 0, realms-push 0\) ===/);
+});
+
+test('the nightly passes the listed checkpoint repositories and authors to the collector', { skip: NEEDS_BASH }, (t) => {
+  const night = runNightly(t, { HARNESS_CHECKPOINT_REPOS: '/repos/agentic-harness, /repos/bb2dash,', HARNESS_CHECKPOINT_AUTHORS: 'a@example.com,b@example.com' });
+  assert.equal(night.status, 0, night.stderr);
+  assert.ok(
+    night.calls.includes(`${CHECKPOINT_CALL} --repo /repos/agentic-harness --repo /repos/bb2dash --author a@example.com --author b@example.com`),
+    night.calls.join('\n'),
+  );
+});
+
+test('in the jobs container the nightly skips the checkpoints step when no repository is listed, with one line and no failure', { skip: NEEDS_BASH }, (t) => {
+  const unset = runNightly(t, { HARNESS_JOBS_CONTAINER: '1' });
+  assert.equal(unset.status, 0, unset.stderr);
+  assert.ok(!unset.calls.some((call) => call.includes('collect-checkpoints.mjs')), 'the collector would only report its default paths missing');
+  assert.equal(unset.log.split('\n').filter((line) => /Z checkpoints[ :]/.test(line)).length, 1, unset.log);
+  assert.match(unset.log, /checkpoints: skipped in the jobs container \(HARNESS_CHECKPOINT_REPOS is not set\)/);
+  assert.match(unset.log, /checkpoints 0, /);
+
+  const set = runNightly(t, { HARNESS_JOBS_CONTAINER: '1', HARNESS_CHECKPOINT_REPOS: '/repos/bb2dash' });
+  assert.ok(set.calls.includes(`${CHECKPOINT_CALL} --repo /repos/bb2dash`), set.calls.join('\n'));
 });
 
 test('the image fixes GIT_CONFIG_GLOBAL, so the entrypoint and an exec agree on the file', () => {

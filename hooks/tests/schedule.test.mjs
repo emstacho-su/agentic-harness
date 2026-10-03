@@ -12,6 +12,7 @@ import test from 'node:test';
 
 import {
   EMPTY_STATE,
+  JOBS_CONTAINER_VAR,
   JOB_COLLECT,
   JOB_NAMES,
   JOB_NIGHTLY,
@@ -178,4 +179,22 @@ test('nightly runs the reconcile script; collect runs the collector with the lis
     '--author', 'b@example.com',
   ]);
   assert.throws(() => jobCommand('weekly', { repoRoot, node, env: {} }), /unknown job/);
+});
+
+test('in the jobs container collect is skipped when no repository is listed, and runs when one is', () => {
+  const context = (env) => ({ repoRoot: '/app', node: '/usr/local/bin/node', env });
+  assert.equal(JOBS_CONTAINER_VAR, 'HARNESS_JOBS_CONTAINER');
+
+  assert.deepEqual(jobCommand(JOB_COLLECT, context({ HARNESS_JOBS_CONTAINER: '1' })), {
+    skip: 'skipped in the jobs container (HARNESS_CHECKPOINT_REPOS is not set)',
+  });
+  assert.deepEqual(jobCommand(JOB_COLLECT, context({ HARNESS_JOBS_CONTAINER: '1', HARNESS_CHECKPOINT_REPOS: ' , ' })), {
+    skip: 'skipped in the jobs container (HARNESS_CHECKPOINT_REPOS is not set)',
+  }, 'a list with no entry in it is not a list');
+  assert.deepEqual(jobCommand(JOB_COLLECT, context({ HARNESS_JOBS_CONTAINER: '1', HARNESS_CHECKPOINT_REPOS: '/repos/bb2dash' })).args, [
+    '/app/hooks/collect-checkpoints.mjs', '--ingest', '--repo', '/repos/bb2dash',
+  ]);
+  assert.deepEqual(jobCommand(JOB_COLLECT, context({ HARNESS_JOBS_CONTAINER: '0' })).args, ['/app/hooks/collect-checkpoints.mjs', '--ingest'],
+    'on a host the collector keeps its own default repositories');
+  assert.equal(jobCommand(JOB_NIGHTLY, context({ HARNESS_JOBS_CONTAINER: '1' })).command, 'bash', 'the nightly decides its own steps');
 });

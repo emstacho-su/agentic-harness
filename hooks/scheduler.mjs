@@ -438,9 +438,16 @@ export async function runLoop(deps) {
  * may do that is the process entry point, which passes node's own spawn. A
  * caller that forgets it gets an error, not a reconcile of the live vault.
  */
-export function spawnRunner({ env, repoRoot = path.resolve(HERE, '..'), onChild = () => {}, spawn: spawnImpl } = {}) {
+export function spawnRunner({ env, repoRoot = path.resolve(HERE, '..'), onChild = () => {}, spawn: spawnImpl, log = () => {} } = {}) {
   if (typeof spawnImpl !== 'function') throw new Error('spawnRunner needs the spawn to use');
-  return (job) => spawnJob(jobCommand(job, { repoRoot, node: process.execPath, env }), { env, onChild, spawn: spawnImpl });
+  return async (job) => {
+    const plan = jobCommand(job, { repoRoot, node: process.execPath, env });
+    if (plan.skip) {
+      log(`${job}: ${plan.skip}`);
+      return EXIT_OK;
+    }
+    return spawnJob(plan, { env, onChild, spawn: spawnImpl });
+  };
 }
 
 const WINDOWS = 'win32';
@@ -524,11 +531,12 @@ export async function main(argv, { env = process.env, out = console.log, err = c
     err('error: no runner and no spawn were given, so no job can be started');
     return EXIT_INTERNAL;
   }
+  const log = overrides.log ?? ((line) => out(`${new Date().toISOString()} scheduler: ${line}`));
   const deps = {
     now: Date.now,
-    log: (line) => out(`${new Date().toISOString()} scheduler: ${line}`),
     ...overrides,
-    runner: runner ?? spawnRunner({ env: secrets.env, onChild, spawn: spawnImpl }),
+    log,
+    runner: runner ?? spawnRunner({ env: secrets.env, onChild, spawn: spawnImpl, log }),
     stateFile: parsed.options.stateFile,
   };
 

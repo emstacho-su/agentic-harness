@@ -45,6 +45,16 @@ export const CHECKPOINT_REPOS_VAR = 'HARNESS_CHECKPOINT_REPOS';
 /** Comma-separated author emails the collector accepts; unset means any author. */
 export const CHECKPOINT_AUTHORS_VAR = 'HARNESS_CHECKPOINT_AUTHORS';
 
+/**
+ * `1` in the harness-jobs image, unset everywhere else. The container holds
+ * no checkout of the repositories the collector defaults to
+ * (`~/agentic-harness`, `~/projects/bb2dash`), so there "no repository
+ * listed" means "nothing to collect", not "use the defaults".
+ * scripts/nightly-ingest.sh reads the same variable for its own steps.
+ */
+export const JOBS_CONTAINER_VAR = 'HARNESS_JOBS_CONTAINER';
+const IN_JOBS_CONTAINER = '1';
+
 const WALL_CLOCK = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -233,14 +243,24 @@ function listSetting(value) {
  * `collect` is the collector with `--ingest`, as the twice-daily Windows task
  * runs it. Both read HARNESS_VAULT and the rest from the environment themselves.
  *
+ * In the jobs container, `collect` with no repository listed is `{ skip }`
+ * instead of a command: the collector's default paths do not exist there, and
+ * running it would report two missing repositories and exit 1 twice a day.
+ * The caller logs the reason in one line and counts the job as done, exit 0.
+ * The nightly script makes the same decision for its own checkpoints step.
+ *
  * @param {string} job
  * @param {{repoRoot: string, node: string, env: Record<string, string | undefined>}} context
- * @returns {{command: string, args: string[]}}
+ * @returns {{command: string, args: string[]} | {skip: string}}
  */
 export function jobCommand(job, { repoRoot, node, env }) {
   assertJob(job);
   if (job === JOB_NIGHTLY) return { command: 'bash', args: [`${repoRoot}/scripts/nightly-ingest.sh`] };
-  const repos = listSetting(env[CHECKPOINT_REPOS_VAR]).flatMap((repo) => ['--repo', repo]);
+  const listed = listSetting(env[CHECKPOINT_REPOS_VAR]);
+  if (env[JOBS_CONTAINER_VAR] === IN_JOBS_CONTAINER && listed.length === 0) {
+    return { skip: `skipped in the jobs container (${CHECKPOINT_REPOS_VAR} is not set)` };
+  }
+  const repos = listed.flatMap((repo) => ['--repo', repo]);
   const authors = listSetting(env[CHECKPOINT_AUTHORS_VAR]).flatMap((author) => ['--author', author]);
   return { command: node, args: [`${repoRoot}/hooks/collect-checkpoints.mjs`, '--ingest', ...repos, ...authors] };
 }

@@ -89,7 +89,33 @@ case "$STATE_SWEEP" in
   *) log "state: unknown STATE_SWEEP=$STATE_SWEEP (apply|dryrun|skip); not swept"; state_code=2 ;;
 esac
 
-run_step checkpoints "$NODE_BIN" "$HOOKS/collect-checkpoints.mjs" --vault "$VAULT"; checkpoint_code=$?
+# Step 0b: the /checkpoint notes cloud sessions pushed. HARNESS_CHECKPOINT_REPOS
+# and HARNESS_CHECKPOINT_AUTHORS (comma-separated) become the collector's --repo
+# and --author lists, the same two settings hooks/scheduler.mjs gives its collect
+# job; with neither, the collector uses its own defaults. In the jobs container
+# (HARNESS_JOBS_CONTAINER=1) those default checkouts do not exist, so with no
+# repository listed the step is skipped with one line instead of failing on them.
+checkpoint_list() {
+  # checkpoint_list <flag> <comma-separated list>: add "<flag> <entry>" per non-empty entry.
+  local flag="$1" entry
+  while IFS= read -r entry; do
+    entry="$(_machine_env_trim "$entry")"
+    [ -n "$entry" ] && checkpoint_args+=("$flag" "$entry")
+  done <<LIST
+$(printf '%s' "$2" | tr ',' '\n')
+LIST
+  return 0
+}
+checkpoint_code=0
+checkpoint_args=(--vault "$VAULT")
+checkpoint_list --repo "${HARNESS_CHECKPOINT_REPOS:-}"
+checkpoint_repos=$(( (${#checkpoint_args[@]} - 2) / 2 ))
+checkpoint_list --author "${HARNESS_CHECKPOINT_AUTHORS:-}"
+if [ "${HARNESS_JOBS_CONTAINER:-}" = "1" ] && [ "$checkpoint_repos" -eq 0 ]; then
+  log "checkpoints: skipped in the jobs container (HARNESS_CHECKPOINT_REPOS is not set)"
+else
+  run_step checkpoints "$NODE_BIN" "$HOOKS/collect-checkpoints.mjs" "${checkpoint_args[@]}"; checkpoint_code=$?
+fi
 run_step sweep "$UV_BIN" --directory "$PROJECT" run ingest sweep-concluded --path "$VAULT" --stale-after-hours "$STALE_AFTER_HOURS" --apply; sweep_code=$?
 run_step ingest "$UV_BIN" --directory "$PROJECT" run ingest --source obsidian --path "$VAULT" --prune; ingest_code=$?
 
