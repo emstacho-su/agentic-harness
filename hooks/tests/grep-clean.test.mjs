@@ -275,6 +275,30 @@ test('the default vault is ~/vault, not the OneDrive folder', () => {
   assert.deepEqual([...DEFAULT_VAULT_SEGMENTS], ['vault']);
 });
 
+/**
+ * The Windows twins never enter the image, but their default vault has to
+ * agree with the hooks' (DEFAULT_VAULT_SEGMENTS, `~/vault`): a host whose
+ * machine file names no vault would otherwise capture into one folder and
+ * reconcile another. Only the HARNESS_VAULT default line of each is read.
+ */
+const WINDOWS_VAULT_DEFAULTS = Object.freeze([
+  'scripts/nightly-ingest.ps1',
+  'scripts/register-checkpoint-collect.ps1',
+  'scripts/register-nightly-ingest.ps1',
+  'scripts/register-weekly-curate.ps1',
+]);
+
+test('the Windows scripts default to the same vault as the hooks, ~/vault, not the OneDrive folder', () => {
+  for (const file of WINDOWS_VAULT_DEFAULTS) {
+    const lines = read(file).split('\n').filter((line) => line.includes("Get-MachineSetting $machine 'HARNESS_VAULT'"));
+    assert.equal(lines.length, 1, `${file}: expected one HARNESS_VAULT default line`);
+    const [line] = lines;
+    assert.ok(!/OneDrive/.test(line), `${file}: ${line.trim()}`);
+    assert.match(line, /\$env:USERPROFILE\b.*\/vault"\s*\}\s*$/, `${file}: the default is not the profile's vault folder: ${line.trim()}`);
+  }
+  assert.deepEqual([...DEFAULT_VAULT_SEGMENTS], ['vault'], 'and the hooks still say ~/vault');
+});
+
 test('every module and script the jobs run is in the image', () => {
   const needed = [...importClosure(JOB_ENTRY_POINTS), ...JOB_SCRIPTS];
   const missing = needed.filter((file) => !copied.includes(file));

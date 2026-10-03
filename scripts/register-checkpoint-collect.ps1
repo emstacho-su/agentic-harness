@@ -52,7 +52,7 @@ param(
 . (Join-Path $PSScriptRoot 'lib\machine-env.ps1')
 
 $machine = Read-MachineEnv
-if (-not $VaultPath)  { $VaultPath  = Get-MachineSetting $machine 'HARNESS_VAULT' "C:/Users/$env:USERNAME/OneDrive - Syracuse University/vault" }
+if (-not $VaultPath)  { $VaultPath  = Get-MachineSetting $machine 'HARNESS_VAULT' "$($env:USERPROFILE -replace '\\', '/')/vault" }
 if (-not $NodePath)   { $NodePath   = Get-MachineSetting $machine 'HARNESS_NODE' '' }
 
 $ErrorActionPreference = 'Stop'
