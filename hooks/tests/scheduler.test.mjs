@@ -893,6 +893,28 @@ test('in the jobs container the nightly skips the checkpoints step when no repos
   assert.ok(set.calls.includes(`${CHECKPOINT_CALL} --repo /repos/bb2dash`), set.calls.join('\n'));
 });
 
+test('in the jobs container the nightly never sweeps transcripts or session-start state, and says so in one line', { skip: NEEDS_BASH }, (t) => {
+  const night = runNightly(t, { HARNESS_JOBS_CONTAINER: '1', HARNESS_CHECKPOINT_REPOS: '/repos/bb2dash' });
+  assert.equal(night.status, 0, night.stderr);
+  assert.deepEqual(stepsRun(night.calls), [
+    'collect-checkpoints.mjs', 'run ingest sweep-concluded', 'run ingest --source', 'run ingest verify', 'run ingest eval',
+  ], 'no sweep-transcripts.mjs and no sweep-state.mjs');
+  const skipped = night.log.split('\n').filter((line) => /transcripts|state/.test(line) && !/=== nightly reconcile finished/.test(line));
+  assert.deepEqual(skipped.map((line) => line.replace(/^\S+ /, '')), [
+    'transcripts and state: skipped in the jobs container (sessions are captured by the host\'s SessionEnd hook)',
+  ]);
+  assert.match(night.log, /finished \(realms-pull 0, transcripts 0, state 0, checkpoints 0,/, 'the summary keeps its nine fields');
+});
+
+test('the jobs image marks itself, and compose mounts no transcripts folder', () => {
+  const dockerfile = fs.readFileSync(path.join(REPO, 'docker', 'jobs', 'Dockerfile'), 'utf8');
+  const compose = fs.readFileSync(path.join(REPO, 'compose.yaml'), 'utf8');
+  assert.match(dockerfile, /^\s+HARNESS_JOBS_CONTAINER=1 \\?$/m);
+  assert.ok(!compose.includes('CLAUDE_PROJECTS_DIR'), 'compose.yaml still names CLAUDE_PROJECTS_DIR');
+  assert.ok(!compose.includes('.claude/projects'), 'compose.yaml still mounts a .claude/projects folder');
+  assert.ok(!dockerfile.includes('.claude/projects'), 'the image still makes a mount point for transcripts');
+});
+
 test('the image fixes GIT_CONFIG_GLOBAL, so the entrypoint and an exec agree on the file', () => {
   const dockerfile = fs.readFileSync(path.join(REPO, 'docker', 'jobs', 'Dockerfile'), 'utf8');
   assert.match(dockerfile, /^\s+GIT_CONFIG_GLOBAL=\/home\/harness\/\.gitconfig-jobs \\?$/m);

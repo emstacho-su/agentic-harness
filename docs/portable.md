@@ -298,6 +298,13 @@ exists on no remote yet, the Obsidian plugin, the scheduled jobs and the push cr
      `collect-checkpoints.mjs --ingest` at 12:00 and 18:00, New York time, one job at a time.
      `docker compose exec harness-jobs node hooks/scheduler.mjs --run-now nightly` (or
      `collect`) runs one now; it exits 75 if a job is already running.
+   - What does not run there. The container's nightly skips the transcript sweep and the
+     session-start state sweep (the image sets `HARNESS_JOBS_CONTAINER=1`; the log says so in
+     one line). Sessions run on the host, and a sweep from a container that cannot see their
+     working directories would file notes under the wrong collection with their git details
+     lost, so the host's SessionEnd hook stays the only capture path. No transcripts folder
+     is mounted. With no `HARNESS_CHECKPOINT_REPOS` the checkpoint collection is skipped the
+     same way, since the collector's default checkouts do not exist in the container.
    - Catch-up. The scheduler does not wait for a timer to fire at 03:00. Every 30 seconds it
      compares the clock with each job's `last_run_at` in `/state/scheduler.json` (the
      `job-state` volume), so a laptop that slept through a window runs the job once on wake,
@@ -306,9 +313,10 @@ exists on no remote yet, the Obsidian plugin, the scheduled jobs and the push cr
    - No cron library: node-cron's `missedExecutionTolerance` is how late a tick may fire and still count, not catch-up, so a run missed while the machine slept would be dropped.
    - Settings. The compose file reads paths and names from the environment (an umbrella
      repo's `.env`), never a secret: `VAULT_DIR` (the folder holding the realm checkouts,
-     mounted at `/vault`), `CLAUDE_PROJECTS_DIR` (mounted read-only for the transcript
-     sweep), `SECRETS_DIR`, and `HARNESS_MACHINE`, `HARNESS_GIT_EMAIL` and `HARNESS_REALMS`
-     with the values the machine file has. The container works in the same checkouts as the
+     mounted at `/vault`, the only host bind), `SECRETS_DIR`, and `HARNESS_MACHINE`,
+     `HARNESS_GIT_EMAIL` and `HARNESS_REALMS` with the values the machine file has, and
+     optionally `HARNESS_CHECKPOINT_REPOS` and `HARNESS_CHECKPOINT_AUTHORS` (comma-separated
+     checkout paths inside the container, and author emails). The container works in the same checkouts as the
      host, so it writes notes and realm commits under the same machine name.
    - Secrets are two files in `SECRETS_DIR`, mounted under `/run/secrets`:
      `harness_database_url` (the entrypoint exports `DATABASE_URL` from it) and
@@ -321,8 +329,8 @@ exists on no remote yet, the Obsidian plugin, the scheduled jobs and the push cr
      fire while the other is running, the realm lock, a file inside the checkout both of them
      see, makes the second stand down (exit 2, `locked`).
    - First start and first night. A container with no state runs the nightly at once, not
-     at the next 03:00: it sweeps transcripts into the vault and ingests into the store
-     straight away. Until `REALM_SYNC=apply` is set it commits and pushes nothing (the compose
+     at the next 03:00: it reconciles the realms' notes (`sweep-concluded`) and ingests into
+     the store straight away. Until `REALM_SYNC=apply` is set it commits and pushes nothing (the compose
      file's default is `dryrun`, which only prints what the sync would do). Read
      `docker compose logs harness-jobs` the next morning, then set `REALM_SYNC=apply` and
      `docker compose up -d`. `docker compose ps` shows the service healthy while

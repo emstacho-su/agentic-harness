@@ -34,13 +34,15 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const DOCKERFILE = 'docker/jobs/Dockerfile';
 const DOCKERIGNORE = '.dockerignore';
 
-/** The scripts the scheduler starts, directly or through the nightly script, and doctor. */
+/**
+ * The scripts the scheduler starts, directly or through the nightly script,
+ * and doctor. The two sweeps are not here: in the container the nightly skips
+ * them (HARNESS_JOBS_CONTAINER=1). They are still copied, and still scanned.
+ */
 const JOB_ENTRY_POINTS = Object.freeze([
   'hooks/scheduler.mjs',
   'hooks/doctor.mjs',
   'hooks/sync-realms.mjs',
-  'hooks/sweep-transcripts.mjs',
-  'hooks/sweep-state.mjs',
   'hooks/collect-checkpoints.mjs',
 ]);
 const JOB_SCRIPTS = Object.freeze(['scripts/jobs-entrypoint.sh', 'scripts/nightly-ingest.sh', 'scripts/lib/machine-env.sh']);

@@ -59,8 +59,7 @@ COPY --from=uv /usr/local/bin/uv /usr/local/bin/uv
 # realm checkouts that user owns are readable here without a chmod.
 ARG JOBS_UID=1000
 RUN useradd --create-home --uid "${JOBS_UID}" --shell /bin/bash harness \
-    && mkdir -p /state /cache/fastembed /vault \
-        /home/harness/.claude/projects /home/harness/.claude/hooks \
+    && mkdir -p /state /cache/fastembed /vault /home/harness/.claude/hooks \
     && chown -R harness:harness /state /cache /home/harness
 
 WORKDIR /app
@@ -81,7 +80,11 @@ RUN ln -s /state/eval-history.jsonl ingest/eval/history.jsonl
 # GIT_CONFIG_GLOBAL is fixed here, not exported by the entrypoint: the
 # entrypoint writes that file (safe.directory, the credential helper; no token),
 # and a `docker compose exec` gets this variable and so the same file.
+# HARNESS_JOBS_CONTAINER=1 tells the jobs where they are: the nightly skips the
+# transcript and session-start sweeps, which belong to the host where sessions
+# run, and with no HARNESS_CHECKPOINT_REPOS the checkpoint collection.
 ENV HARNESS_VAULT=/vault \
+    HARNESS_JOBS_CONTAINER=1 \
     GIT_CONFIG_GLOBAL=/home/harness/.gitconfig-jobs \
     HARNESS_INGEST_PROJECT=/app/ingest \
     HARNESS_HOOKS_DIR=/app/hooks \

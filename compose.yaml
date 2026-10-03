@@ -15,8 +15,6 @@
 # is interpolation only: it holds paths and names, never a secret.
 #
 #   VAULT_DIR            required. The folder holding the realm checkouts; mounted at /vault.
-#   CLAUDE_PROJECTS_DIR  required. ~/.claude/projects of the user whose sessions are swept;
-#                        mounted read-only.
 #   SECRETS_DIR          the folder holding the two secret files (default ./secrets).
 #   HARNESS_MACHINE, HARNESS_GIT_EMAIL, HARNESS_REALMS
 #                        what ~/.harness/machine.env says on a host: the name written into
@@ -31,6 +29,11 @@
 # Secrets are files, mounted at /run/secrets/<name>. The entrypoint exports
 # DATABASE_URL from harness_database_url; git reads vault_realm_pat when it
 # pushes a realm. Neither value is in `environment:`, a build argument or a layer.
+#
+# No transcripts are mounted. The container's nightly does not sweep sessions
+# or session-start state (the image sets HARNESS_JOBS_CONTAINER=1): it cannot
+# see the working directories they ran in, and the host's SessionEnd hook is
+# the capture path. It reconciles, ingests and syncs the realms.
 
 services:
   harness-jobs:
@@ -62,14 +65,10 @@ services:
       - fastembed-cache:/cache/fastembed
       # scheduler.json, the run lock, the ingest's last-success record, the eval history.
       - job-state:/state
-      # The only host binds: the realms, and the transcripts the sweep reads.
+      # The only host bind: the realms.
       - type: bind
         source: ${VAULT_DIR:?set VAULT_DIR to the folder holding the realm checkouts}
         target: /vault
-      - type: bind
-        source: ${CLAUDE_PROJECTS_DIR:?set CLAUDE_PROJECTS_DIR to the .claude/projects folder to sweep}
-        target: /home/harness/.claude/projects
-        read_only: true
     # Healthy means a complete nightly ingest finished within 36 hours
     # (`ingest --health`). The first start has none, so the scheduler runs the
     # nightly at once and the 30-minute start period covers it.
