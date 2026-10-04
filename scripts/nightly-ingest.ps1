@@ -136,7 +136,7 @@ $LogKeepLines = 2000
 . (Join-Path $PSScriptRoot 'lib\machine-env.ps1')
 
 $machine = Read-MachineEnv
-if (-not $VaultPath)  { $VaultPath  = Get-MachineSetting $machine 'HARNESS_VAULT' "C:/Users/$env:USERNAME/OneDrive - Syracuse University/vault" }
+if (-not $VaultPath)  { $VaultPath  = Get-MachineSetting $machine 'HARNESS_VAULT' "$($env:USERPROFILE -replace '\\', '/')/vault" }
 if (-not $ProjectDir) { $ProjectDir = Get-MachineSetting $machine 'HARNESS_INGEST_PROJECT' "C:/Users/$env:USERNAME/agentic-harness/ingest" }
 if (-not $HooksDir)   { $HooksDir   = Get-MachineSetting $machine 'HARNESS_HOOKS_DIR' "C:/Users/$env:USERNAME/agentic-harness/hooks" }
 if (-not $NodePath)   { $NodePath   = Get-MachineSetting $machine 'HARNESS_NODE' '' }

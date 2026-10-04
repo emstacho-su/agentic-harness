@@ -59,7 +59,7 @@ param(
 . (Join-Path $PSScriptRoot 'lib\machine-env.ps1')
 
 $machine = Read-MachineEnv
-if (-not $VaultPath)  { $VaultPath  = Get-MachineSetting $machine 'HARNESS_VAULT' "C:/Users/$env:USERNAME/OneDrive - Syracuse University/vault" }
+if (-not $VaultPath)  { $VaultPath  = Get-MachineSetting $machine 'HARNESS_VAULT' "$($env:USERPROFILE -replace '\\', '/')/vault" }
 if (-not $ProjectDir) { $ProjectDir = Get-MachineSetting $machine 'HARNESS_INGEST_PROJECT' "C:/Users/$env:USERNAME/agentic-harness/ingest" }
 
 $ErrorActionPreference = 'Stop'

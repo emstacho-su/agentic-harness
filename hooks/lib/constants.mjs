@@ -168,9 +168,14 @@ export const LEGACY_HUB_FILENAME = 'index.md';
 export const COLLECTION_FROM_GIT = 'git';
 export const COLLECTION_FROM_FOLDER = 'folder';
 
-/** Default vault, overridable with HARNESS_VAULT (the tests rely on that). */
+/**
+ * Default vault, overridable with HARNESS_VAULT (the tests rely on that).
+ * `~/vault`, the default the shell scripts and docs/portable.md already name:
+ * the vault left its cloud-synced folder for git realms on 2026-09-23, and a
+ * default that still pointed there resolved to a folder no machine has.
+ */
 export const VAULT_ENV_VAR = 'HARNESS_VAULT';
-export const DEFAULT_VAULT_SEGMENTS = ['OneDrive - Syracuse University', 'vault'];
+export const DEFAULT_VAULT_SEGMENTS = Object.freeze(['vault']);
 
 /**
  * Log destination, overridable with HARNESS_SESSION_CAPTURE_LOG. The end-to-end
